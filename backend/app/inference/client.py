@@ -311,11 +311,20 @@ class InferenceClient:
             )
 
         try:
-            return json.loads(_strip_markdown_json(response.content))
+            parsed = json.loads(_strip_markdown_json(response.content))
         except json.JSONDecodeError as e:
             raise InferenceClientError(
                 f"Stage '{stage_key}' returned non-JSON content: {response.content[:200]}"
             ) from e
+        if isinstance(parsed, list):
+            if len(parsed) == 1 and isinstance(parsed[0], dict):
+                logger.warning("call  stage=%-20s model returned list([dict]) — unwrapping", stage_key)
+                parsed = parsed[0]
+            else:
+                raise InferenceClientError(
+                    f"Stage '{stage_key}' returned a JSON array instead of an object: {response.content[:200]}"
+                )
+        return parsed
 
     async def stream_text(
         self,
@@ -825,7 +834,7 @@ class InferenceClient:
                 )
 
             try:
-                return json.loads(_strip_markdown_json(content))
+                parsed = json.loads(_strip_markdown_json(content))
             except json.JSONDecodeError as e:
                 logger.error(
                     "tools stage=%-20s non-JSON response after tool rounds: %s",
@@ -835,6 +844,15 @@ class InferenceClient:
                     f"Stage '{stage_key}' returned non-JSON after tool rounds: "
                     f"{content[:200]}"
                 ) from e
+            if isinstance(parsed, list):
+                if len(parsed) == 1 and isinstance(parsed[0], dict):
+                    logger.warning("tools stage=%-20s model returned list([dict]) — unwrapping", stage_key)
+                    parsed = parsed[0]
+                else:
+                    raise InferenceClientError(
+                        f"Stage '{stage_key}' returned a JSON array instead of an object: {content[:200]}"
+                    )
+            return parsed
 
         raise InferenceClientError(
             f"Stage '{stage_key}' exceeded max tool rounds ({max_tool_rounds})"
