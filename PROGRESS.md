@@ -1,7 +1,7 @@
 # Think Tank — Progress & TODO
 
-**Last updated**: 2026-04-17 (session 10)
-**Session summary**: Phase 3 rewritten to multi-pass generation. Pass 0 = JSON file plan (phase3_plan stage). Pass 1-N = one call_text() per file (phase3_file stage). New events: plan_ready, pass_started. Frontend shows file plan count + live "Writing X... N/M" indicator that replaces itself on each file. Activity log now populated throughout generation.
+**Last updated**: 2026-04-17 (session 11)
+**Session summary**: Phase 3 iteration agent given file exploration tools (list_files, read_file, grep_files) via call_with_tools explore_only mode — model navigates the project before planning changes instead of receiving all file contents upfront. PRD always generated as first file (docs/PRD.md) with dedicated phase3_prd stage using full Phase 1 + Phase 2 context. Theme changed to burnt orange. README added. backend/data excluded from git.
 
 ---
 
@@ -20,7 +20,7 @@
 | M8 | Polish + dogfooding Think Tank with Think Tank | ❌ Not started | |
 | M9 | Solution selection: SELECTED state, selection UI, notes | ✅ Done | |
 | M10 | Phase 2 kickoff: interactive Q&A session, Open Questions resolution | ✅ Done | |
-| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass generation implemented; iteration loop missing |
+| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass + iteration loop implemented; untested end-to-end |
 
 ---
 
@@ -33,7 +33,7 @@
 - **All 8 pipeline stages** — s0 intake → s7 documentation
 - **Orchestrator** — spawns 2 initial branches, manages asyncio task pool
 - **Phase 2** — interactive Q&A loop, resolution summary, READY state
-- **Phase 3** — session creation, manifest generation call, file writing, shell commands, activity events, WebSocket events, file browser endpoints
+- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md, shell commands, activity events, WebSocket events, file browser endpoints
 
 ### Frontend (working)
 - Ideas dashboard with sort (active first) and section grouping
@@ -51,9 +51,9 @@
 ## Known Issues — Phase 3
 
 ### High Priority
-1. **No iteration loop** — After Phase 3 completes, there is no way for the user to request changes, additions, or fixes. The implementation is a dead end with no feedback cycle.
+1. **Iteration loop untested end-to-end** — Tool-calling exploration loop (list_files/read_file/grep_files → JSON plan) implemented but not yet validated with qwen2.5:7b on a real project.
 
-2. **File quality unknown** — Multi-pass generation is implemented but untested end-to-end with phi4:14b. The JSON plan format and per-file prompts may need tuning.
+2. **File quality unknown** — Multi-pass generation implemented but untested end-to-end with phi4:14b. JSON plan format and per-file prompts may need tuning.
 
 3. **No failed-file fallback in UI** — If a file fails to write, there is no visual indicator in the activity log (only the `✓` count in the summary differs from plan count).
 
@@ -63,21 +63,9 @@
 
 ### 1. ~~Phase 3: Multi-pass structured generation~~ ✅ DONE
 
-### 2. Phase 3: Iteration chat loop
+### 2. Phase 3: Iteration chat loop ✅ DONE
 
-After COMPLETE (or even FAILED), allow user to send messages to continue/fix:
-
-**Backend:**
-- Add `Phase3Message` model (session_id, role, content, created_at)
-- `POST /ideas/{id}/phase3/messages` — user sends a message; triggers a new generation pass
-- Pass includes: current file tree (paths + sizes), previous summary, user message, spec
-- Agent generates: targeted file changes or new files (same multi-pass approach)
-- New activity events emitted, session stays COMPLETE
-
-**Frontend:**
-- Add chat input below the completion panel in Phase3Implementation
-- Each user message triggers a loading state → new file_written events appear in activity log
-- History of messages shown above input (collapsible)
+Backend: Phase3Message model, POST /ideas/{id}/phase3/messages, run_iteration() with tool-calling exploration (list_files/read_file/grep_files via phase3_explore stage on qwen2.5:7b). Frontend: chat input, optimistic messages, thinking indicator, markdown rendering in assistant bubbles, correct event ordering on reload, stop button during iteration.
 
 ### 3. Phase 3: UI improvements
 
@@ -89,7 +77,13 @@ After COMPLETE (or even FAILED), allow user to send messages to continue/fix:
 - [ ] File browser: open in VS Code button (`vscode://file/path`)
 - [ ] Show total project size in completion panel
 
-### 4. Phase 3: Models.yaml restructure ✅ DONE (phase3_plan + phase3_file added; phase3_iteration deferred to iteration loop task)
+### 4. Phase 3: Models.yaml restructure ✅ DONE
+
+Stages added: phase3_plan, phase3_file, phase3_prd, phase3_explore, phase3_iteration.
+
+### 6. Phase 3: PRD generation ✅ DONE
+
+docs/PRD.md always generated as first file using dedicated phase3_prd stage (phi4:14b, 4096 tok). Pulls all Phase 1 docs + Phase 2 resolution summary + file plan. Structured into 9 sections so the project is self-contained for external tools.
 
 ### 5. Polish / M8
 
