@@ -75,7 +75,7 @@ Backend: Phase3Message model, POST /ideas/{id}/phase3/messages, run_iteration() 
 - [ ] Show current pass name during generation ("Writing src/main.py…")  
 - [ ] Group activity log by pass (Pass 1: Scaffolding, Pass 2: Core modules, etc.)
 - [ ] After FAILED with empty directory, show audit trail link so user can see what the model actually output
-- [ ] File browser: syntax highlighting (prism-react-renderer or highlight.js)
+- [x] File browser: syntax highlighting via highlight.js (github-dark theme, 14 languages registered) ✅
 - [x] File browser: copy file content button ✅
 - [x] File browser: open in VS Code button (`vscode://file/path`) ✅
 - [x] Show total project size (file count + total KB/MB in file tree sidebar) ✅

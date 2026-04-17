@@ -1,4 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
+import hljs from 'highlight.js/lib/core';
+import langBash from 'highlight.js/lib/languages/bash';
+import langCss from 'highlight.js/lib/languages/css';
+import langDockerfile from 'highlight.js/lib/languages/dockerfile';
+import langGo from 'highlight.js/lib/languages/go';
+import langHtml from 'highlight.js/lib/languages/xml';
+import langJs from 'highlight.js/lib/languages/javascript';
+import langJson from 'highlight.js/lib/languages/json';
+import langMarkdown from 'highlight.js/lib/languages/markdown';
+import langPython from 'highlight.js/lib/languages/python';
+import langRust from 'highlight.js/lib/languages/rust';
+import langSql from 'highlight.js/lib/languages/sql';
+import langTs from 'highlight.js/lib/languages/typescript';
+import langToml from 'highlight.js/lib/languages/ini';
+import langYaml from 'highlight.js/lib/languages/yaml';
+import 'highlight.js/styles/github-dark.css';
 import {
   VscFolder, VscFolderOpened,
   VscFile, VscCode, VscJson, VscMarkdown, VscSymbolParameter, VscDatabase,
@@ -12,6 +28,40 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3FileEntry, Phase3Session, PipelineEvent } from '../types';
 import { PhaseNav } from './PhaseNav';
+
+// Register only the languages we need to keep the bundle small
+hljs.registerLanguage('python', langPython);
+hljs.registerLanguage('javascript', langJs);
+hljs.registerLanguage('typescript', langTs);
+hljs.registerLanguage('html', langHtml);
+hljs.registerLanguage('css', langCss);
+hljs.registerLanguage('json', langJson);
+hljs.registerLanguage('yaml', langYaml);
+hljs.registerLanguage('bash', langBash);
+hljs.registerLanguage('go', langGo);
+hljs.registerLanguage('rust', langRust);
+hljs.registerLanguage('sql', langSql);
+hljs.registerLanguage('dockerfile', langDockerfile);
+hljs.registerLanguage('markdown', langMarkdown);
+hljs.registerLanguage('toml', langToml);
+
+function hljsLanguage(filename: string): string | undefined {
+  const ext = filename.includes('.') ? filename.split('.').pop()!.toLowerCase() : '';
+  const base = filename.toLowerCase();
+  if (base === 'dockerfile') return 'dockerfile';
+  if (base === 'makefile') return 'bash';
+  const map: Record<string, string> = {
+    py: 'python', js: 'javascript', jsx: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    html: 'html', htm: 'html',
+    css: 'css', scss: 'css',
+    json: 'json', yaml: 'yaml', yml: 'yaml',
+    sh: 'bash', bash: 'bash',
+    go: 'go', rs: 'rust', sql: 'sql',
+    md: 'markdown', toml: 'toml', ini: 'toml',
+  };
+  return map[ext];
+}
 
 const WS_BASE = 'ws://localhost:8000';
 
@@ -388,6 +438,22 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
   );
 }
 
+function HighlightedCode({ content, filename }: { content: string; filename: string }) {
+  const lang = hljsLanguage(filename);
+  const highlighted = lang && hljs.getLanguage(lang)
+    ? hljs.highlight(content, { language: lang }).value
+    : hljs.highlightAuto(content, Object.keys(hljs.listLanguages())).value;
+  return (
+    <pre style={{ margin: 0, padding: 0, background: 'transparent', overflowX: 'auto' }}>
+      <code
+        className={`hljs language-${lang ?? 'plaintext'}`}
+        style={{ display: 'block', padding: '14px', fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace' }}
+        dangerouslySetInnerHTML={{ __html: highlighted }}
+      />
+    </pre>
+  );
+}
+
 function FileBrowser({ ideaId }: { ideaId: string }) {
   const [files, setFiles] = useState<Phase3FileEntry[]>([]);
   const [outputDir, setOutputDir] = useState<string | null>(null);
@@ -558,18 +624,7 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
                   ⚠ File truncated at 256 KB for display
                 </div>
               )}
-              <pre style={{
-                padding: '14px',
-                fontSize: 12,
-                fontFamily: 'monospace',
-                lineHeight: 1.6,
-                color: 'var(--text)',
-                margin: 0,
-                whiteSpace: 'pre',
-                overflowX: 'auto',
-              }}>
-                {fileContent}
-              </pre>
+              <HighlightedCode content={fileContent} filename={selectedPath ?? ''} />
             </>
           )}
         </div>
