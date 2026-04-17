@@ -1112,12 +1112,22 @@ export function Phase3Implementation() {
               </div>
             )}
 
-            {/* Failed before useful context exists: start over */}
+            {/* Failed before useful context exists: start over or view audit trail */}
             {showRetryButton && (
-              <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', padding: '10px 16px', background: 'var(--bg2)' }}>
+              <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', padding: '10px 16px', background: 'var(--bg2)', display: 'flex', alignItems: 'center', gap: 12 }}>
                 <button className="btn-primary" style={{ fontSize: 12 }} disabled={starting} onClick={doStart}>
                   {starting ? 'Starting…' : 'Try again →'}
                 </button>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 12, color: 'var(--text2)' }}
+                  onClick={() => navigate(`/ideas/${id}`, { state: { tab: 'audit', skipRedirect: true } })}
+                >
+                  View audit trail →
+                </button>
+                {session.summary && (
+                  <span style={{ fontSize: 12, color: 'var(--red)', marginLeft: 4 }}>{session.summary}</span>
+                )}
               </div>
             )}
           </>
