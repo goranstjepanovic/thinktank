@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 PLAN_STAGE_KEY = "phase3_plan"
 FILE_STAGE_KEY = "phase3_file"
+PRD_STAGE_KEY  = "phase3_prd"
+PRD_PATH       = "docs/PRD.md"
 
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
 
@@ -130,6 +132,52 @@ def _file_user_prompt(
         f"WRITE THIS FILE: {path}\n"
         f"PURPOSE: {description}\n\n"
         f"Write the complete content of `{path}` now."
+    )
+
+
+def _prd_system_prompt() -> str:
+    return (
+        "You are a technical writer and software architect. "
+        "Write a comprehensive Product Requirements Document (PRD) in Markdown.\n\n"
+        "This file will live at `docs/PRD.md` in the generated project and serves as the "
+        "single source of truth for anyone continuing development — including other AI coding tools.\n\n"
+        "## Required sections\n\n"
+        "1. **Project Overview** — what the project is, the problem it solves, who it is for\n"
+        "2. **Requirements** — functional and non-functional requirements, listed clearly\n"
+        "3. **Constraints** — technical, resource, and business constraints\n"
+        "4. **Solution Architecture** — chosen approach and key design decisions\n"
+        "5. **Components** — each component, its responsibility, and its main interfaces\n"
+        "6. **Implementation Roadmap** — phases, milestones, and task breakdown\n"
+        "7. **Technical Decisions** — decisions made during design/Q&A and their rationale\n"
+        "8. **Project Structure** — directory layout with a brief description of each folder\n"
+        "9. **Setup & Development** — how to install dependencies, run the project, and run tests\n\n"
+        "Write for a developer who has never seen this project before. "
+        "Output ONLY raw Markdown — no code fences wrapping the document, no preamble."
+    )
+
+
+def _prd_user_prompt(
+    idea: Idea,
+    branch: SolutionBranch,
+    resolution_summary: str,
+    architecture_doc: str,
+    component_specs: str,
+    roadmap_doc: str,
+    file_plan_summary: str,
+) -> str:
+    return (
+        f"PROJECT: {idea.name}\n"
+        f"DESCRIPTION:\n{idea.description}\n\n"
+        f"REQUIREMENTS:\n{idea.requirements}\n\n"
+        f"CONSTRAINTS:\n{idea.constraints}\n\n"
+        f"SELECTED SOLUTION (Branch {branch.branch_index}):\n"
+        f"{branch.approach_summary or 'N/A'}\n\n"
+        f"TECHNICAL DECISIONS (Phase 2 Q&A):\n{resolution_summary}\n\n"
+        f"ARCHITECTURE:\n{architecture_doc}\n\n"
+        f"COMPONENT SPECIFICATIONS:\n{component_specs}\n\n"
+        f"IMPLEMENTATION ROADMAP:\n{roadmap_doc}\n\n"
+        f"PROJECT FILE STRUCTURE:\n{file_plan_summary}\n\n"
+        "Write the complete PRD now."
     )
 
 
@@ -285,7 +333,11 @@ class CodeGeneratorAgent:
                 "Review the audit log and try again."
             )
 
-        logger.info("code_generator: file plan has %d files, %d commands", len(files), len(commands))
+        # Always include docs/PRD.md as the first file; remove any model-planned duplicate
+        files = [f for f in files if f.get("path", "").strip() != PRD_PATH]
+        files.insert(0, {"path": PRD_PATH, "description": "Product Requirements Document — full project specification"})
+
+        logger.info("code_generator: file plan has %d files (+PRD), %d commands", len(files) - 1, len(commands))
         if on_tool_result:
             await on_tool_result("plan_ready", {"file_count": len(files), "files": files, "commands": commands})
 
@@ -308,16 +360,29 @@ class CodeGeneratorAgent:
                     "total_files": len(files),
                 })
 
-            file_messages = [
-                Message(role="system", content=_file_system_prompt()),
-                Message(role="user", content=_file_user_prompt(
-                    idea, branch, resolution_summary, architecture_doc,
-                    file_plan_summary, written_paths, path, description,
-                )),
-            ]
+            if path == PRD_PATH:
+                file_messages = [
+                    Message(role="system", content=_prd_system_prompt()),
+                    Message(role="user", content=_prd_user_prompt(
+                        idea, branch, resolution_summary,
+                        architecture_doc, component_specs, roadmap_doc,
+                        file_plan_summary,
+                    )),
+                ]
+                stage_key = PRD_STAGE_KEY
+            else:
+                file_messages = [
+                    Message(role="system", content=_file_system_prompt()),
+                    Message(role="user", content=_file_user_prompt(
+                        idea, branch, resolution_summary, architecture_doc,
+                        file_plan_summary, written_paths, path, description,
+                    )),
+                ]
+                stage_key = FILE_STAGE_KEY
+
             try:
                 raw = await self._client.call_text(
-                    stage_key=FILE_STAGE_KEY,
+                    stage_key=stage_key,
                     messages=file_messages,
                     session=db,
                     idea_id=idea.id,

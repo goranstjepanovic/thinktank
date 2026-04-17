@@ -103,6 +103,15 @@ stages:
     num_ctx: 32768
     supports_tools: false
 
+  phase3_prd:  # Phase 3 — docs/PRD.md generation (all context → comprehensive Markdown PRD)
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.3
+    max_tokens: 4096
+    format: ""           # free-form Markdown
+    num_ctx: 32768
+    supports_tools: false
+
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
     model: "phi4:14b"
     backend: "ollama"
