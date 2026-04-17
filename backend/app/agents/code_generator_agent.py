@@ -28,6 +28,16 @@ PRD_STAGE_KEY  = "phase3_prd"
 PRD_PATH       = "docs/PRD.md"
 MAX_COMMAND_REPAIR_ROUNDS = 2
 
+# Extensions that cannot be generated as text — skip silently with a note
+_BINARY_EXTENSIONS = {
+    ".wasm", ".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".svg",
+    ".mp3", ".mp4", ".wav", ".ogg", ".webm",
+    ".zip", ".tar", ".gz", ".7z",
+    ".pdf", ".ttf", ".woff", ".woff2", ".eot",
+    ".pyc", ".pyo", ".class",
+}
+
 def _strip_code_fence(text: str) -> str:
     """Remove a leading markdown code fence from generated file content."""
     return strip_leading_markdown_fence(text)
@@ -91,6 +101,18 @@ def _plan_system_prompt() -> str:
         f"- Command environment: {shell_environment_context()}\n"
         "- Commands: non-interactive only; install dependencies then verify the build/tests\n"
         "- Commands must be one command per string. Do not chain commands with &&, ||, or ;\n"
+        "- NEVER include file or directory creation commands (mkdir, New-Item, touch, etc.) — "
+        "all files are already written before commands run; creation commands will overwrite them with empty files\n"
+        "- NEVER include server-start or long-running commands (npm start, npm run dev, python app.py, "
+        "uvicorn, flask run, vite, etc.) — these never exit and will be misread as failures; "
+        "only include commands that exit on their own (installs, builds, test runs)\n"
+        "- NEVER include compiled binary outputs in the file list (.wasm, .exe, .dll, .so, .pyc, .class, "
+        ".zip, .tar, etc.) — instead include the SOURCE files that compile into them (e.g. .rs, .c, .cpp "
+        "for WASM/native; .java for JVM) plus a build command that produces the binary\n"
+        "- NEVER include image/font/media assets (.png, .jpg, .gif, .mp3, .mp4, .ttf, .woff, etc.) — "
+        "reference CDN URLs or npm packages in source code instead\n"
+        "- You CAN and SHOULD write any text-based source file regardless of language: C, C++, Rust, Go, "
+        "Java, Assembly, GLSL, WGSL, or any other — these are source code, not binaries\n"
         "- Output ONLY the JSON object — no prose, no markdown fences\n"
     )
 
@@ -280,6 +302,15 @@ def _iteration_plan_system_prompt() -> str:
         "- The description must be specific about exactly what change is needed\n"
         f"- Command environment: {shell_environment_context()}\n"
         "- Commands must be one command per string. Do not chain commands with &&, ||, or ;\n"
+        "- NEVER include file or directory creation commands (mkdir, New-Item, touch, etc.) — "
+        "all files are already written before commands run; creation commands will overwrite them with empty files\n"
+        "- NEVER include server-start or long-running commands (npm start, npm run dev, python app.py, "
+        "uvicorn, flask run, vite, etc.) — these never exit and will be misread as failures; "
+        "only include commands that exit on their own (installs, builds, test runs)\n"
+        "- NEVER include compiled binary outputs (.wasm, .exe, .dll, .so, .pyc, .zip, etc.) — "
+        "include the SOURCE files instead (.rs, .c, .cpp, .java, etc.) and a build command\n"
+        "- NEVER include image/font/media assets (.png, .jpg, .ttf, .woff, .mp3, etc.)\n"
+        "- You CAN and SHOULD write any text-based source file regardless of language (C, Rust, Go, GLSL, etc.)\n"
         "- If no files need to change, return {\"message\":\"No files need to change.\",\"files\":[],\"commands\":[]}\n"
         "- Never answer with prose after using tools; always return the JSON object\n"
     )
@@ -317,7 +348,8 @@ def _format_file_plan(files: list[dict]) -> str:
 
 
 def _command_failed(result: ShellResult) -> bool:
-    return result.exit_code != 0 or result.timed_out
+    # Timed-out commands are likely long-running servers (never exit by design) — don't treat as failures
+    return result.exit_code != 0 and not result.timed_out
 
 
 def _format_command_results(results: list[tuple[str, ShellResult]]) -> str:
@@ -694,6 +726,17 @@ class CodeGeneratorAgent:
             if not path:
                 continue
 
+            from pathlib import Path as _Path
+            if _Path(path).suffix.lower() in _BINARY_EXTENSIONS:
+                logger.info("code_generator: skipping binary file %s", path)
+                if on_tool_result:
+                    await on_tool_result("file_edit", {
+                        "path": path, "operation": "skip_binary",
+                        "success": False, "size_bytes": 0,
+                        "detail": f"Skipped: binary files ({_Path(path).suffix}) cannot be generated as text",
+                    })
+                continue
+
             logger.info("code_generator: generating file %d/%d: %s", i + 1, len(files), path)
             if on_tool_result:
                 await on_tool_result("pass_started", {
@@ -847,6 +890,16 @@ class CodeGeneratorAgent:
             path = file_spec.get("path", "").strip()
             description = file_spec.get("description", "")
             if not path:
+                continue
+
+            if Path(path).suffix.lower() in _BINARY_EXTENSIONS:
+                logger.info("code_generator: skipping binary file %s", path)
+                if on_tool_result:
+                    await on_tool_result("file_edit", {
+                        "path": path, "operation": "skip_binary",
+                        "success": False, "size_bytes": 0,
+                        "detail": f"Skipped: binary files ({Path(path).suffix}) cannot be generated as text",
+                    })
                 continue
 
             if on_tool_result:

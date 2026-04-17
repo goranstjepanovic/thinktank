@@ -269,13 +269,17 @@ GET_SHELL_OUTPUT_TOOL = ToolDefinition(
 
 STOP_SHELL_PROCESS_TOOL = ToolDefinition(
     name="stop_shell_process",
-    description="Kill a background process started with run_shell_background.",
+    description=(
+        "Kill a background process started with run_shell_background. "
+        "Provide either the handle returned by run_shell_background OR the pid returned in the same response. "
+        "Using pid is useful when you no longer have the handle (e.g. in a follow-up turn)."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "handle": {"type": "string", "description": "The handle returned by run_shell_background."},
+            "pid": {"type": "integer", "description": "The OS process ID returned by run_shell_background. Use this if you no longer have the handle."},
         },
-        "required": ["handle"],
     },
 )
 
@@ -736,17 +740,18 @@ class InferenceClient:
                             from app.tools.shell_runner import background_process_manager
                             command = tc.arguments.get("command", "")
                             logger.info("tools stage=%-20s run_shell_background command=%r", stage_key, command)
-                            handle, error = await background_process_manager.start(command, allowed_file_dir)
+                            handle, pid, error = await background_process_manager.start(command, allowed_file_dir)
                             if error:
                                 result_dict = {"error": error}
                             else:
                                 await asyncio.sleep(1.5)  # brief pause so startup lines can accumulate
                                 output = await background_process_manager.get_output(handle, tail=30)
-                                result_dict = {"handle": handle, "started": True, **output}
+                                result_dict = {"handle": handle, "pid": pid, "started": True, **output}
                                 if on_tool_result:
                                     await on_tool_result("run_shell_background", {
                                         "command": command,
                                         "handle": handle,
+                                        "pid": pid,
                                         "lines": output.get("lines", []),
                                         "is_running": output.get("is_running", True),
                                     })
@@ -769,17 +774,19 @@ class InferenceClient:
                             result_dict = {"error": "stop_shell_process not available in this context"}
                         else:
                             from app.tools.shell_runner import background_process_manager
-                            handle = tc.arguments.get("handle", "")
-                            result_dict = await background_process_manager.stop(handle)
-                            logger.info("tools stage=%-20s stop_shell_process handle=%r", stage_key, handle)
+                            handle = tc.arguments.get("handle") or None
+                            pid = tc.arguments.get("pid")
+                            pid = int(pid) if pid is not None else None
+                            result_dict = await background_process_manager.stop(handle=handle, pid=pid)
+                            logger.info("tools stage=%-20s stop_shell_process handle=%r pid=%r", stage_key, handle, pid)
                             if on_tool_result:
-                                await on_tool_result("run_shell", {
-                                    "command": f"[stop] {handle}",
-                                    "exit_code": result_dict.get("exit_code", 0),
-                                    "stdout": result_dict.get("message", "Process stopped"),
-                                    "stderr": "",
-                                    "timed_out": False,
-                                    "duration_ms": 0,
+                                label = handle or f"pid:{pid}"
+                                await on_tool_result("shell_stop", {
+                                    "handle": label,
+                                    "pid": result_dict.get("pid", pid),
+                                    "stopped": result_dict.get("stopped", False),
+                                    "exit_code": result_dict.get("exit_code"),
+                                    "message": result_dict.get("message", result_dict.get("error", "")),
                                 })
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 

@@ -97,11 +97,11 @@ class BackgroundProcessManager:
         exit_code = await bp.proc.wait()
         bp.mark_done(exit_code)
 
-    async def start(self, command: str, working_dir: str) -> tuple[str, str]:
-        """Start command in the background. Returns (handle, error). error is '' on success."""
+    async def start(self, command: str, working_dir: str) -> tuple[str, int, str]:
+        """Start command in the background. Returns (handle, pid, error). error is '' on success."""
         blocked = _blocked_command_error(command, working_dir)
         if blocked:
-            return ("", blocked)
+            return ("", 0, blocked)
 
         Path(working_dir).mkdir(parents=True, exist_ok=True)
         argv = _shell_args(command)
@@ -113,13 +113,13 @@ class BackgroundProcessManager:
                 cwd=working_dir,
             )
         except Exception as exc:
-            return ("", f"Failed to launch: {exc}")
+            return ("", 0, f"Failed to launch: {exc}")
 
         handle = f"proc_{uuid.uuid4().hex[:8]}"
         bp = BackgroundProcess(handle=handle, command=command, working_dir=working_dir, proc=proc)
         bp._reader_task = asyncio.create_task(self._read_streams(bp))
         self._procs[handle] = bp
-        return (handle, "")
+        return (handle, proc.pid, "")
 
     async def get_output(self, handle: str, tail: int = 50) -> dict:
         bp = self._procs.get(handle)
@@ -128,6 +128,7 @@ class BackgroundProcessManager:
         await asyncio.sleep(0)  # yield so reader task can run
         return {
             "handle": handle,
+            "pid": bp.proc.pid,
             "command": bp.command,
             "is_running": bp.is_running,
             "exit_code": bp._exit_code,
@@ -135,12 +136,30 @@ class BackgroundProcessManager:
             "total_lines_captured": len(bp._lines),
         }
 
-    async def stop(self, handle: str) -> dict:
-        bp = self._procs.get(handle)
-        if bp is None:
-            return {"error": f"Unknown handle '{handle}'"}
+    def _find_by_pid(self, pid: int) -> "BackgroundProcess | None":
+        for bp in self._procs.values():
+            if bp.proc.pid == pid:
+                return bp
+        return None
+
+    async def stop(self, handle: str | None = None, pid: int | None = None) -> dict:
+        if pid is not None:
+            bp = self._find_by_pid(pid)
+            if bp is None:
+                # Fall back to OS-level kill if we don't track it
+                import os, signal
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    return {"pid": pid, "stopped": True, "message": "Sent SIGTERM (process not tracked by handle)"}
+                except Exception as exc:
+                    return {"error": f"Kill by PID failed: {exc}"}
+        else:
+            bp = self._procs.get(handle or "")
+            if bp is None:
+                return {"error": f"Unknown handle '{handle}'"}
+
         if bp._done:
-            return {"handle": handle, "stopped": True, "exit_code": bp._exit_code, "message": "Already stopped"}
+            return {"handle": bp.handle, "pid": bp.proc.pid, "stopped": True, "exit_code": bp._exit_code, "message": "Already stopped"}
         try:
             bp.proc.kill()
         except Exception as exc:
@@ -150,7 +169,7 @@ class BackgroundProcessManager:
         except asyncio.TimeoutError:
             pass
         bp.mark_done(bp.proc.returncode)
-        return {"handle": handle, "stopped": True, "exit_code": bp._exit_code}
+        return {"handle": bp.handle, "pid": bp.proc.pid, "stopped": True, "exit_code": bp._exit_code}
 
     def cleanup_dir(self, working_dir: str) -> None:
         """Kill all background processes for a given project directory."""

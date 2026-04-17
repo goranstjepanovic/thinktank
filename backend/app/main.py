@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # it up.  Uvicorn overrides the root logger config; we attach a stream handler
 # directly to the root so application logs always reach the console.
 # ---------------------------------------------------------------------------
-_handler = logging.StreamHandler(sys.stdout)
+_stream = open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)
+_handler = logging.StreamHandler(_stream)
 _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
 logging.root.addHandler(_handler)
 logging.root.setLevel(logging.INFO)

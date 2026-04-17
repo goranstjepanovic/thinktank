@@ -76,6 +76,7 @@ type ActivityEntry =
   | { kind: 'file'; id: number; path: string; sizeBytes: number; success: boolean }
   | { kind: 'file_failed'; id: number; path: string; detail: string }
   | { kind: 'shell'; id: number; command: string; exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number }
+  | { kind: 'shell_stop'; id: number; handle: string; pid: number | null; stopped: boolean; message: string }
   | { kind: 'error'; id: number; message: string }
   | { kind: 'complete'; id: number; summary: string; outputDir: string }
   | { kind: 'user_msg'; id: number; messageId: string; content: string }
@@ -799,6 +800,16 @@ export function Phase3Implementation() {
             });
             break;
 
+          case 'phase3.shell_stop':
+            addEntry({
+              kind: 'shell_stop', id: nextId(),
+              handle: event.payload.handle as string,
+              pid: event.payload.pid as number | null,
+              stopped: event.payload.stopped as boolean,
+              message: event.payload.message as string,
+            });
+            break;
+
           case 'phase3.error':
             setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
             addEntry({ kind: 'error', id: nextId(), message: event.payload.error as string });
@@ -809,7 +820,7 @@ export function Phase3Implementation() {
             setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
             api.getPhase3(id!).then((s) => {
               setSession(s);
-              if (s.summary) {
+              if (s.summary && !event.payload.is_iteration) {
                 addEntry({ kind: 'complete', id: nextId(), summary: s.summary, outputDir: s.output_dir ?? '' });
               }
             }).catch(() => {});
@@ -823,7 +834,8 @@ export function Phase3Implementation() {
             if (role === 'assistant') {
               setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
               addEntry({ kind: 'assistant_msg', id: nextId(), messageId, content });
-              api.getPhase3(id!).then(setSession).catch(() => {});
+              // Don't refetch session here — phase3.complete will do it and a stale
+              // fetch resolving after complete would overwrite COMPLETE → RUNNING
             }
             break;
           }
@@ -1045,6 +1057,11 @@ export function Phase3Implementation() {
                       stdout={entry.stdout} stderr={entry.stderr}
                       timedOut={entry.timedOut} durationMs={entry.durationMs}
                     />
+                  );
+                  case 'shell_stop': return (
+                    <div key={entry.id} style={{ fontSize: 12, color: entry.stopped ? 'var(--green)' : 'var(--red)', padding: '2px 0' }}>
+                      {entry.stopped ? '■ stopped' : '✗ stop failed'} {entry.handle}{entry.pid ? ` (pid ${entry.pid})` : ''}{entry.message ? ` — ${entry.message}` : ''}
+                    </div>
                   );
                   case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
                   case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;

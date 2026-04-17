@@ -105,8 +105,11 @@ def phase3_command_executed(idea_id: str, session_id: str, command: str, exit_co
 def phase3_error(idea_id: str, session_id: str, error: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.error", idea_id=idea_id, payload={"session_id": session_id, "error": error})
 
-def phase3_complete(idea_id: str, session_id: str, summary: str, output_dir: str) -> PipelineEvent:
-    return PipelineEvent(event_type="phase3.complete", idea_id=idea_id, payload={"session_id": session_id, "summary": summary, "output_dir": output_dir})
+def phase3_complete(idea_id: str, session_id: str, summary: str, output_dir: str, is_iteration: bool = False) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.complete", idea_id=idea_id, payload={"session_id": session_id, "summary": summary, "output_dir": output_dir, "is_iteration": is_iteration})
+
+def phase3_shell_stop(idea_id: str, session_id: str, handle: str, pid: int | None, stopped: bool, exit_code: int | None, message: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.shell_stop", idea_id=idea_id, payload={"session_id": session_id, "handle": handle, "pid": pid, "stopped": stopped, "exit_code": exit_code, "message": message})
 
 def phase3_message(idea_id: str, session_id: str, message_id: str, role: str, content: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.message", idea_id=idea_id, payload={"session_id": session_id, "message_id": message_id, "role": role, "content": content})

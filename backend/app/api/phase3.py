@@ -208,6 +208,15 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                         payload_json=json.dumps(payload),
                     ))
                     await adb.commit()
+            elif tool_name == "shell_stop":
+                await event_bus.publish(ev.phase3_shell_stop(
+                    idea_id, session_id,
+                    handle=result.get("handle", ""),
+                    pid=result.get("pid"),
+                    stopped=result.get("stopped", False),
+                    exit_code=result.get("exit_code"),
+                    message=result.get("message", ""),
+                ))
 
         agent = CodeGeneratorAgent(get_inference_client())
         try:
@@ -436,6 +445,15 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
                 async with AsyncSessionLocal() as adb:
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="command_executed", payload_json=json.dumps(payload)))
                     await adb.commit()
+            elif tool_name == "shell_stop":
+                await event_bus.publish(ev.phase3_shell_stop(
+                    idea_id, session_id,
+                    handle=result.get("handle", ""),
+                    pid=result.get("pid"),
+                    stopped=result.get("stopped", False),
+                    exit_code=result.get("exit_code"),
+                    message=result.get("message", ""),
+                ))
 
         # Load recent chat history so the agent can see prior corrections
         from app.inference.base import Message as InferenceMessage
@@ -475,7 +493,9 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
             s = await adb.get(Phase3Session, session_id)
             if s:
                 s.status = "COMPLETE"
+                s.summary = summary
                 await adb.commit()
+                await event_bus.publish(ev.phase3_complete(idea_id, session_id, summary=summary, output_dir=s.output_dir or "", is_iteration=True))
 
         logger.info("Phase3 iteration complete for session %s", session_id[:8])
 
