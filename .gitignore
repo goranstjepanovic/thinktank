@@ -12,8 +12,7 @@ build/
 .ruff_cache/
 
 # Data (local only)
-backend/data/thinktank.db
-backend/data/documents/
+backend/data/*
 
 # Environment
 .env

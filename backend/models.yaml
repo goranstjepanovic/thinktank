@@ -121,6 +121,15 @@ stages:
     num_ctx: 65536
     supports_tools: false
 
+  phase3_explore:  # Phase 3 iteration planning with file exploration tools
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 2048
+    format: "json"
+    num_ctx: 32768
+    supports_tools: true
+
 resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2

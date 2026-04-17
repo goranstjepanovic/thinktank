@@ -111,6 +111,71 @@ SHELL_TOOL = ToolDefinition(
     },
 )
 
+LIST_FILES_TOOL = ToolDefinition(
+    name="list_files",
+    description=(
+        "List the files and directories inside a project directory. "
+        "Use this to understand the project layout before reading specific files. "
+        "Pass an empty path or '.' to list the project root."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Relative path within the project to list (e.g. 'src', 'backend/app'). Use '' or '.' for root.",
+            },
+        },
+        "required": [],
+    },
+)
+
+READ_FILE_TOOL = ToolDefinition(
+    name="read_file",
+    description=(
+        "Read the contents of a file in the project directory. "
+        "Use this to inspect a specific file before deciding what to change. "
+        "Large files are automatically truncated."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Relative path to the file (e.g. 'backend/app/main.py').",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+GREP_FILES_TOOL = ToolDefinition(
+    name="grep_files",
+    description=(
+        "Search for a text pattern across all project files. "
+        "Returns matching lines with file paths and line numbers. "
+        "Use this to locate functions, imports, variable names, or any specific string across the codebase."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "The text or substring to search for (case-sensitive).",
+            },
+            "path": {
+                "type": "string",
+                "description": "Relative directory to search within. Use '' or '.' to search the whole project.",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Optional filename glob to restrict search (e.g. '*.py', '*.ts'). Leave empty to search all text files.",
+            },
+        },
+        "required": ["pattern"],
+    },
+)
+
 FILE_EDIT_TOOL = ToolDefinition(
     name="file_edit",
     description=(
@@ -344,6 +409,7 @@ class InferenceClient:
         call_index: int = 0,
         max_tool_rounds: int = 4,
         allowed_file_dir: str | None = None,
+        explore_only: bool = False,
         on_tool_result=None,  # Optional[Callable[[str, dict], Awaitable[None]]]
         return_json: bool = True,
     ) -> dict | str:
@@ -383,11 +449,14 @@ class InferenceClient:
             )
 
         # web_search is always available — uses DuckDuckGo by default, Tavily if key is set
-        # file_edit and run_shell are available only when an allowed_file_dir is provided (Phase 3)
+        # file exploration tools (list/read/grep) are available when allowed_file_dir is set + explore_only
+        # file_edit and run_shell are available when allowed_file_dir is set and NOT explore_only
         available_tools: list[ToolDefinition] = [RUN_PYTHON_TOOL, WEB_SEARCH_TOOL]
         if allowed_file_dir:
-            available_tools.append(FILE_EDIT_TOOL)
-            available_tools.append(SHELL_TOOL)
+            if explore_only:
+                available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
+            else:
+                available_tools += [FILE_EDIT_TOOL, SHELL_TOOL]
 
         logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%d",
                     stage_key, stage_cfg.model, [t.name for t in available_tools], max_tool_rounds)
@@ -595,6 +664,128 @@ class InferenceClient:
                                     "timed_out": shell_result.timed_out,
                                     "duration_ms": shell_result.duration_ms,
                                 })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "list_files":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "list_files not available in this context"}
+                        else:
+                            import os as _os
+                            from pathlib import Path as _Path
+                            _base = _Path(allowed_file_dir).resolve()
+                            _rel = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _target = (_base / _rel).resolve() if _rel and _rel != "." else _base
+                            _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+                            if not str(_target).startswith(str(_base)):
+                                result_dict = {"error": "path outside project directory"}
+                            elif not _target.exists():
+                                result_dict = {"error": f"path not found: {_rel or '.'}"}
+                            else:
+                                entries = []
+                                try:
+                                    for entry in sorted(_target.iterdir()):
+                                        if entry.name in _SKIP:
+                                            continue
+                                        entries.append({
+                                            "name": entry.name,
+                                            "type": "dir" if entry.is_dir() else "file",
+                                            "path": str(entry.relative_to(_base)).replace("\\", "/"),
+                                        })
+                                except Exception as _e:
+                                    entries = []
+                                result_dict = {"path": _rel or ".", "entries": entries}
+                            logger.info("tools stage=%-20s list_files path=%r → %d entries",
+                                        stage_key, _rel or ".", len(result_dict.get("entries", [])))
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "read_file":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "read_file not available in this context"}
+                        else:
+                            from pathlib import Path as _Path
+                            _MAX_READ = 12_000
+                            _base = _Path(allowed_file_dir).resolve()
+                            _rel = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _full = (_base / _rel).resolve()
+                            if not str(_full).startswith(str(_base)):
+                                result_dict = {"error": "path outside project directory"}
+                            elif not _full.exists():
+                                result_dict = {"error": f"file not found: {_rel}"}
+                            elif not _full.is_file():
+                                result_dict = {"error": f"not a file: {_rel}"}
+                            else:
+                                try:
+                                    raw_bytes = _full.read_bytes()
+                                    if b"\x00" in raw_bytes[:512]:
+                                        result_dict = {"error": "binary file — cannot read as text"}
+                                    else:
+                                        text = raw_bytes[:_MAX_READ].decode("utf-8", errors="replace")
+                                        truncated = len(raw_bytes) > _MAX_READ
+                                        result_dict = {
+                                            "path": _rel,
+                                            "content": text + ("\n... (truncated)" if truncated else ""),
+                                            "size_bytes": len(raw_bytes),
+                                            "truncated": truncated,
+                                        }
+                                except Exception as _e:
+                                    result_dict = {"error": f"failed to read: {_e}"}
+                            logger.info("tools stage=%-20s read_file path=%r", stage_key, _rel)
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "grep_files":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "grep_files not available in this context"}
+                        else:
+                            import fnmatch as _fnmatch
+                            from pathlib import Path as _Path
+                            _base = _Path(allowed_file_dir).resolve()
+                            _pattern = tc.arguments.get("pattern") or ""
+                            _search_dir = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _glob = (tc.arguments.get("file_glob") or "").strip()
+                            _target = (_base / _search_dir).resolve() if _search_dir and _search_dir != "." else _base
+                            _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+                            _MAX_RESULTS = 40
+                            matches = []
+                            if not _pattern:
+                                result_dict = {"error": "pattern is required"}
+                            elif not str(_target).startswith(str(_base)):
+                                result_dict = {"error": "path outside project directory"}
+                            else:
+                                try:
+                                    for _p in sorted(_target.rglob("*")):
+                                        if not _p.is_file():
+                                            continue
+                                        if any(part in _SKIP for part in _p.parts):
+                                            continue
+                                        if _glob and not _fnmatch.fnmatch(_p.name, _glob):
+                                            continue
+                                        if len(matches) >= _MAX_RESULTS:
+                                            break
+                                        try:
+                                            raw_bytes = _p.read_bytes()
+                                            if b"\x00" in raw_bytes[:512]:
+                                                continue
+                                            text = raw_bytes.decode("utf-8", errors="replace")
+                                        except Exception:
+                                            continue
+                                        for ln, line in enumerate(text.splitlines(), 1):
+                                            if _pattern in line:
+                                                matches.append({
+                                                    "file": str(_p.relative_to(_base)).replace("\\", "/"),
+                                                    "line": ln,
+                                                    "text": line.strip(),
+                                                })
+                                                if len(matches) >= _MAX_RESULTS:
+                                                    break
+                                    result_dict = {
+                                        "pattern": _pattern,
+                                        "matches": matches,
+                                        "truncated": len(matches) >= _MAX_RESULTS,
+                                    }
+                                except Exception as _e:
+                                    result_dict = {"error": f"grep failed: {_e}"}
+                            logger.info("tools stage=%-20s grep_files pattern=%r → %d matches",
+                                        stage_key, _pattern, len(result_dict.get("matches", [])))
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     else:

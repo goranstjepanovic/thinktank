@@ -133,19 +133,77 @@ def _file_user_prompt(
     )
 
 
+_MAX_FILE_BYTES = 10_000      # max bytes included per file
+_MAX_TOTAL_BYTES = 80_000    # max total file content in the prompt
+
+
+def _read_project_files(output_dir: str) -> dict[str, str]:
+    """
+    Read project files and return {rel_path: content}.
+    Files over _MAX_FILE_BYTES are truncated; total is capped at _MAX_TOTAL_BYTES.
+    Binary files are skipped.
+    """
+    base = Path(output_dir)
+    if not base.is_dir():
+        return {}
+
+    _SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".nuxt"}
+    contents: dict[str, str] = {}
+    total = 0
+
+    for p in sorted(base.rglob("*")):
+        if not p.is_file():
+            continue
+        # Skip directories we never want to read
+        if any(part in _SKIP_DIRS for part in p.parts):
+            continue
+        if total >= _MAX_TOTAL_BYTES:
+            break
+        rel = str(p.relative_to(base)).replace("\\", "/")
+        try:
+            raw = p.read_bytes()
+            # Skip binary files
+            if b"\x00" in raw[:512]:
+                continue
+            text = raw[:_MAX_FILE_BYTES].decode("utf-8", errors="replace")
+            truncated = len(raw) > _MAX_FILE_BYTES
+            contents[rel] = text + ("\n... (truncated)" if truncated else "")
+            total += len(text)
+        except Exception:
+            continue
+
+    return contents
+
+
+def _format_file_contents(contents: dict[str, str]) -> str:
+    if not contents:
+        return "  (no files read)"
+    parts = []
+    for path, text in contents.items():
+        parts.append(f"--- {path} ---\n{text}")
+    return "\n\n".join(parts)
+
+
 def _iteration_plan_system_prompt() -> str:
     return (
         "You are an expert software developer. Given an existing project and a user change request, "
-        "produce a list of ONLY the files that need to be created or modified.\n\n"
-        "Output a JSON object:\n"
+        "use the available tools to explore the project structure, read relevant files, and search for "
+        "specific code. Once you understand what needs to change, output a JSON plan.\n\n"
+        "## Exploration workflow\n\n"
+        "1. Call `list_files` with path='' to see the project root layout\n"
+        "2. Call `list_files` on subdirectories you need to explore\n"
+        "3. Call `grep_files` to find the exact file containing a function, import, or variable\n"
+        "4. Call `read_file` to inspect the files that need to change\n"
+        "5. Once you have enough context, output the JSON plan\n\n"
+        "## Output format\n\n"
+        "Output a JSON object — no prose, no markdown fences:\n"
         '{"files": [{"path": "relative/path", "description": "what to do in this file"}], '
-        '"commands": ["optional post-change command"]}\n\n'
+        '"commands": ["optional post-change shell command"]}\n\n'
         "Rules:\n"
         "- Only include files that actually need to change — do NOT list unchanged files\n"
-        "- New files must follow the existing project folder structure "
-        "(e.g. place new backend code in backend/, frontend code in frontend/)\n"
+        "- New files must follow the existing project folder structure\n"
         "- If creating a new file, state 'CREATE:' at the start of its description\n"
-        "- Output ONLY the JSON object — no prose, no markdown fences\n"
+        "- The description must be specific about exactly what change is needed\n"
     )
 
 
@@ -153,18 +211,27 @@ def _iteration_plan_user_prompt(
     idea: Idea,
     branch: SolutionBranch,
     user_request: str,
-    existing_files: list[str],
     previous_summary: str,
 ) -> str:
-    file_tree = "\n".join(f"  {p}" for p in existing_files) if existing_files else "  (none)"
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
         f"PREVIOUS BUILD SUMMARY:\n{previous_summary}\n\n"
-        f"EXISTING FILES:\n{file_tree}\n\n"
         f"USER REQUEST:\n{user_request}\n\n"
-        "List only the files that need to be created or modified to fulfil this request."
+        "Use the available tools to explore the project, locate the relevant files, and then "
+        "output only the files that need to be created or modified to fulfil the request."
     )
+
+
+def _normalize_files(raw: list) -> list[dict]:
+    """Model sometimes returns strings instead of {path, description} dicts — normalise both."""
+    result = []
+    for item in raw:
+        if isinstance(item, str):
+            result.append({"path": item.strip(), "description": ""})
+        elif isinstance(item, dict):
+            result.append({"path": str(item.get("path", "") or "").strip(), "description": str(item.get("description", "") or "")})
+    return [f for f in result if f["path"]]
 
 
 def _format_file_plan(files: list[dict]) -> str:
@@ -208,8 +275,8 @@ class CodeGeneratorAgent:
             call_index=0,
         )
 
-        files: list[dict] = plan_data.get("files", [])
-        commands: list[str] = plan_data.get("commands", [])
+        files: list[dict] = _normalize_files(plan_data.get("files", []))
+        commands: list[str] = [str(c) for c in plan_data.get("commands", []) if c]
 
         if not files:
             logger.warning("code_generator: file plan produced no files")
@@ -329,37 +396,32 @@ class CodeGeneratorAgent:
         Returns a plain-text summary of what changed.
         """
         output_dir = session.output_dir or ""
-
-        # Collect existing file paths for context
-        existing_files: list[str] = []
-        if output_dir and Path(output_dir).is_dir():
-            base = Path(output_dir)
-            existing_files = sorted(
-                str(p.relative_to(base)).replace("\\", "/")
-                for p in base.rglob("*") if p.is_file()
-            )
-
         previous_summary = session.summary or "No previous summary."
 
-        # Pass 0: plan which files to change
+        # Pass 0: explore project with tools, then plan which files to change
         plan_messages = [
             Message(role="system", content=_iteration_plan_system_prompt()),
             Message(role="user", content=_iteration_plan_user_prompt(
-                idea, branch, user_request, existing_files, previous_summary,
+                idea, branch, user_request, previous_summary,
             )),
         ]
-        plan_data = await self._client.call(
-            stage_key="phase3_iteration",
+        plan_data = await self._client.call_with_tools(
+            stage_key="phase3_explore",
             messages=plan_messages,
             session=db,
             idea_id=idea.id,
             branch_id=branch.id,
-            call_type="PHASE3_ITER",
-            call_index=0,
+            allowed_file_dir=output_dir,
+            explore_only=True,
+            max_tool_rounds=10,
+            return_json=True,
         )
 
-        files: list[dict] = plan_data.get("files", [])
-        commands: list[str] = plan_data.get("commands", [])
+        if not isinstance(plan_data, dict):
+            logger.warning("iteration: explore stage returned non-dict: %s", type(plan_data))
+            plan_data = {}
+        files: list[dict] = _normalize_files(plan_data.get("files", []))
+        commands: list[str] = [str(c) for c in plan_data.get("commands", []) if c]
 
         if not files:
             return "No files needed to change for this request."
@@ -385,13 +447,29 @@ class CodeGeneratorAgent:
                     "total_files": len(files),
                 })
 
+            existing_content = ""
+            try:
+                _ep = Path(output_dir) / path
+                if _ep.exists() and _ep.is_file():
+                    _raw = _ep.read_bytes()
+                    if b"\x00" not in _raw[:512]:
+                        existing_content = _raw[:12_000].decode("utf-8", errors="replace")
+                        if len(_raw) > 12_000:
+                            existing_content += "\n... (truncated)"
+            except Exception:
+                pass
+            existing_block = (
+                f"CURRENT CONTENT OF {path}:\n{existing_content}\n\n"
+                if existing_content else ""
+            )
             file_messages = [
                 Message(role="system", content=_file_system_prompt()),
-                Message(role="user", content=_file_user_prompt(
-                    idea, branch,
-                    f"User request: {user_request}",
-                    f"Existing files: {', '.join(existing_files[:20])}",
-                    file_plan_summary, written_paths, path, description,
+                Message(role="user", content=(
+                    f"PROJECT: {idea.name}\n\n"
+                    f"USER REQUEST: {user_request}\n\n"
+                    f"{existing_block}"
+                    f"CHANGE REQUIRED: {description}\n\n"
+                    f"Write the complete updated content of `{path}` now."
                 )),
             ]
             try:
