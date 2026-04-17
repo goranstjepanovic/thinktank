@@ -174,6 +174,21 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                         payload_json=json.dumps(payload),
                     ))
                     await adb.commit()
+            elif tool_name == "file_edit" and not result.get("success"):
+                payload = {
+                    "path": result.get("path", ""),
+                    "detail": result.get("detail", "unknown error"),
+                }
+                await event_bus.publish(
+                    ev.phase3_file_failed(idea_id, session_id, **payload)
+                )
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(
+                        session_id=session_id,
+                        event_type="file_failed",
+                        payload_json=json.dumps(payload),
+                    ))
+                    await adb.commit()
             elif tool_name == "run_shell":
                 payload = {
                     "command": result.get("command", ""),

@@ -56,7 +56,7 @@
 ### High Priority
 1. **End-to-end validation needed** — Full pipeline (Phase 1 → 2 → 3) not yet run on a real project. Agent reliability fixes implemented but not validated in practice with the Gemma4 model.
 
-2. **No failed-file indicator in UI** — If a file fails to write, there is no visual indicator in the activity log (only the `✓` count in the summary differs from plan count).
+2. ~~**No failed-file indicator in UI**~~ ✅ Fixed — `file_failed` event emitted from backend and displayed as red ✗ with error detail in activity log.
 
 3. **plan stage tools untested** — `phase3_plan` now uses `call_with_tools` with web_search enabled. phi4:14b tool-calling behaviour with the new prompt needs real-world validation.
 
@@ -76,9 +76,9 @@ Backend: Phase3Message model, POST /ideas/{id}/phase3/messages, run_iteration() 
 - [ ] Group activity log by pass (Pass 1: Scaffolding, Pass 2: Core modules, etc.)
 - [ ] After FAILED with empty directory, show audit trail link so user can see what the model actually output
 - [ ] File browser: syntax highlighting (prism-react-renderer or highlight.js)
-- [ ] File browser: copy file content button
-- [ ] File browser: open in VS Code button (`vscode://file/path`)
-- [ ] Show total project size in completion panel
+- [x] File browser: copy file content button ✅
+- [x] File browser: open in VS Code button (`vscode://file/path`) ✅
+- [x] Show total project size (file count + total KB/MB in file tree sidebar) ✅
 
 ### 7. Phase 3: Agent — remaining improvements
 

@@ -24,6 +24,7 @@ type ActivityEntry =
   | { kind: 'plan_ready'; id: number; fileCount: number; message: string }
   | { kind: 'writing'; id: number; filePath: string; fileIndex: number; totalFiles: number }
   | { kind: 'file'; id: number; path: string; sizeBytes: number; success: boolean }
+  | { kind: 'file_failed'; id: number; path: string; detail: string }
   | { kind: 'shell'; id: number; command: string; exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number }
   | { kind: 'error'; id: number; message: string }
   | { kind: 'complete'; id: number; summary: string; outputDir: string }
@@ -99,6 +100,16 @@ function FileEntry({ path, sizeBytes, success }: { path: string; sizeBytes: numb
       </span>
       <code style={{ color: 'var(--blue)', fontFamily: 'monospace', flex: 1, wordBreak: 'break-all' }}>{path}</code>
       {kb && <span style={{ color: 'var(--text2)', flexShrink: 0 }}>{kb}</span>}
+    </div>
+  );
+}
+
+function FileFailedEntry({ path, detail }: { path: string; detail: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', fontSize: 12 }}>
+      <span style={{ color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>✗</span>
+      <code style={{ color: 'var(--red)', fontFamily: 'monospace', flex: 1, wordBreak: 'break-all' }}>{path}</code>
+      {detail && <span style={{ color: 'var(--text2)', flexShrink: 0, fontStyle: 'italic' }}>{detail}</span>}
     </div>
   );
 }
@@ -379,6 +390,7 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
 
 function FileBrowser({ ideaId }: { ideaId: string }) {
   const [files, setFiles] = useState<Phase3FileEntry[]>([]);
+  const [outputDir, setOutputDir] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -386,11 +398,13 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
   const [loading, setLoading] = useState(true);
   const [loadingFile, setLoadingFile] = useState(false);
   const [truncated, setTruncated] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     api.listPhase3Files(ideaId)
       .then((data) => {
         setFiles(data.files);
+        setOutputDir(data.output_dir ?? null);
         const t = buildTree(data.files);
         setTree(t);
         // All folders collapsed by default
@@ -436,6 +450,23 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
     }
   };
 
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  const totalSizeLabel = totalSize >= 1024 * 1024
+    ? `${(totalSize / (1024 * 1024)).toFixed(1)} MB`
+    : `${(totalSize / 1024).toFixed(1)} KB`;
+
+  const handleCopy = () => {
+    if (!fileContent) return;
+    navigator.clipboard.writeText(fileContent).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  const vsCodeHref = outputDir && selectedPath
+    ? `vscode://file/${outputDir.replace(/\\/g, '/')}/${selectedPath}`
+    : null;
+
   if (loading) return <p style={{ color: 'var(--text2)', padding: '12px 0', fontSize: 13 }}>Loading files…</p>;
 
   if (files.length === 0) {
@@ -459,7 +490,7 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
         padding: '8px 0',
       }}>
         <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '4px 14px 8px' }}>
-          {files.length} file{files.length !== 1 ? 's' : ''}
+          {files.length} file{files.length !== 1 ? 's' : ''} · {totalSizeLabel}
         </p>
         {tree.map(node => (
           <TreeNodeRow key={node.fullPath} node={node} depth={0}
@@ -481,11 +512,39 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
           <code style={{ fontSize: 12, color: 'var(--text2)', fontFamily: 'monospace' }}>
             {selectedPath ?? '—'}
           </code>
-          {selectedFile && (
-            <span style={{ fontSize: 11, color: 'var(--text2)' }}>
-              {(selectedFile.size / 1024).toFixed(1)} KB
-            </span>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {selectedFile && (
+              <span style={{ fontSize: 11, color: 'var(--text2)' }}>
+                {(selectedFile.size / 1024).toFixed(1)} KB
+              </span>
+            )}
+            {vsCodeHref && (
+              <a
+                href={vsCodeHref}
+                title="Open in VS Code"
+                style={{
+                  fontSize: 11, color: 'var(--text2)', textDecoration: 'none',
+                  padding: '2px 7px', borderRadius: 4,
+                  border: '1px solid var(--border)', lineHeight: '18px',
+                }}
+              >
+                VS Code
+              </a>
+            )}
+            <button
+              onClick={handleCopy}
+              disabled={!fileContent || loadingFile}
+              title="Copy file content"
+              style={{
+                fontSize: 11, color: copied ? 'var(--green)' : 'var(--text2)',
+                padding: '2px 7px', borderRadius: 4,
+                border: '1px solid var(--border)', background: 'none',
+                cursor: fileContent ? 'pointer' : 'default', lineHeight: '18px',
+              }}
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
         </div>
 
         {/* Content area */}
@@ -584,6 +643,8 @@ export function Phase3Implementation() {
             return [];
           } else if (e.event_type === 'file_written') {
             return [{ kind: 'file', id: nextId(), path: e.payload.path as string, sizeBytes: e.payload.size_bytes as number, success: true, ts: e.created_at }];
+          } else if (e.event_type === 'file_failed') {
+            return [{ kind: 'file_failed', id: nextId(), path: e.payload.path as string, detail: e.payload.detail as string, ts: e.created_at }];
           } else if (e.event_type === 'command_executed') {
             return [{ kind: 'shell', id: nextId(), command: e.payload.command as string, exitCode: e.payload.exit_code as number, stdout: e.payload.stdout as string, stderr: e.payload.stderr as string, timedOut: e.payload.timed_out as boolean, durationMs: e.payload.duration_ms as number, ts: e.created_at }];
           } else {
@@ -660,6 +721,14 @@ export function Phase3Implementation() {
               path: event.payload.path as string,
               sizeBytes: event.payload.size_bytes as number,
               success: true,
+            });
+            break;
+
+          case 'phase3.file_failed':
+            addEntry({
+              kind: 'file_failed', id: nextId(),
+              path: event.payload.path as string,
+              detail: event.payload.detail as string,
             });
             break;
 
@@ -914,6 +983,7 @@ export function Phase3Implementation() {
                   case 'plan_ready': return <PlanReadyEntry key={entry.id} fileCount={entry.fileCount} message={entry.message} />;
                   case 'writing': return <WritingEntry key={entry.id} filePath={entry.filePath} fileIndex={entry.fileIndex} totalFiles={entry.totalFiles} />;
                   case 'file': return <FileEntry key={entry.id} path={entry.path} sizeBytes={entry.sizeBytes} success={entry.success} />;
+                  case 'file_failed': return <FileFailedEntry key={entry.id} path={entry.path} detail={entry.detail} />;
                   case 'shell': return (
                     <ShellEntry key={entry.id}
                       command={entry.command} exitCode={entry.exitCode}

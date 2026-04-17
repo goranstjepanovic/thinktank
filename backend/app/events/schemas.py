@@ -92,6 +92,9 @@ def phase3_running(idea_id: str, session_id: str) -> PipelineEvent:
 def phase3_file_written(idea_id: str, session_id: str, path: str, size_bytes: int) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.file_written", idea_id=idea_id, payload={"session_id": session_id, "path": path, "size_bytes": size_bytes})
 
+def phase3_file_failed(idea_id: str, session_id: str, path: str, detail: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.file_failed", idea_id=idea_id, payload={"session_id": session_id, "path": path, "detail": detail})
+
 def phase3_command_executed(idea_id: str, session_id: str, command: str, exit_code: int, stdout: str, stderr: str, timed_out: bool, duration_ms: int) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.command_executed", idea_id=idea_id, payload={
         "session_id": session_id, "command": command, "exit_code": exit_code,
