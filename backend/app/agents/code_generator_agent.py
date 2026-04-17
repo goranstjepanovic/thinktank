@@ -60,7 +60,8 @@ def _plan_system_prompt() -> str:
         "app + database, etc.)\n\n"
         "## Output format\n\n"
         "Output a JSON object with EXACTLY this structure:\n"
-        '{"files": [{"path": "relative/path/to/file.ext", "description": "one-line purpose"}], '
+        '{"message": "2-3 sentence conversational overview: what you are building, the tech stack chosen, and how you have structured it", '
+        '"files": [{"path": "relative/path/to/file.ext", "description": "one-line purpose"}], '
         '"commands": ["shell command to set up and verify the project"]}\n\n'
         "Rules:\n"
         "- Every path must include at least one directory prefix — NO bare filenames at root "
@@ -245,7 +246,8 @@ def _iteration_plan_system_prompt() -> str:
         "5. Once you have enough context, output the JSON plan\n\n"
         "## Output format\n\n"
         "Output a JSON object — no prose, no markdown fences:\n"
-        '{"files": [{"path": "relative/path", "description": "what to do in this file"}], '
+        '{"message": "2-3 sentences describing what you found in the project and exactly what changes you will make", '
+        '"files": [{"path": "relative/path", "description": "what to do in this file"}], '
         '"commands": ["optional post-change shell command"]}\n\n'
         "Rules:\n"
         "- Only include files that actually need to change — do NOT list unchanged files\n"
@@ -337,9 +339,10 @@ class CodeGeneratorAgent:
         files = [f for f in files if f.get("path", "").strip() != PRD_PATH]
         files.insert(0, {"path": PRD_PATH, "description": "Product Requirements Document — full project specification"})
 
+        plan_message = str(plan_data.get("message", "")).strip()
         logger.info("code_generator: file plan has %d files (+PRD), %d commands", len(files) - 1, len(commands))
         if on_tool_result:
-            await on_tool_result("plan_ready", {"file_count": len(files), "files": files, "commands": commands})
+            await on_tool_result("plan_ready", {"file_count": len(files), "files": files, "commands": commands, "message": plan_message})
 
         # ── Pass 1-N: generate each file ─────────────────────────────────────
         file_plan_summary = _format_file_plan(files)
@@ -491,8 +494,9 @@ class CodeGeneratorAgent:
         if not files:
             return "No files needed to change for this request."
 
+        plan_message = str(plan_data.get("message", "")).strip()
         if on_tool_result:
-            await on_tool_result("plan_ready", {"file_count": len(files), "files": files, "commands": commands})
+            await on_tool_result("plan_ready", {"file_count": len(files), "files": files, "commands": commands, "message": plan_message})
 
         # Pass 1-N: generate each file
         file_plan_summary = _format_file_plan(files)

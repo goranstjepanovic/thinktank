@@ -130,9 +130,10 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                     "file_count": result.get("file_count", 0),
                     "files": result.get("files", []),
                     "commands": result.get("commands", []),
+                    "message": result.get("message", ""),
                 }
                 await event_bus.publish(
-                    ev.phase3_plan_ready(idea_id, session_id, artifact_count=payload["file_count"])
+                    ev.phase3_plan_ready(idea_id, session_id, artifact_count=payload["file_count"], message=payload["message"])
                 )
                 async with AsyncSessionLocal() as adb:
                     adb.add(Phase3ActivityEvent(
@@ -396,8 +397,8 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
 
         async def on_tool_result(tool_name: str, result: dict) -> None:
             if tool_name == "plan_ready":
-                payload = {"file_count": result.get("file_count", 0), "files": result.get("files", []), "commands": result.get("commands", [])}
-                await event_bus.publish(ev.phase3_plan_ready(idea_id, session_id, artifact_count=payload["file_count"]))
+                payload = {"file_count": result.get("file_count", 0), "files": result.get("files", []), "commands": result.get("commands", []), "message": result.get("message", "")}
+                await event_bus.publish(ev.phase3_plan_ready(idea_id, session_id, artifact_count=payload["file_count"], message=payload["message"]))
                 async with AsyncSessionLocal() as adb:
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="plan_ready", payload_json=json.dumps(payload)))
                     await adb.commit()

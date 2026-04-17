@@ -80,8 +80,8 @@ def phase3_started(idea_id: str, session_id: str) -> PipelineEvent:
 def phase3_thinking(idea_id: str, session_id: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.thinking", idea_id=idea_id, payload={"session_id": session_id})
 
-def phase3_plan_ready(idea_id: str, session_id: str, artifact_count: int) -> PipelineEvent:
-    return PipelineEvent(event_type="phase3.plan_ready", idea_id=idea_id, payload={"session_id": session_id, "artifact_count": artifact_count})
+def phase3_plan_ready(idea_id: str, session_id: str, artifact_count: int, message: str = "") -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.plan_ready", idea_id=idea_id, payload={"session_id": session_id, "artifact_count": artifact_count, "message": message})
 
 def phase3_pass_started(idea_id: str, session_id: str, file_path: str, file_index: int, total_files: int) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.pass_started", idea_id=idea_id, payload={"session_id": session_id, "file_path": file_path, "file_index": file_index, "total_files": total_files})

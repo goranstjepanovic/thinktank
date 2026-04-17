@@ -13,7 +13,7 @@ const WS_BASE = 'ws://localhost:8000';
 
 type ActivityEntry =
   | { kind: 'thinking'; id: number }
-  | { kind: 'plan_ready'; id: number; fileCount: number }
+  | { kind: 'plan_ready'; id: number; fileCount: number; message: string }
   | { kind: 'writing'; id: number; filePath: string; fileIndex: number; totalFiles: number }
   | { kind: 'file'; id: number; path: string; sizeBytes: number; success: boolean }
   | { kind: 'shell'; id: number; command: string; exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number }
@@ -40,11 +40,32 @@ function ThinkingEntry() {
   );
 }
 
-function PlanReadyEntry({ fileCount }: { fileCount: number }) {
+function PlanReadyEntry({ fileCount, message }: { fileCount: number; message: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', fontSize: 12 }}>
-      <span style={{ color: 'var(--blue)', fontWeight: 700 }}>📋</span>
-      <span style={{ color: 'var(--text)' }}>File plan ready — {fileCount} file{fileCount !== 1 ? 's' : ''} to generate</span>
+    <div>
+      {message && (
+        <div style={{ margin: '10px 0 6px' }}>
+          <div style={{
+            maxWidth: '88%',
+            background: 'var(--bg3)',
+            border: '1px solid var(--border)',
+            borderRadius: '2px 12px 12px 12px',
+            padding: '10px 14px',
+            fontSize: 13,
+            lineHeight: 1.5,
+            color: 'var(--text)',
+            wordBreak: 'break-word',
+          }}>
+            <div className="markdown" style={{ fontSize: 13 }}>
+              <ReactMarkdown>{message}</ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0 6px', fontSize: 12 }}>
+        <span style={{ color: 'var(--blue)', fontWeight: 700 }}>📋</span>
+        <span style={{ color: 'var(--text2)' }}>{fileCount} file{fileCount !== 1 ? 's' : ''} to generate</span>
+      </div>
     </div>
   );
 }
@@ -528,7 +549,7 @@ export function Phase3Implementation() {
         // Build activity entries from persisted events
         const activityEntries: (ActivityEntry & { ts: string })[] = events.flatMap((e: Phase3ActivityEvent): (ActivityEntry & { ts: string })[] => {
           if (e.event_type === 'plan_ready') {
-            return [{ kind: 'plan_ready', id: nextId(), fileCount: e.payload.file_count as number, ts: e.created_at }];
+            return [{ kind: 'plan_ready', id: nextId(), fileCount: e.payload.file_count as number, message: (e.payload.message as string) || '', ts: e.created_at }];
           } else if (e.event_type === 'pass_started') {
             return [];
           } else if (e.event_type === 'file_written') {
@@ -590,6 +611,7 @@ export function Phase3Implementation() {
             addEntry({
               kind: 'plan_ready', id: nextId(),
               fileCount: event.payload.artifact_count as number,
+              message: (event.payload.message as string) || '',
             });
             break;
 
@@ -854,7 +876,7 @@ export function Phase3Implementation() {
               {log.map((entry) => {
                 switch (entry.kind) {
                   case 'thinking': return <ThinkingEntry key={entry.id} />;
-                  case 'plan_ready': return <PlanReadyEntry key={entry.id} fileCount={entry.fileCount} />;
+                  case 'plan_ready': return <PlanReadyEntry key={entry.id} fileCount={entry.fileCount} message={entry.message} />;
                   case 'writing': return <WritingEntry key={entry.id} filePath={entry.filePath} fileIndex={entry.fileIndex} totalFiles={entry.totalFiles} />;
                   case 'file': return <FileEntry key={entry.id} path={entry.path} sizeBytes={entry.sizeBytes} success={entry.success} />;
                   case 'shell': return (
