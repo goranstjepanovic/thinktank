@@ -78,6 +78,11 @@ async def edit_file(
     abs_path = str(resolved)
 
     if operation == "write_file":
+        if not content:
+            return FileEditResult(
+                success=False, operation=operation, path=abs_path,
+                detail="content is empty — write_file requires non-empty content. Read the file first, then resubmit with the full corrected content.",
+            )
         result = await file_manager.write_file(abs_path, content)
         detail = "" if result["success"] else result.get("error", "unknown error")
         return FileEditResult(success=result["success"], operation=operation, path=abs_path, detail=detail)
@@ -93,9 +98,10 @@ async def edit_file(
         return FileEditResult(success=result["success"], operation=operation, path=abs_path, detail=detail)
 
     elif operation == "insert_lines":
-        result = await file_manager.insert_lines(abs_path, after_line, content)
-        detail = "" if result["success"] else result.get("error", "unknown error")
-        return FileEditResult(success=result["success"], operation=operation, path=abs_path, detail=detail)
+        return FileEditResult(
+            success=False, operation=operation, path=abs_path,
+            detail="insert_lines is not supported. Use search_replace for targeted edits or write_file to rewrite the whole file.",
+        )
 
     else:
         msg = f"Unknown operation: '{operation}'. Valid: write_file, search_replace, insert_lines"

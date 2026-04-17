@@ -12,9 +12,47 @@ This is a module-level singleton; import `file_manager` and call its methods.
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def strip_leading_markdown_fence(content: str) -> str:
+    """
+    Remove a leading markdown code fence before writing generated file content.
+
+    If the content starts with a fence such as ```python, the first line is
+    discarded and everything from the matching closing fence onward is dropped.
+    This intentionally handles model responses like:
+
+        ```python
+        ...
+        ```
+        Here is an explanation...
+    """
+    if not content.startswith("```"):
+        return content
+
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return content
+
+    # Extract any content that trails the fence+language tag on line 1.
+    # e.g. "```json{\n" → inline_content = "{"; "```python\n" → inline_content = ""
+    first_line = lines[0].rstrip("\r\n")
+    after_backticks = re.sub(r"^`+[a-zA-Z0-9]*", "", first_line).strip()
+
+    body_lines = lines[1:]
+    closing_index = next(
+        (index for index, line in enumerate(body_lines) if line.strip().startswith("```")),
+        None,
+    )
+    if closing_index is not None:
+        body_lines = body_lines[:closing_index]
+
+    body = "".join(body_lines)
+    return (after_backticks + "\n" + body) if after_backticks else body
 
 
 class FileManagerService:
@@ -50,6 +88,7 @@ class FileManagerService:
         Write complete content to path, replacing any existing file.
         Returns {"success": True} or {"success": False, "error": "..."}.
         """
+        content = strip_leading_markdown_fence(content)
         lock = await self._get_lock(path)
         async with lock:
             try:

@@ -111,8 +111,9 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
             return
 
         # Determine output directory and set up session
+        from app.services.user_settings import get_implementations_dir
         project_root = idea.name.lower().replace(" ", "-").replace("_", "-")[:40] or "project"
-        output_dir = str(settings.implementations_dir / idea_id / project_root)
+        output_dir = str(get_implementations_dir() / idea_id / project_root)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         session.project_root = project_root
@@ -421,9 +422,20 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="command_executed", payload_json=json.dumps(payload)))
                     await adb.commit()
 
+        # Load recent chat history so the agent can see prior corrections
+        from app.inference.base import Message as InferenceMessage
+        history_r = await db.execute(
+            select(Phase3Message)
+            .where(Phase3Message.session_id == session_id, Phase3Message.id != user_message_id)
+            .order_by(Phase3Message.created_at.desc())
+            .limit(10)
+        )
+        recent_msgs = list(reversed(history_r.scalars().all()))
+        chat_history = [InferenceMessage(role=m.role, content=m.content) for m in recent_msgs]
+
         agent = CodeGeneratorAgent(get_inference_client())
         try:
-            summary = await agent.run_iteration(db, session, idea, branch, user_msg.content, on_tool_result)
+            summary = await agent.run_iteration(db, session, idea, branch, user_msg.content, on_tool_result, chat_history=chat_history)
         except Exception as e:
             logger.error("Phase3 iteration failed for session %s: %s", session_id[:8], e)
             async with AsyncSessionLocal() as adb:

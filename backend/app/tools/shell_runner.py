@@ -10,14 +10,28 @@ real tool access.  The tool is only exposed when an `allowed_file_dir` is provid
 
 Shells tried in order on Windows: pwsh.exe (PowerShell 7), powershell.exe (WPS 5).
 On other platforms: bash.
+
+Background processes
+--------------------
+Long-running commands (dev servers, watchers) are handled via a separate set of tools:
+  run_shell_background  — start without blocking, returns a handle
+  get_shell_output      — tail the captured output buffer
+  stop_shell_process    — kill the process by handle
+
+The module-level `background_process_manager` singleton owns all background processes.
 """
 
 import asyncio
+import platform
+import re
 import shutil
 import sys
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
+
+_MAX_BG_OUTPUT_LINES = 500
 
 
 @dataclass
@@ -29,16 +43,241 @@ class ShellResult:
     timed_out: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Background process support
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BackgroundProcess:
+    handle: str
+    command: str
+    working_dir: str
+    proc: asyncio.subprocess.Process
+    started_at: float = field(default_factory=time.monotonic)
+    _lines: list[str] = field(default_factory=list)
+    _done: bool = False
+    _exit_code: int | None = None
+    _reader_task: asyncio.Task | None = None
+
+    def _append(self, line: str) -> None:
+        self._lines.append(line)
+        if len(self._lines) > _MAX_BG_OUTPUT_LINES:
+            self._lines = self._lines[-_MAX_BG_OUTPUT_LINES:]
+
+    def tail(self, n: int = 50) -> list[str]:
+        return self._lines[-n:]
+
+    @property
+    def is_running(self) -> bool:
+        return not self._done
+
+    def mark_done(self, exit_code: int | None) -> None:
+        self._done = True
+        self._exit_code = exit_code
+
+
+class BackgroundProcessManager:
+    def __init__(self) -> None:
+        self._procs: dict[str, BackgroundProcess] = {}
+
+    async def _read_streams(self, bp: BackgroundProcess) -> None:
+        async def drain(stream: asyncio.StreamReader | None) -> None:
+            if stream is None:
+                return
+            while True:
+                try:
+                    line = await stream.readline()
+                except Exception:
+                    break
+                if not line:
+                    break
+                bp._append(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+
+        await asyncio.gather(drain(bp.proc.stdout), drain(bp.proc.stderr), return_exceptions=True)
+        exit_code = await bp.proc.wait()
+        bp.mark_done(exit_code)
+
+    async def start(self, command: str, working_dir: str) -> tuple[str, str]:
+        """Start command in the background. Returns (handle, error). error is '' on success."""
+        blocked = _blocked_command_error(command, working_dir)
+        if blocked:
+            return ("", blocked)
+
+        Path(working_dir).mkdir(parents=True, exist_ok=True)
+        argv = _shell_args(command)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=working_dir,
+            )
+        except Exception as exc:
+            return ("", f"Failed to launch: {exc}")
+
+        handle = f"proc_{uuid.uuid4().hex[:8]}"
+        bp = BackgroundProcess(handle=handle, command=command, working_dir=working_dir, proc=proc)
+        bp._reader_task = asyncio.create_task(self._read_streams(bp))
+        self._procs[handle] = bp
+        return (handle, "")
+
+    async def get_output(self, handle: str, tail: int = 50) -> dict:
+        bp = self._procs.get(handle)
+        if bp is None:
+            return {"error": f"Unknown handle '{handle}'. Use run_shell_background to start a process first."}
+        await asyncio.sleep(0)  # yield so reader task can run
+        return {
+            "handle": handle,
+            "command": bp.command,
+            "is_running": bp.is_running,
+            "exit_code": bp._exit_code,
+            "lines": bp.tail(tail),
+            "total_lines_captured": len(bp._lines),
+        }
+
+    async def stop(self, handle: str) -> dict:
+        bp = self._procs.get(handle)
+        if bp is None:
+            return {"error": f"Unknown handle '{handle}'"}
+        if bp._done:
+            return {"handle": handle, "stopped": True, "exit_code": bp._exit_code, "message": "Already stopped"}
+        try:
+            bp.proc.kill()
+        except Exception as exc:
+            return {"error": f"Kill failed: {exc}"}
+        try:
+            await asyncio.wait_for(bp.proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
+        bp.mark_done(bp.proc.returncode)
+        return {"handle": handle, "stopped": True, "exit_code": bp._exit_code}
+
+    def cleanup_dir(self, working_dir: str) -> None:
+        """Kill all background processes for a given project directory."""
+        for bp in list(self._procs.values()):
+            if bp.working_dir == working_dir and not bp._done:
+                try:
+                    bp.proc.kill()
+                except Exception:
+                    pass
+
+
+background_process_manager = BackgroundProcessManager()
+
+
+# ---------------------------------------------------------------------------
+# Shell environment helpers
+# ---------------------------------------------------------------------------
+
+def shell_environment_context() -> str:
+    """Describe the OS and shell used by run_shell_command for agent prompts."""
+    os_name = f"{platform.system()} {platform.release()}".strip()
+    if sys.platform == "win32":
+        if shutil.which("pwsh") or shutil.which("pwsh.exe"):
+            cli = "PowerShell 7 (pwsh)"
+        elif shutil.which("powershell") or shutil.which("powershell.exe"):
+            cli = "Windows PowerShell 5"
+        else:
+            cli = "cmd.exe"
+        note = (
+            "IMPORTANT RULES FOR THIS ENVIRONMENT:\n"
+            "- ONE command per run_shell call — chaining with &&, &, ||, or ; is BLOCKED and will error.\n"
+            "- Do NOT use activate.bat or Activate.ps1 to activate a virtualenv — it has no effect in a "
+            "subprocess. Instead call the venv executables directly: "
+            "`venv\\Scripts\\python.exe` and `venv\\Scripts\\pip.exe`.\n"
+            "- mkdir -p and touch do not exist; use `New-Item -ItemType Directory -Force -Path <dir>` "
+            "and `New-Item -ItemType File -Force -Path <file>` or just write the file with file_edit.\n"
+            "- Bare npm commands may search parent directories; use `npm --prefix <dir>` when package.json "
+            "is in a subdirectory.\n"
+            "- For long-running commands (dev servers, watchers): use run_shell_background instead of run_shell."
+        )
+    else:
+        cli = "bash"
+        note = (
+            "IMPORTANT RULES FOR THIS ENVIRONMENT:\n"
+            "- ONE command per run_shell call — chaining with &&, &, ||, or ; is BLOCKED and will error.\n"
+            "- Bare npm commands may search parent directories; use `npm --prefix <dir>` when package.json "
+            "is in a subdirectory.\n"
+            "- For long-running commands (dev servers, watchers): use run_shell_background instead of run_shell."
+        )
+    return f"OS: {os_name}; CLI: {cli}.\n{note}"
+
+
+def _find_parent_package_json(start: Path) -> Path | None:
+    """Walk up from start looking for a package.json in an ancestor directory."""
+    current = start.parent
+    while current != current.parent:
+        candidate = current / "package.json"
+        if candidate.is_file():
+            return candidate
+        current = current.parent
+    return None
+
+
+def _is_chained_command(command: str) -> bool:
+    """Return True if the command chains multiple sub-commands."""
+    cleaned = re.sub(r'"[^"]*"', '""', command)
+    cleaned = re.sub(r"'[^']*'", "''", cleaned)
+    return bool(re.search(r"(&&|\|\||\s&\s|\s;\s|;\s*$)", cleaned))
+
+
+def _blocked_command_error(command: str, working_dir: str) -> str | None:
+    """
+    Block commands whose tool behavior would escape the generated project root,
+    and enforce the one-command-per-call rule.
+    """
+    cwd = Path(working_dir)
+    stripped = command.strip()
+
+    if _is_chained_command(stripped):
+        return (
+            f"Blocked chained command: '{stripped}'. "
+            "You MUST run exactly ONE command per run_shell call — do not use &&, &, ||, or ;. "
+            "Split this into separate run_shell calls."
+        )
+
+    if sys.platform == "win32" and re.match(r"^make\b", stripped, re.IGNORECASE):
+        return (
+            "Blocked: `make` is not available on Windows. "
+            "Do not use Makefiles or make targets on this platform. "
+            "Run the underlying commands directly (e.g. `venv\\Scripts\\pip.exe install -r requirements.txt`) "
+            "or use `pyproject.toml` scripts / `package.json` scripts instead."
+        )
+
+    if re.match(r"^npm(?:\.cmd)?\b", stripped, re.IGNORECASE):
+        has_explicit_prefix = re.search(r"(^|\s)(--prefix|-C)\s+\S+", stripped)
+        if not has_explicit_prefix and not (cwd / "package.json").is_file():
+            parent_pkg = _find_parent_package_json(cwd)
+            if parent_pkg:
+                try:
+                    import json as _json
+                    pkg_data = _json.loads(parent_pkg.read_text(encoding="utf-8", errors="replace"))
+                    parent_name = pkg_data.get("name", "(unknown)")
+                    parent_note = (
+                        f" A package.json was found at {parent_pkg} belonging to a DIFFERENT project "
+                        f"('{parent_name}'). Do NOT treat that as the generated project's Node setup — "
+                        "it is the host application and is unrelated to the code you generated."
+                    )
+                except Exception:
+                    parent_note = f" A package.json was found at {parent_pkg} — it belongs to the host application, not to the generated project."
+            else:
+                parent_note = ""
+            return (
+                f"Blocked bare npm command in {working_dir}: no package.json exists in this directory.{parent_note} "
+                "Inspect the project layout with list_files and run npm with an explicit package directory, for example "
+                "`npm --prefix frontend run dev`, or create a package.json in the project root if that is intended."
+            )
+    return None
+
+
 def _shell_args(command: str) -> list[str]:
     """Build the argv list to run `command` in the available shell."""
     if sys.platform == "win32":
-        # Prefer PowerShell 7 (pwsh), fall back to Windows PowerShell 5
         pwsh = shutil.which("pwsh") or shutil.which("pwsh.exe")
         ps = shutil.which("powershell") or shutil.which("powershell.exe")
         shell = pwsh or ps
         if shell:
             return [shell, "-NoProfile", "-NonInteractive", "-Command", command]
-        # Last resort: cmd.exe
         return ["cmd.exe", "/c", command]
     else:
         bash = shutil.which("bash") or "/bin/bash"
@@ -53,17 +292,14 @@ async def run_shell_command(
 ) -> ShellResult:
     """
     Execute `command` in `working_dir` and return stdout/stderr/exit_code.
-
-    The process runs with `working_dir` as its CWD so relative paths in
-    commands (e.g. `npm install`) resolve correctly.  The directory is created
-    if it does not yet exist.
-
-    stdout and stderr are each capped at `max_output_bytes` before returning.
-    On timeout the process is killed; `timed_out=True` is set in the result.
+    Use for short-lived commands only. For servers/watchers use background_process_manager.
     """
     Path(working_dir).mkdir(parents=True, exist_ok=True)
-    argv = _shell_args(command)
+    blocked_error = _blocked_command_error(command, working_dir)
+    if blocked_error:
+        return ShellResult(stdout="", stderr=blocked_error, exit_code=1, duration_ms=0)
 
+    argv = _shell_args(command)
     start = time.monotonic()
     timed_out = False
 
@@ -84,12 +320,7 @@ async def run_shell_command(
             timed_out = True
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
-        return ShellResult(
-            stdout="",
-            stderr=f"Failed to launch shell: {exc}",
-            exit_code=1,
-            duration_ms=duration_ms,
-        )
+        return ShellResult(stdout="", stderr=f"Failed to launch shell: {exc}", exit_code=1, duration_ms=duration_ms)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = stdout_bytes[:max_output_bytes].decode("utf-8", errors="replace")

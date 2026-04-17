@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  VscFolder, VscFolderOpened,
+  VscFile, VscCode, VscJson, VscMarkdown, VscSymbolParameter, VscDatabase,
+} from 'react-icons/vsc';
+import {
+  SiPython, SiTypescript, SiJavascript, SiHtml5, SiCss,
+  SiRust, SiGo, SiDocker, SiYaml,
+} from 'react-icons/si';
 import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -219,19 +227,6 @@ function AssistantMsgEntry({ content }: { content: string }) {
 // File browser
 // ---------------------------------------------------------------------------
 
-function langFromPath(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    py: 'python', rs: 'rust', go: 'go', java: 'java', kt: 'kotlin',
-    json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
-    md: 'markdown', html: 'html', css: 'css', scss: 'css',
-    sh: 'bash', ps1: 'powershell', sql: 'sql', xml: 'xml',
-    c: 'c', cpp: 'cpp', h: 'c', dockerfile: 'dockerfile',
-  };
-  return map[ext] ?? 'plaintext';
-}
-
 // ---------------------------------------------------------------------------
 // File tree helpers
 // ---------------------------------------------------------------------------
@@ -287,6 +282,35 @@ function collectDirPaths(nodes: TreeNode[]): string[] {
   return paths;
 }
 
+function fileIcon(name: string): React.ReactNode {
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+  const base = name.toLowerCase();
+
+  if (base === 'dockerfile') return <SiDocker size={13} color="#2496ed" />;
+  if (base === 'makefile') return <VscCode size={13} color="var(--text2)" />;
+
+  switch (ext) {
+    case 'py':    return <SiPython     size={13} color="#3572a5" />;
+    case 'ts':
+    case 'tsx':   return <SiTypescript size={13} color="#3178c6" />;
+    case 'js':
+    case 'jsx':   return <SiJavascript size={13} color="#f7df1e" />;
+    case 'html':  return <SiHtml5      size={13} color="#e34c26" />;
+    case 'css':
+    case 'scss':  return <SiCss        size={13} color="#264de4" />;
+    case 'rs':    return <SiRust       size={13} color="#dea584" />;
+    case 'go':    return <SiGo         size={13} color="#00add8" />;
+    case 'json':  return <VscJson      size={13} color="#f4c518" />;
+    case 'md':    return <VscMarkdown  size={13} color="var(--text2)" />;
+    case 'yaml':
+    case 'yml':   return <SiYaml       size={13} color="#cb171e" />;
+    case 'env':   return <VscSymbolParameter size={13} color="var(--text2)" />;
+    case 'sql':
+    case 'db':    return <VscDatabase  size={13} color="var(--text2)" />;
+    default:      return <VscFile      size={13} color="var(--text2)" />;
+  }
+}
+
 function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect }: {
   node: TreeNode; depth: number; selectedPath: string | null;
   collapsed: Set<string>; onToggle: (p: string) => void; onSelect: (p: string) => void;
@@ -300,7 +324,7 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
         <div
           onClick={() => onToggle(node.fullPath)}
           style={{
-            display: 'flex', alignItems: 'center', gap: 4,
+            display: 'flex', alignItems: 'center', gap: 5,
             padding: '4px 10px 4px 0',
             paddingLeft: indent,
             cursor: 'pointer',
@@ -309,8 +333,10 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
             userSelect: 'none',
           }}
         >
-          <span style={{ fontSize: 10, width: 12, textAlign: 'center', flexShrink: 0 }}>
-            {isCollapsed ? '▶' : '▼'}
+          <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+            {isCollapsed
+              ? <VscFolder size={14} color="#dcb67a" />
+              : <VscFolderOpened size={14} color="#dcb67a" />}
           </span>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {node.name}
@@ -330,19 +356,23 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
     <div
       onClick={() => onSelect(node.fullPath)}
       style={{
+        display: 'flex', alignItems: 'center', gap: 5,
         padding: '3px 10px 3px 0',
-        paddingLeft: indent + 16,
+        paddingLeft: indent,
         cursor: 'pointer',
         fontSize: 12,
         background: isSelected ? 'var(--bg3)' : undefined,
         color: isSelected ? 'var(--text)' : 'var(--text2)',
         borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
         overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
       }}
     >
-      {node.name}
+      <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        {fileIcon(node.name)}
+      </span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {node.name}
+      </span>
     </div>
   );
 }
@@ -775,8 +805,13 @@ export function Phase3Implementation() {
   const isRunning = session.status === 'PLANNING' || session.status === 'RUNNING';
   const isComplete = session.status === 'COMPLETE';
   const isFailed = session.status === 'FAILED' || (!isRunning && !isComplete);
-  // Show chat input once the session has produced at least one complete/iteration result
-  const showChatInput = isComplete || (isRunning && log.some(e => e.kind === 'complete'));
+  const hasActivity = log.length > 0;
+  const wasCancelled = isFailed && session.summary === 'Cancelled by user';
+  // Keep chat available after stop/failure so the user can redirect the agent.
+  // Also show it while running if there's been a timeout — user needs to be able to intervene.
+  const hasTimedOut = log.some(e => e.kind === 'shell' && (e as Extract<ActivityEntry, { kind: 'shell' }>).timedOut);
+  const showChatInput = isComplete || isFailed || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut));
+  const showRetryButton = isFailed && !wasCancelled && !hasActivity;
 
   const fileCount = log.filter(e => e.kind === 'file').length;
   const shellCount = log.filter(e => e.kind === 'shell').length;
@@ -952,8 +987,8 @@ export function Phase3Implementation() {
               </div>
             )}
 
-            {/* Failed: retry button */}
-            {isFailed && (
+            {/* Failed before useful context exists: start over */}
+            {showRetryButton && (
               <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', padding: '10px 16px', background: 'var(--bg2)' }}>
                 <button className="btn-primary" style={{ fontSize: 12 }} disabled={starting} onClick={doStart}>
                   {starting ? 'Starting…' : 'Try again →'}

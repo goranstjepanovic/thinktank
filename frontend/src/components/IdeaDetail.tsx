@@ -4,11 +4,11 @@ import { api } from '../api/client';
 import { usePipelineEvents } from '../hooks/usePipelineEvents';
 import { useIdeaStore } from '../store/ideaStore';
 import type { BranchDetail, BranchSummary } from '../types';
+import { STAGE_NAMES } from '../types';
 import { AuditTrail } from './AuditTrail';
 import { DocumentViewer } from './DocumentViewer';
 import { IdeaForm } from './IdeaForm';
 import { PhaseNav } from './PhaseNav';
-import { StageTimeline } from './StageTimeline';
 import { StatusBadge } from './StatusBadge';
 
 type Tab = 'branches' | 'documents' | 'audit';
@@ -39,17 +39,42 @@ function BranchTreeNode({
   node,
   ideaId,
   selectedBranchId,
+  selectingBranchId,
+  selectionNotes,
+  phase2BranchId,
+  actionLoading,
+  allBranches,
+  isConverged,
+  isIdeaSelected,
   depth = 0,
-  onClick,
+  setSelectingBranchId,
+  setSelectionNotes,
+  doSelect,
 }: {
   node: BranchNode;
   ideaId: string;
   selectedBranchId: string | null;
+  selectingBranchId: string | null;
+  selectionNotes: string;
+  phase2BranchId: string | null | undefined;
+  actionLoading: string;
+  allBranches: BranchSummary[];
+  isConverged: boolean;
+  isIdeaSelected: boolean;
   depth?: number;
-  onClick: (id: string) => void;
+  setSelectingBranchId: (id: string | null) => void;
+  setSelectionNotes: (notes: string) => void;
+  doSelect: (branchId: string) => Promise<void>;
 }) {
   const navigate = useNavigate();
   const isSelected = node.id === selectedBranchId;
+  const isSelectingThis = selectingBranchId === node.id;
+  const canSelect = (isConverged || isIdeaSelected) && node.status === 'VIABLE' && !isSelected;
+  const phase2WillReset = canSelect && phase2BranchId != null && phase2BranchId !== node.id;
+  const phase2BranchIndex = phase2WillReset
+    ? allBranches.find((x) => x.id === phase2BranchId)?.branch_index
+    : null;
+  const currentStageName = STAGE_NAMES[node.current_stage] ?? 'Unknown stage';
 
   const statusColor =
     node.status === 'VIABLE' ? 'var(--green)'
@@ -115,10 +140,100 @@ function BranchTreeNode({
               )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 12 }}>
+              {node.status === 'RUNNING' && (
+                <span style={{ fontSize: 11, color: 'var(--text2)', whiteSpace: 'nowrap' }}>
+                  Stage {node.current_stage}: {currentStageName}
+                </span>
+              )}
               <StatusBadge status={isSelected ? 'SELECTED' : node.status} />
               <span style={{ fontSize: 11, color: 'var(--text2)' }}>→</span>
             </div>
           </div>
+
+          {(canSelect || isSelectingThis) && (
+            <div
+              style={{
+                marginTop: 12,
+                paddingTop: 12,
+                borderTop: '1px solid var(--border)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {canSelect && !isSelectingThis && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn-primary"
+                    style={{ fontSize: 12 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectingBranchId(node.id);
+                      setSelectionNotes('');
+                    }}
+                  >
+                    Select Branch {node.branch_index}
+                  </button>
+                </div>
+              )}
+
+              {isSelectingThis && (
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                    Confirm: Select Branch {node.branch_index}
+                  </p>
+                  {phase2WillReset && (
+                    <div style={{
+                      background: '#2a1500', border: '1px solid #7a4500',
+                      borderRadius: 4, padding: '8px 10px', marginBottom: 10,
+                    }}>
+                      <p style={{ fontSize: 12, color: '#f0a050', fontWeight: 600, marginBottom: 2 }}>
+                        âš  Phase 2 in progress for Branch {phase2BranchIndex}
+                      </p>
+                      <p style={{ fontSize: 12, color: '#c07030' }}>
+                        Selecting a different solution will permanently delete the Phase 2 session.
+                      </p>
+                    </div>
+                  )}
+                  <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 6 }}>Notes (optional)</p>
+                  <textarea
+                    style={{
+                      width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+                      borderRadius: 4, color: 'var(--text)', padding: '8px 10px',
+                      fontSize: 13, resize: 'vertical', minHeight: 64, boxSizing: 'border-box',
+                    }}
+                    placeholder="Why this solution? Any tradeoffs or decisionsâ€¦"
+                    value={selectionNotes}
+                    onChange={(e) => setSelectionNotes(e.target.value)}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
+                    <button
+                      className="btn-ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectingBranchId(null);
+                        setSelectionNotes('');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className={phase2WillReset ? 'btn-danger' : 'btn-primary'}
+                      disabled={actionLoading === 'select-' + node.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        doSelect(node.id);
+                      }}
+                    >
+                      {actionLoading === 'select-' + node.id
+                        ? 'Selectingâ€¦'
+                        : phase2WillReset
+                        ? 'Switch & reset Phase 2'
+                        : 'Confirm selection'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -129,8 +244,17 @@ function BranchTreeNode({
           node={child}
           ideaId={ideaId}
           selectedBranchId={selectedBranchId}
+          selectingBranchId={selectingBranchId}
+          selectionNotes={selectionNotes}
+          phase2BranchId={phase2BranchId}
+          actionLoading={actionLoading}
+          allBranches={allBranches}
+          isConverged={isConverged}
+          isIdeaSelected={isIdeaSelected}
           depth={depth + 1}
-          onClick={onClick}
+          setSelectingBranchId={setSelectingBranchId}
+          setSelectionNotes={setSelectionNotes}
+          doSelect={doSelect}
         />
       ))}
     </div>
@@ -146,7 +270,7 @@ export function IdeaDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { ideaDetails, setIdeaDetail, setIdeas, removeIdea } = useIdeaStore();
-  const [branchDetails, setBranchDetails] = useState<Record<string, BranchDetail>>({});
+  const [, setBranchDetails] = useState<Record<string, BranchDetail>>({});
   const [actionLoading, setActionLoading] = useState('');
   const [showFork, setShowFork] = useState(false);
   const [selectingBranchId, setSelectingBranchId] = useState<string | null>(null);
@@ -160,7 +284,7 @@ export function IdeaDetail() {
   const skipRedirect = navState?.skipRedirect ?? false;
   const [tab, setTab] = useState<Tab>(navState?.tab ?? 'branches');
   // Pre-select branch from navigation state (for doc viewer)
-  const [docBranchId, setDocBranchId] = useState<string | undefined>(navState?.branchId);
+  const [docBranchId] = useState<string | undefined>(navState?.branchId);
   const redirectedRef = useRef(false);
 
   usePipelineEvents(id);
@@ -403,18 +527,26 @@ export function IdeaDetail() {
               node={node}
               ideaId={id!}
               selectedBranchId={idea.selected_branch_id}
-              onClick={() => {}}
+              selectingBranchId={selectingBranchId}
+              selectionNotes={selectionNotes}
+              phase2BranchId={phase2BranchId}
+              actionLoading={actionLoading}
+              allBranches={idea.branches}
+              isConverged={isConverged}
+              isIdeaSelected={isSelected}
+              setSelectingBranchId={setSelectingBranchId}
+              setSelectionNotes={setSelectionNotes}
+              doSelect={doSelect}
             />
           ))}
 
-          {/* Inline selection panels — shown below tree */}
-          {idea.branches.map((b) => {
-            const isThisSelected = idea.selected_branch_id === b.id;
+          {false && (idea?.branches ?? []).map((b) => {
+            const isThisSelected = idea?.selected_branch_id === b.id;
             const isSelectingThis = selectingBranchId === b.id;
             const canSelect = (isConverged || isSelected) && b.status === 'VIABLE' && !isThisSelected;
             const phase2WillReset = canSelect && phase2BranchId != null && phase2BranchId !== b.id;
             const phase2BranchIndex = phase2WillReset
-              ? idea.branches.find((x) => x.id === phase2BranchId)?.branch_index
+              ? (idea?.branches ?? []).find((x) => x.id === phase2BranchId)?.branch_index
               : null;
 
             if (!canSelect && !isSelectingThis) return null;

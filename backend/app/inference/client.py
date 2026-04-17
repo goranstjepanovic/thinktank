@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -5,6 +6,12 @@ import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+try:
+    from app.tools.shell_runner import shell_environment_context
+except Exception:
+    def shell_environment_context() -> str:
+        return "OS and CLI context unavailable. Prefer one command per run_shell call."
 
 
 def _strip_markdown_json(text: str) -> str:
@@ -14,12 +21,16 @@ def _strip_markdown_json(text: str) -> str:
     whitespace.  Falls back to the original string if no fence is found.
     """
     stripped = text.strip()
+    # If the response already looks like JSON, do not scan for code fences.
+    # JSON string values may legitimately mention ``` markers.
+    if stripped.startswith("{") or stripped.startswith("["):
+        return stripped
     # Match ```json or ``` at the start, capture everything until closing ```
     m = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", stripped, re.DOTALL)
     if m:
         return m.group(1).strip()
     # Sometimes the model emits prose before the fence — grab the first fence block
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", stripped, re.DOTALL)
+    m = re.search(r"(?:^|\n)```(?:json)?\s*\n?(.*?)\n?```", stripped, re.DOTALL)
     if m:
         return m.group(1).strip()
     return stripped
@@ -97,6 +108,8 @@ SHELL_TOOL = ToolDefinition(
         "initialise project scaffolding (npx create-react-app, etc.), or verify the project works. "
         "The command runs in the project output directory as the working directory. "
         "Output is returned so you can check for errors and fix them. "
+        f"Runtime context: {shell_environment_context()} "
+        "Run exactly one command per tool call; do not chain commands with &&, ||, or ;. "
         "Avoid commands that require interactive input."
     ),
     parameters={
@@ -179,21 +192,20 @@ GREP_FILES_TOOL = ToolDefinition(
 FILE_EDIT_TOOL = ToolDefinition(
     name="file_edit",
     description=(
-        "Read or modify a file in the project output directory. "
-        "Use this to write a new file, search-and-replace content in an existing file, "
-        "or insert lines at a specific position. "
+        "Write or modify a file in the project output directory. "
         "All paths are relative to the project root and are restricted to the project directory. "
         "Operations: "
-        "'write_file' — write complete content (creates or overwrites); "
-        "'search_replace' — find text and replace it (first occurrence unless replace_all=true); "
-        "'insert_lines' — insert content after a given line number (-1 = append to end)."
+        "'write_file' — write complete content (creates or overwrites the whole file); "
+        "'search_replace' — find exact text and replace it (first occurrence unless replace_all=true). "
+        "Prefer search_replace for small targeted edits; use write_file when rewriting most of the file. "
+        "Always read_file first so your content or search_text matches what is actually on disk."
     ),
     parameters={
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["write_file", "search_replace", "insert_lines"],
+                "enum": ["write_file", "search_replace"],
                 "description": "The file operation to perform.",
             },
             "path": {
@@ -202,19 +214,15 @@ FILE_EDIT_TOOL = ToolDefinition(
             },
             "content": {
                 "type": "string",
-                "description": "File content for write_file; lines to insert for insert_lines.",
+                "description": "Complete file content for write_file. Must be non-empty.",
             },
             "search_text": {
                 "type": "string",
-                "description": "Text to find in the file (search_replace only).",
+                "description": "Exact text to find in the file (search_replace only).",
             },
             "replace_text": {
                 "type": "string",
                 "description": "Replacement text (search_replace only).",
-            },
-            "after_line": {
-                "type": "integer",
-                "description": "0-based line index to insert after (insert_lines only); -1 appends to end.",
             },
             "replace_all": {
                 "type": "boolean",
@@ -222,6 +230,52 @@ FILE_EDIT_TOOL = ToolDefinition(
             },
         },
         "required": ["operation", "path"],
+    },
+)
+
+
+RUN_SHELL_BG_TOOL = ToolDefinition(
+    name="run_shell_background",
+    description=(
+        "Start a long-running shell command in the background and return a handle immediately. "
+        "Use this for commands that stay running: dev servers, watchers, `npm start`, `python server.py`, etc. "
+        "Use run_shell (not this) for short commands that finish on their own: installs, builds, tests. "
+        "After starting, call get_shell_output with the handle to check startup output."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "The shell command to run in the background."},
+        },
+        "required": ["command"],
+    },
+)
+
+GET_SHELL_OUTPUT_TOOL = ToolDefinition(
+    name="get_shell_output",
+    description=(
+        "Get the most recent output lines from a background process started with run_shell_background. "
+        "Use this to check if the server started successfully, see error messages, or monitor progress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "handle": {"type": "string", "description": "The handle returned by run_shell_background."},
+            "tail": {"type": "integer", "description": "Number of most recent lines to return (default 50)."},
+        },
+        "required": ["handle"],
+    },
+)
+
+STOP_SHELL_PROCESS_TOOL = ToolDefinition(
+    name="stop_shell_process",
+    description="Kill a background process started with run_shell_background.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "handle": {"type": "string", "description": "The handle returned by run_shell_background."},
+        },
+        "required": ["handle"],
     },
 )
 
@@ -416,7 +470,7 @@ class InferenceClient:
         branch_id: str | None = None,
         stage_result_id: str | None = None,
         call_index: int = 0,
-        max_tool_rounds: int = 4,
+        max_tool_rounds: int | None = 4,
         allowed_file_dir: str | None = None,
         explore_only: bool = False,
         on_tool_result=None,  # Optional[Callable[[str, dict], Awaitable[None]]]
@@ -458,18 +512,18 @@ class InferenceClient:
             )
 
         # web_search is always available — uses DuckDuckGo by default, Tavily if key is set
-        # file exploration tools (list/read/grep) are available when allowed_file_dir is set + explore_only
+        # file exploration tools (list/read/grep) are available whenever a project dir is provided
         # file_edit and run_shell are available when allowed_file_dir is set and NOT explore_only
         available_tools: list[ToolDefinition] = [RUN_PYTHON_TOOL, WEB_SEARCH_TOOL]
         if allowed_file_dir:
-            if explore_only:
-                available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
-            else:
-                available_tools += [FILE_EDIT_TOOL, SHELL_TOOL]
+            available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
+            if not explore_only:
+                available_tools += [FILE_EDIT_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
 
-        logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%d",
-                    stage_key, stage_cfg.model, [t.name for t in available_tools], max_tool_rounds)
-        for round_num in range(max_tool_rounds + 1):
+        logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s",
+                    stage_key, stage_cfg.model, [t.name for t in available_tools], max_tool_rounds if max_tool_rounds is not None else "unlimited")
+        round_num = 0
+        while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d", stage_key, round_num)
             request = InferenceRequest(
                 model=stage_cfg.model,
@@ -675,6 +729,60 @@ class InferenceClient:
                                 })
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
+                    elif tc.name == "run_shell_background":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "run_shell_background not available in this context"}
+                        else:
+                            from app.tools.shell_runner import background_process_manager
+                            command = tc.arguments.get("command", "")
+                            logger.info("tools stage=%-20s run_shell_background command=%r", stage_key, command)
+                            handle, error = await background_process_manager.start(command, allowed_file_dir)
+                            if error:
+                                result_dict = {"error": error}
+                            else:
+                                await asyncio.sleep(1.5)  # brief pause so startup lines can accumulate
+                                output = await background_process_manager.get_output(handle, tail=30)
+                                result_dict = {"handle": handle, "started": True, **output}
+                                if on_tool_result:
+                                    await on_tool_result("run_shell_background", {
+                                        "command": command,
+                                        "handle": handle,
+                                        "lines": output.get("lines", []),
+                                        "is_running": output.get("is_running", True),
+                                    })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "get_shell_output":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "get_shell_output not available in this context"}
+                        else:
+                            from app.tools.shell_runner import background_process_manager
+                            handle = tc.arguments.get("handle", "")
+                            tail = int(tc.arguments.get("tail") or 50)
+                            result_dict = await background_process_manager.get_output(handle, tail)
+                            logger.info("tools stage=%-20s get_shell_output handle=%r running=%s",
+                                        stage_key, handle, result_dict.get("is_running"))
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "stop_shell_process":
+                        if not allowed_file_dir:
+                            result_dict = {"error": "stop_shell_process not available in this context"}
+                        else:
+                            from app.tools.shell_runner import background_process_manager
+                            handle = tc.arguments.get("handle", "")
+                            result_dict = await background_process_manager.stop(handle)
+                            logger.info("tools stage=%-20s stop_shell_process handle=%r", stage_key, handle)
+                            if on_tool_result:
+                                await on_tool_result("run_shell", {
+                                    "command": f"[stop] {handle}",
+                                    "exit_code": result_dict.get("exit_code", 0),
+                                    "stdout": result_dict.get("message", "Process stopped"),
+                                    "stderr": "",
+                                    "timed_out": False,
+                                    "duration_ms": 0,
+                                })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
                     elif tc.name == "list_files":
                         if not allowed_file_dir:
                             result_dict = {"error": "list_files not available in this context"}
@@ -801,6 +909,7 @@ class InferenceClient:
                         logger.warning("tools stage=%-20s unknown tool call: %s", stage_key, tc.name)
                         working_messages.append(Message(role="tool", content=json.dumps({"error": f"Unknown tool: {tc.name}"})))
 
+                round_num += 1
                 continue  # next round
 
             # No tool calls — model returned its final answer
@@ -823,15 +932,19 @@ class InferenceClient:
                     role="user",
                     content="Please provide your final answer now as a JSON object only, with no additional text or markdown.",
                 ))
-                return await self.call(
-                    stage_key=stage_key,
-                    messages=working_messages,
-                    session=session,
-                    idea_id=idea_id,
-                    branch_id=branch_id,
-                    stage_result_id=stage_result_id,
-                    call_index=current_call_index,
-                )
+                try:
+                    return await self.call(
+                        stage_key=stage_key,
+                        messages=working_messages,
+                        session=session,
+                        idea_id=idea_id,
+                        branch_id=branch_id,
+                        stage_result_id=stage_result_id,
+                        call_index=current_call_index,
+                    )
+                except InferenceClientError:
+                    logger.warning("tools stage=%-20s empty-content nudge also failed — returning empty", stage_key)
+                    return {"message": "", "files": [], "commands": []}
 
             try:
                 parsed = json.loads(_strip_markdown_json(content))
@@ -840,6 +953,44 @@ class InferenceClient:
                     "tools stage=%-20s non-JSON response after tool rounds: %s",
                     stage_key, content[:300],
                 )
+                if return_json:
+                    logger.warning(
+                        "tools stage=%-20s nudging prose final answer into JSON",
+                        stage_key,
+                    )
+                    working_messages.append(Message(
+                        role="assistant",
+                        content=content,
+                    ))
+                    working_messages.append(Message(
+                        role="user",
+                        content=(
+                            "Convert your previous answer into a JSON object only, with no prose and no markdown. "
+                            "Use exactly this schema: "
+                            '{"message": "brief summary", "files": [{"path": "relative/path", '
+                            '"description": "specific change required"}], "commands": []}. '
+                            "If no files need to change, return "
+                            '{"message": "No files need to change.", "files": [], "commands": []}.'
+                        ),
+                    ))
+                    try:
+                        return await self.call(
+                            stage_key=stage_key,
+                            messages=working_messages,
+                            session=session,
+                            idea_id=idea_id,
+                            branch_id=branch_id,
+                            stage_result_id=stage_result_id,
+                            call_index=current_call_index,
+                        )
+                    except InferenceClientError:
+                        # Nudge also failed — return the prose as the message so
+                        # the iteration completes gracefully rather than crashing.
+                        logger.warning(
+                            "tools stage=%-20s nudge also failed — returning prose as message",
+                            stage_key,
+                        )
+                        return {"message": content, "files": [], "commands": []}
                 raise InferenceClientError(
                     f"Stage '{stage_key}' returned non-JSON after tool rounds: "
                     f"{content[:200]}"
@@ -854,6 +1005,7 @@ class InferenceClient:
                     )
             return parsed
 
+        assert max_tool_rounds is not None
         raise InferenceClientError(
             f"Stage '{stage_key}' exceeded max tool rounds ({max_tool_rounds})"
         )

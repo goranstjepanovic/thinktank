@@ -88,4 +88,14 @@ export const api = {
   },
   listFailureAnalyses: (ideaId: string) =>
     request<import('../types').FailureAnalysis[]>(`/ideas/${ideaId}/failure-analyses`),
+
+  // Settings
+  getSettings: () => request<{ implementations_dir: string }>('/settings'),
+  updateSettings: (body: { implementations_dir: string }) =>
+    request<{ implementations_dir: string }>('/settings', { method: 'POST', body: JSON.stringify(body) }),
+  moveImplementations: (destination: string) =>
+    request<{ moved_items: number; updated_sessions: number; implementations_dir: string }>(
+      '/settings/move-implementations',
+      { method: 'POST', body: JSON.stringify({ destination }) },
+    ),
 };

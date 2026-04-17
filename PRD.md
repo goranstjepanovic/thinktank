@@ -2,8 +2,8 @@
 
 **Status**: Draft  
 **Author**: Solo  
-**Date**: 2026-04-16  
-**Version**: 1.5
+**Date**: 2026-04-17  
+**Version**: 1.6
 
 ---
 
@@ -134,7 +134,10 @@ Phase 3 is the main development cycle, driven by the artifacts created in Phase 
 | F17 | Solution Selection | After analysis converges, the user reviews all viable solutions and marks one as Selected. The selected solution becomes the starting point for Phase 2 (implementation). Only one solution per idea can be selected. Selection is recorded with a timestamp and any notes the user adds. | P1 |
 | F19 | Phase 2 Interactive Loop *(future)* | After solution selection, an interactive session begins. The system opens with the Open Questions from the documentation package and asks the user to resolve each one. The user may add additional context, preferences, or constraints at any time. During implementation the system surfaces new questions as they arise rather than making silent assumptions. Each implementation artifact can be reviewed and the user can provide corrections or redirections before the next step proceeds. The interaction history is persisted alongside the idea. | P2 |
 | F18 | Web Search Tool | Tool available to deep-analysis pipeline models: model issues a search query, backend fetches results via DuckDuckGo (default) or Tavily (if API key configured), results returned as tool call response. Enables models to verify library/component existence, current best practices, and compatibility. Searches logged in audit trail. | P1 |
-| F19 | File Editing Tool | Tool that allows any model to make change to files by searching and replacing or inserting content into specific location | P1 |
+| F19 | File Editing Tool | Tool that allows any model to make changes to files by searching and replacing or writing complete file content | P1 |
+| F20 | Background Shell Processes | Long-running commands (dev servers, watchers) run as background processes. Agent can start, poll output, and stop them independently without blocking the tool loop | P1 |
+| F21 | Configurable Implementations Directory | User-configurable output directory for generated projects, set via a Settings page. Offers to move all existing projects when the path changes, skipping ephemeral dev directories (node_modules, .venv, etc.) during the move | P1 |
+| F22 | Agent Web Search for Package Verification | Agent uses `web_search` before finalising a tech stack or fixing package errors, checking current stable versions and import paths. Prevents stale training-data assumptions from producing broken dependency declarations | P1 |
 
 ### Analysis Pipeline (per Solution Branch)
 
@@ -454,8 +457,8 @@ Models in any pipeline stage can invoke a `run_python` tool call. The backend ex
 
 | Milestone | Description | Status |
 |-----------|-------------|--------|
-| M10 | Phase 2 kickoff: interactive resolution of Open Questions from selected solution's docs; user provides additional context and constraints before implementation begins | ⬜ Future |
-| M11 | Software implementation: code generation from resolved docs; scaffolding, tests, runnable app; user reviews and redirects each step | ⬜ Future |
+| M10 | Phase 2 kickoff: interactive resolution of Open Questions from selected solution's docs; user provides additional context and constraints before implementation begins | ✅ Done |
+| M11 | Software implementation: code generation from resolved docs; scaffolding, tests, runnable app; user reviews and redirects each step | ⚠️ Partial |
 | M12 | Physical implementation: engineering artifact generation; component diagrams, CAD/3D-printable assets, BOM, assembly instructions; user reviews each artifact | ⬜ Future |
 | M13 | Refinement loop: user feedback incorporated across multiple implementation rounds; persistent interaction history per idea | ⬜ Future |
 
@@ -485,3 +488,4 @@ Models in any pipeline stage can invoke a `run_python` tool call. The backend ex
 | 1.2 | 2026-04-15 | Solo | Added F16: Python Script Runner tool — sandboxed execution available to all pipeline models for grounded calculation and data parsing |
 | 1.3 | 2026-04-16 | Solo | Captured two-phase vision: Phase 1 = analysis & selection (current), Phase 2 = implementation assistance (future, software → working app, hardware → CAD/3D artifacts). Added deliberate human review/selection stopping point between phases. Added F17 (Solution Selection), F18 (Web Search Tool). Moved code generation from Non-Goal to deferred Phase 2 scope. Updated milestones to reflect phase structure and current status. |
 | 1.5 | 2026-04-16 | Solo | Revisions Phases 1, 2 and 3 to establish a clear three-phase workflow: Analysis $\\to$ Open Question Resolution $\\to$ Implementation. Added Phase 3 focus area and detailed initial plans for agent integration. |
+| 1.6 | 2026-04-17 | Solo | Added F20–F22: background shell processes for long-running commands, configurable implementations directory with move support, agent web search for package version verification. Updated M11 to Partial. |

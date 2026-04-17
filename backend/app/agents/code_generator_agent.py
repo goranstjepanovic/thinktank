@@ -6,19 +6,19 @@ Pass 1-N: One call_text() per file → write immediately to disk → emit event
 Final: Run each setup command → emit event
 """
 
+import json
 import logging
-import re
 from pathlib import Path
 from typing import Callable, Awaitable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document, Idea, Phase2Session, Phase3Session, SolutionBranch
+from app.db.models import Document, Idea, Phase2Session, Phase3ActivityEvent, Phase3Session, SolutionBranch
 from app.inference.base import Message
 from app.inference.client import InferenceClient
-from app.services.file_manager import file_manager
-from app.tools.shell_runner import run_shell_command
+from app.services.file_manager import file_manager, strip_leading_markdown_fence
+from app.tools.shell_runner import ShellResult, run_shell_command, shell_environment_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +26,40 @@ PLAN_STAGE_KEY = "phase3_plan"
 FILE_STAGE_KEY = "phase3_file"
 PRD_STAGE_KEY  = "phase3_prd"
 PRD_PATH       = "docs/PRD.md"
-
-_FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
-
+MAX_COMMAND_REPAIR_ROUNDS = 2
 
 def _strip_code_fence(text: str) -> str:
-    """Remove a markdown code fence wrapper if present (e.g. ```json...```)."""
-    m = _FENCE_RE.match(text.strip())
-    return m.group(1) if m else text
+    """Remove a leading markdown code fence from generated file content."""
+    return strip_leading_markdown_fence(text)
+
+
+def _root_script_recommendation() -> str:
+    import sys as _sys
+    if _sys.platform == "win32":
+        return (
+            "Do NOT generate a Makefile — `make` is not available on Windows. "
+            "Use `pyproject.toml` (with a `[tool.scripts]` section) or a root `package.json` "
+            "with `dev`, `build`, and `test` scripts instead. "
+            "For multi-service projects use `docker-compose.yml`."
+        )
+    return (
+        "One of: `Makefile`, `docker-compose.yml`, or a root `package.json` / `pyproject.toml` "
+        "with `dev`, `build`, `test` scripts — whichever fits the stack"
+    )
 
 
 def _plan_system_prompt() -> str:
     return (
         "You are an expert software architect. Given a project specification, produce a complete, "
         "well-structured file plan for the project.\n\n"
+        "## Before planning — verify package versions\n\n"
+        "Your training data may be stale. Before finalising the tech stack:\n"
+        "1. Use `web_search` to check the current stable version of each major library or framework "
+        "you plan to use (e.g. 'React latest stable version 2025', 'FastAPI latest version', "
+        "'SQLAlchemy 2.x async tutorial')\n"
+        "2. Verify that the versions you choose are compatible with each other\n"
+        "3. Check for any major breaking changes or deprecations since your training cutoff\n\n"
+        "Only proceed to the file plan after confirming the packages and versions are current.\n\n"
         "## Folder structure rules\n\n"
         "Organise files into directories that reflect the project's architecture. Use these conventions:\n"
         "- `frontend/` or `client/` — all UI code (React, Vue, HTML/CSS/JS, etc.)\n"
@@ -54,8 +74,7 @@ def _plan_system_prompt() -> str:
         "- `README.md` — setup, usage, and architecture overview\n"
         "- `.gitignore` — appropriate for the tech stack\n"
         "- `.env.example` — all required environment variables with placeholder values\n"
-        "- One of: `Makefile`, `docker-compose.yml`, or a root `package.json` / `pyproject.toml` "
-        "with `dev`, `build`, `test` scripts — whichever fits the stack\n"
+        f"- {_root_script_recommendation()}\n"
         "- `docker-compose.yml` if the project has more than one service (frontend + backend, "
         "app + database, etc.)\n\n"
         "## Output format\n\n"
@@ -69,7 +88,9 @@ def _plan_system_prompt() -> str:
         "- Order files: root scaffolding first, then by directory (backend before frontend), "
         "then tests, then docs\n"
         "- Descriptions must be specific (not just 'main file' — say what it does)\n"
+        f"- Command environment: {shell_environment_context()}\n"
         "- Commands: non-interactive only; install dependencies then verify the build/tests\n"
+        "- Commands must be one command per string. Do not chain commands with &&, ||, or ;\n"
         "- Output ONLY the JSON object — no prose, no markdown fences\n"
     )
 
@@ -243,7 +264,10 @@ def _iteration_plan_system_prompt() -> str:
         "2. Call `list_files` on subdirectories you need to explore\n"
         "3. Call `grep_files` to find the exact file containing a function, import, or variable\n"
         "4. Call `read_file` to inspect the files that need to change\n"
-        "5. Once you have enough context, output the JSON plan\n\n"
+        "5. If the request involves adding or upgrading a library/package, use `web_search` to verify "
+        "the current stable version and its API (e.g. 'axios latest version npm', "
+        "'pydantic v2 migration guide') before writing code that uses it\n"
+        "6. Once you have enough context, output the JSON plan\n\n"
         "## Output format\n\n"
         "Output a JSON object — no prose, no markdown fences:\n"
         '{"message": "2-3 sentences describing what you found in the project and exactly what changes you will make", '
@@ -254,6 +278,10 @@ def _iteration_plan_system_prompt() -> str:
         "- New files must follow the existing project folder structure\n"
         "- If creating a new file, state 'CREATE:' at the start of its description\n"
         "- The description must be specific about exactly what change is needed\n"
+        f"- Command environment: {shell_environment_context()}\n"
+        "- Commands must be one command per string. Do not chain commands with &&, ||, or ;\n"
+        "- If no files need to change, return {\"message\":\"No files need to change.\",\"files\":[],\"commands\":[]}\n"
+        "- Never answer with prose after using tools; always return the JSON object\n"
     )
 
 
@@ -288,9 +316,316 @@ def _format_file_plan(files: list[dict]) -> str:
     return "\n".join(f"  {f['path']} — {f['description']}" for f in files)
 
 
+def _command_failed(result: ShellResult) -> bool:
+    return result.exit_code != 0 or result.timed_out
+
+
+def _format_command_results(results: list[tuple[str, ShellResult]]) -> str:
+    parts = [f"SHELL ENVIRONMENT: {shell_environment_context()}"]
+    for command, result in results:
+        status = "FAILED" if _command_failed(result) else "PASSED"
+        parts.append(
+            "\n".join([
+                f"COMMAND: {command}",
+                f"STATUS: {status}",
+                f"EXIT_CODE: {result.exit_code}",
+                f"TIMED_OUT: {result.timed_out}",
+                f"STDOUT:\n{result.stdout[-6000:] or '(empty)'}",
+                f"STDERR:\n{result.stderr[-6000:] or '(empty)'}",
+            ])
+        )
+    return "\n\n---\n\n".join(parts)
+
+
+def _repair_system_prompt() -> str:
+    return (
+        "You are an autonomous implementation repair agent. The project has already been generated "
+        "or modified, and verification commands were run. Some commands failed.\n\n"
+        "Use the available tools to inspect files, edit files, and rerun commands. Continue fixing "
+        "until the failing commands pass or you are blocked by a missing external dependency, secret, "
+        "network service, or user decision.\n\n"
+        "Rules:\n"
+        f"- Shell environment: {shell_environment_context()}\n"
+        "- Run exactly one command per run_shell call. Do not chain commands with &&, ||, or ;\n"
+        "- If a failure involves a package, import error, or version mismatch, use `web_search` to "
+        "check the current package name, version, and correct import path before editing files "
+        "(e.g. 'pydantic BaseSettings import v2', 'react-router-dom v6 useNavigate'). "
+        "Do not guess — verify first.\n"
+        "- Do not ask the user for help unless the failure cannot be fixed from the repository.\n"
+        "- If a required system-level tool is missing, report that blocker instead of trying to install global packages.\n"
+        "- Prefer small targeted edits based on actual command output.\n"
+        "- After editing, rerun the relevant failing command with run_shell.\n"
+        "- If you have edited a file and the same command fails again with the same error, STOP — "
+        "report it as a blocker rather than looping. Do not edit and rerun more than twice for the same failure.\n"
+        "- Return a JSON object only: "
+        '{"message":"what you fixed or why you are blocked","files":[{"path":"relative/path","description":"change made"}],"commands":["commands that now pass or still fail"]}'
+    )
+
+
+def _repair_user_prompt(command_results: list[tuple[str, ShellResult]]) -> str:
+    return (
+        "The following verification/setup commands were run after Phase 3 file generation or iteration. "
+        "At least one failed. Inspect the project, fix the cause, and rerun the relevant commands.\n\n"
+        f"{_format_command_results(command_results)}"
+    )
+
+
+def _is_command_only_request(user_request: str) -> bool:
+    request = user_request.lower()
+    command_terms = ("run", "rerun", "re-run", "retry", "execute", "command", "test", "build", "failed")
+    generation_terms = ("create", "generate", "write file", "add file", "modify", "change", "fix", "update")
+    return any(term in request for term in command_terms) and not any(
+        term in request for term in generation_terms
+    )
+
+
+def _command_request_system_prompt() -> str:
+    return (
+        "You are an autonomous implementation agent responding to a user request about commands, "
+        "tests, builds, or running the project.\n\n"
+        "CRITICAL: Always read the USER REQUEST first and treat it as the authoritative description "
+        "of what is happening. If the user says something works, it works — do not contradict them "
+        "based on old command output. Respond to what the user is actually asking.\n\n"
+        "## Exploration workflow — ALWAYS do this first\n\n"
+        "Before running any command, explore the project to understand what is actually there:\n"
+        "1. Call `list_files` with path='' to see the project root layout\n"
+        "2. Look for build/run entry points: `package.json`, `Makefile`, `pyproject.toml`, "
+        "`requirements.txt`, `Cargo.toml`, `go.mod`, `docker-compose.yml`, etc.\n"
+        "3. Call `read_file` on any entry-point file you find to learn the available scripts/targets\n"
+        "4. If you encounter an unfamiliar error or a package/import problem, use `web_search` to "
+        "look up the current solution before editing files "
+        "(e.g. 'npm ERR peer dependency react 18', 'ModuleNotFoundError langchain 0.2'). "
+        "Your training data may be stale — verify before guessing.\n"
+        "5. Only after you know what files exist and what scripts they define, decide which command to run\n\n"
+        "Never assume a tech stack or command based on what the project was *supposed* to generate — "
+        "always verify by reading the actual files on disk.\n\n"
+        "Rules:\n"
+        f"- Shell environment: {shell_environment_context()}\n"
+        "- Run exactly one command per run_shell call. Do not chain commands with &&, ||, or ;\n"
+        "- If a command fails, read the error output carefully and fix the root cause before rerunning — "
+        "do not retry the same failing command unchanged.\n"
+        "- If you have edited a file and the same command fails again with the same error, STOP retrying "
+        "and report it as a blocker — do not keep editing and rerunning in a loop.\n"
+        "- Do not generate unrelated files.\n"
+        "- If a required system-level tool is missing, report that blocker instead of trying to install global packages.\n"
+        "- Do not ask the user for help unless the issue requires a secret, external service, missing system dependency, or decision.\n"
+        "- IMPORTANT: if commands are still failing after your attempts, your `message` field MUST clearly "
+        "describe what failed and why — do NOT return a generic success message when commands failed.\n"
+        "- Return a JSON object only: "
+        '{"message":"what you did and what the command result means — be explicit about failures","files":[{"path":"relative/path","description":"change made"}],"commands":["commands run"]}'
+    )
+
+
+def _command_request_user_prompt(
+    user_request: str,
+    command_results: list[tuple[str, ShellResult]],
+) -> str:
+    history = (
+        _format_command_results(command_results)
+        if command_results
+        else "No previous command results are available."
+    )
+    return (
+        f"USER REQUEST:\n{user_request}\n\n"
+        "IMPORTANT: The user's message above describes the CURRENT state of the project. "
+        "Trust what the user says over any previous command output — if the user says the app "
+        "starts or a command works, do not treat it as failed. Address what the user is actually "
+        "asking for, not what previous commands showed.\n\n"
+        "PREVIOUS COMMAND HISTORY (for context only — the user's description above takes precedence):\n"
+        f"{history}"
+    )
+
+
 class CodeGeneratorAgent:
     def __init__(self, inference_client: InferenceClient) -> None:
         self._client = inference_client
+
+    async def _run_commands(
+        self,
+        commands: list[str],
+        output_dir: str,
+        on_tool_result: Callable[[str, dict], Awaitable[None]] | None,
+    ) -> list[tuple[str, ShellResult]]:
+        results: list[tuple[str, ShellResult]] = []
+        for command in commands:
+            logger.info("code_generator: running command: %s", command)
+            shell_result = await run_shell_command(command=command, working_dir=output_dir)
+            results.append((command, shell_result))
+            if on_tool_result:
+                await on_tool_result("run_shell", {
+                    "command": command,
+                    "exit_code": shell_result.exit_code,
+                    "stdout": shell_result.stdout,
+                    "stderr": shell_result.stderr,
+                    "timed_out": shell_result.timed_out,
+                    "duration_ms": shell_result.duration_ms,
+                })
+        return results
+
+    async def _repair_failed_commands(
+        self,
+        db: AsyncSession,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        command_results: list[tuple[str, ShellResult]],
+        on_tool_result: Callable[[str, dict], Awaitable[None]] | None,
+    ) -> str:
+        failed = [(command, result) for command, result in command_results if _command_failed(result)]
+        if not failed:
+            return ""
+
+        repair_summaries: list[str] = []
+        current_results = command_results
+        for round_index in range(MAX_COMMAND_REPAIR_ROUNDS):
+            failed = [(command, result) for command, result in current_results if _command_failed(result)]
+            if not failed:
+                break
+
+            logger.info(
+                "code_generator: repair round %d for %d failed command(s)",
+                round_index + 1,
+                len(failed),
+            )
+            repair_data = await self._client.call_with_tools(
+                stage_key="phase3_explore",
+                messages=[
+                    Message(role="system", content=_repair_system_prompt()),
+                    Message(role="user", content=_repair_user_prompt(current_results)),
+                ],
+                session=db,
+                idea_id=idea.id,
+                branch_id=branch.id,
+                allowed_file_dir=output_dir,
+                explore_only=False,
+                max_tool_rounds=40,
+                return_json=True,
+                call_index=1000 + round_index,
+                on_tool_result=on_tool_result,
+            )
+
+            if isinstance(repair_data, dict):
+                message = str(repair_data.get("message", "")).strip()
+                if message:
+                    repair_summaries.append(message)
+
+            rerun_commands = [command for command, _ in failed]
+            current_results = await self._run_commands(rerun_commands, output_dir, on_tool_result)
+
+        remaining_failures = [command for command, result in current_results if _command_failed(result)]
+        if remaining_failures:
+            repair_summaries.append(
+                "Still failing after repair attempts: " + ", ".join(remaining_failures)
+            )
+        elif current_results:
+            repair_summaries.append("Verification commands passed after repair.")
+
+        return " ".join(repair_summaries)
+
+    async def _recent_command_results(
+        self,
+        db: AsyncSession,
+        session: Phase3Session,
+        limit: int = 6,
+    ) -> list[tuple[str, ShellResult]]:
+        result = await db.execute(
+            select(Phase3ActivityEvent)
+            .where(
+                Phase3ActivityEvent.session_id == session.id,
+                Phase3ActivityEvent.event_type == "command_executed",
+            )
+            .order_by(Phase3ActivityEvent.created_at.desc())
+        )
+        results: list[tuple[str, ShellResult]] = []
+        for event in result.scalars():
+            if len(results) >= limit:
+                break
+            try:
+                payload = json.loads(event.payload_json)
+            except json.JSONDecodeError:
+                continue
+            command = str(payload.get("command", "")).strip()
+            if not command:
+                continue
+            results.append((
+                command,
+                ShellResult(
+                    stdout=str(payload.get("stdout", "")),
+                    stderr=str(payload.get("stderr", "")),
+                    exit_code=int(payload.get("exit_code", -1)),
+                    duration_ms=int(payload.get("duration_ms", 0)),
+                    timed_out=bool(payload.get("timed_out", False)),
+                ),
+            ))
+        return results
+
+    async def _handle_command_request(
+        self,
+        db: AsyncSession,
+        session: Phase3Session,
+        idea: Idea,
+        branch: SolutionBranch,
+        user_request: str,
+        output_dir: str,
+        on_tool_result: Callable[[str, dict], Awaitable[None]] | None,
+        chat_history: list[Message] | None = None,
+    ) -> str:
+        command_results = await self._recent_command_results(db, session)
+
+        # Capture commands executed during the tool loop so we can detect failures
+        loop_command_results: list[tuple[str, ShellResult]] = []
+
+        async def _capture_and_forward(tool_name: str, payload: dict) -> None:
+            if tool_name == "run_shell":
+                command = str(payload.get("command", "")).strip()
+                if command:
+                    loop_command_results.append((
+                        command,
+                        ShellResult(
+                            stdout=str(payload.get("stdout", "")),
+                            stderr=str(payload.get("stderr", "")),
+                            exit_code=int(payload.get("exit_code", -1)),
+                            duration_ms=int(payload.get("duration_ms", 0)),
+                            timed_out=bool(payload.get("timed_out", False)),
+                        ),
+                    ))
+            if on_tool_result:
+                await on_tool_result(tool_name, payload)
+
+        messages = [Message(role="system", content=_command_request_system_prompt())]
+        if chat_history:
+            messages.extend(chat_history)
+        messages.append(Message(role="user", content=_command_request_user_prompt(user_request, command_results)))
+
+        response = await self._client.call_with_tools(
+            stage_key="phase3_explore",
+            messages=messages,
+            session=db,
+            idea_id=idea.id,
+            branch_id=branch.id,
+            allowed_file_dir=output_dir,
+            explore_only=False,
+            max_tool_rounds=50,
+            return_json=True,
+            call_index=2000,
+            on_tool_result=_capture_and_forward,
+        )
+
+        message = ""
+        if isinstance(response, dict):
+            message = str(response.get("message", "")).strip()
+        else:
+            message = str(response).strip()
+
+        # Run the same repair loop used by run_implementation / run_iteration
+        if loop_command_results:
+            repair_summary = await self._repair_failed_commands(
+                db, idea, branch, output_dir, loop_command_results, on_tool_result
+            )
+            if repair_summary:
+                message = (message + " " + repair_summary).strip() if message else repair_summary
+
+        return message or "Command request handled."
 
     async def run_implementation(
         self,
@@ -315,16 +650,20 @@ class CodeGeneratorAgent:
                 architecture_doc, component_specs, roadmap_doc,
             )),
         ]
-        plan_data = await self._client.call(
+        plan_data = await self._client.call_with_tools(
             stage_key=PLAN_STAGE_KEY,
             messages=plan_messages,
             session=db,
             idea_id=idea.id,
             branch_id=branch.id,
-            call_type="PHASE3",
+            max_tool_rounds=10,
+            return_json=True,
             call_index=0,
         )
 
+        if not isinstance(plan_data, dict):
+            logger.warning("code_generator: plan stage returned non-dict: %s", type(plan_data))
+            plan_data = {}
         files: list[dict] = _normalize_files(plan_data.get("files", []))
         commands: list[str] = [str(c) for c in plan_data.get("commands", []) if c]
 
@@ -419,23 +758,17 @@ class CodeGeneratorAgent:
                 })
 
         # ── Final: run setup commands ─────────────────────────────────────────
-        for command in commands:
-            logger.info("code_generator: running command: %s", command)
-            shell_result = await run_shell_command(command=command, working_dir=output_dir)
-            if on_tool_result:
-                await on_tool_result("run_shell", {
-                    "command": command,
-                    "exit_code": shell_result.exit_code,
-                    "stdout": shell_result.stdout,
-                    "stderr": shell_result.stderr,
-                    "timed_out": shell_result.timed_out,
-                    "duration_ms": shell_result.duration_ms,
-                })
+        command_results = await self._run_commands(commands, output_dir, on_tool_result)
+        repair_summary = await self._repair_failed_commands(
+            db, idea, branch, output_dir, command_results, on_tool_result
+        )
 
         file_list = ", ".join(written_paths[:5])
         if len(written_paths) > 5:
             file_list += f", … ({len(written_paths) - 5} more)"
         cmd_summary = f" Ran {len(commands)} setup command(s)." if commands else ""
+        if repair_summary:
+            cmd_summary += f" {repair_summary}"
         return (
             f"Wrote {files_written}/{len(files)} file(s): {file_list}.{cmd_summary} "
             f"Project is at: {output_dir}"
@@ -458,6 +791,7 @@ class CodeGeneratorAgent:
         branch: SolutionBranch,
         user_request: str,
         on_tool_result: Callable[[str, dict], Awaitable[None]] | None = None,
+        chat_history: list[Message] | None = None,
     ) -> str:
         """
         Iteration pass: given a user change request, produce only the affected files.
@@ -465,6 +799,12 @@ class CodeGeneratorAgent:
         """
         output_dir = session.output_dir or ""
         previous_summary = session.summary or "No previous summary."
+
+        if _is_command_only_request(user_request):
+            return await self._handle_command_request(
+                db, session, idea, branch, user_request, output_dir, on_tool_result,
+                chat_history=chat_history,
+            )
 
         # Pass 0: explore project with tools, then plan which files to change
         plan_messages = [
@@ -481,7 +821,7 @@ class CodeGeneratorAgent:
             branch_id=branch.id,
             allowed_file_dir=output_dir,
             explore_only=True,
-            max_tool_rounds=10,
+            max_tool_rounds=None,
             return_json=True,
         )
 
@@ -573,22 +913,18 @@ class CodeGeneratorAgent:
                     "detail": result.get("error", ""),
                 })
 
-        for command in commands:
-            shell_result = await run_shell_command(command=command, working_dir=output_dir)
-            if on_tool_result:
-                await on_tool_result("run_shell", {
-                    "command": command,
-                    "exit_code": shell_result.exit_code,
-                    "stdout": shell_result.stdout,
-                    "stderr": shell_result.stderr,
-                    "timed_out": shell_result.timed_out,
-                    "duration_ms": shell_result.duration_ms,
-                })
+        command_results = await self._run_commands(commands, output_dir, on_tool_result)
+        repair_summary = await self._repair_failed_commands(
+            db, idea, branch, output_dir, command_results, on_tool_result
+        )
 
         changed = ", ".join(written_paths[:5])
         if len(written_paths) > 5:
             changed += f", … ({len(written_paths) - 5} more)"
-        return f"Updated {files_written} file(s): {changed}." if files_written else "No files were written."
+        summary = f"Updated {files_written} file(s): {changed}." if files_written else "No files were written."
+        if repair_summary:
+            summary += f" {repair_summary}"
+        return summary
 
     async def _load_doc(self, db: AsyncSession, branch: SolutionBranch, doc_type: str) -> str:
         result = await db.execute(

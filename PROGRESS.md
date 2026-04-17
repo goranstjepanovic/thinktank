@@ -1,7 +1,7 @@
 # Think Tank — Progress & TODO
 
-**Last updated**: 2026-04-17 (session 11)
-**Session summary**: Phase 3 iteration agent given file exploration tools (list_files, read_file, grep_files) via call_with_tools explore_only mode — model navigates the project before planning changes instead of receiving all file contents upfront. PRD always generated as first file (docs/PRD.md) with dedicated phase3_prd stage using full Phase 1 + Phase 2 context. Theme changed to burnt orange. README added. backend/data excluded from git.
+**Last updated**: 2026-04-17 (session 12)
+**Session summary**: Major Phase 3 agent reliability pass. Agent now explores project before running commands, background shell process support added (run_shell_background / get_shell_output / stop_shell_process), chat history threaded into iteration calls, Windows-specific fixes (no Makefile, chained command blocking, npm parent-package detection). Fixed empty file writes, JSON fence parsing (brace on fence line), insert_lines removed. File browser gets react-icons file type icons. Configurable implementations directory added: Settings page, settings API, user_settings service, move-with-skip-dev-dirs. Agent web search added for package version verification — plan stage now uses call_with_tools; all tool-enabled prompts instruct web_search before picking or fixing packages.
 
 ---
 
@@ -20,7 +20,7 @@
 | M8 | Polish + dogfooding Think Tank with Think Tank | ❌ Not started | |
 | M9 | Solution selection: SELECTED state, selection UI, notes | ✅ Done | |
 | M10 | Phase 2 kickoff: interactive Q&A session, Open Questions resolution | ✅ Done | |
-| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass + iteration loop implemented; untested end-to-end |
+| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass + iteration loop + agent tooling implemented; needs real-world validation |
 
 ---
 
@@ -33,7 +33,9 @@
 - **All 8 pipeline stages** — s0 intake → s7 documentation
 - **Orchestrator** — spawns 2 initial branches, manages asyncio task pool
 - **Phase 2** — interactive Q&A loop, resolution summary, READY state
-- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md, shell commands, activity events, WebSocket events, file browser endpoints
+- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md, shell commands (foreground + background), background process manager, activity events, WebSocket events, file browser endpoints
+- **Settings** — configurable implementations directory (user_settings service + JSON override), Settings page UI, move-implementations endpoint with dev-dir skip (node_modules, .venv, __pycache__, etc.)
+- **Agent reliability** — exploration-first prompts, chat history threading, Windows-aware command guidance, empty-write guard, JSON fence fix, insert_lines removed, round limits raised (40/50)
 
 ### Frontend (working)
 - Ideas dashboard with sort (active first) and section grouping
@@ -43,7 +45,8 @@
 - Phase nav breadcrumbs (1. Analysis › 2. Q&A › 3. Build)
 - Smart redirect to deepest active phase
 - Phase 2 chat with typing indicators and streaming
-- Phase 3 activity log + Files tab with file browser
+- Phase 3 activity log + Files tab with file browser (file-type icons via react-icons)
+- Settings page: configurable implementations directory, move-with-skip dialog
 - Audit trail with call type filter
 
 ---
@@ -51,11 +54,11 @@
 ## Known Issues — Phase 3
 
 ### High Priority
-1. **Iteration loop untested end-to-end** — Tool-calling exploration loop (list_files/read_file/grep_files → JSON plan) implemented but not yet validated with qwen2.5:7b on a real project.
+1. **End-to-end validation needed** — Full pipeline (Phase 1 → 2 → 3) not yet run on a real project. Agent reliability fixes implemented but not validated in practice with the Gemma4 model.
 
-2. **File quality unknown** — Multi-pass generation implemented but untested end-to-end with phi4:14b. JSON plan format and per-file prompts may need tuning.
+2. **No failed-file indicator in UI** — If a file fails to write, there is no visual indicator in the activity log (only the `✓` count in the summary differs from plan count).
 
-3. **No failed-file fallback in UI** — If a file fails to write, there is no visual indicator in the activity log (only the `✓` count in the summary differs from plan count).
+3. **plan stage tools untested** — `phase3_plan` now uses `call_with_tools` with web_search enabled. phi4:14b tool-calling behaviour with the new prompt needs real-world validation.
 
 ---
 
@@ -76,6 +79,11 @@ Backend: Phase3Message model, POST /ideas/{id}/phase3/messages, run_iteration() 
 - [ ] File browser: copy file content button
 - [ ] File browser: open in VS Code button (`vscode://file/path`)
 - [ ] Show total project size in completion panel
+
+### 7. Phase 3: Agent — remaining improvements
+
+- [ ] Parallel tool execution — extract dispatch into `_dispatch_tool()`, use `asyncio.gather` for independent tool calls within a round (deferred, agreed with user)
+- [ ] Validate phi4:14b web_search behaviour in planning stage with a real project
 
 ### 4. Phase 3: Models.yaml restructure ✅ DONE
 
