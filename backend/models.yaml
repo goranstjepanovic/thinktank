@@ -1,0 +1,128 @@
+defaults:
+  temperature: 0.2
+  max_tokens: null
+  format: "json"
+  supports_tools: false
+
+backends:
+  ollama:
+    base_url: "http://localhost:11434"
+    timeout_seconds: 120
+  llamacpp:
+    base_url: "http://localhost:8080"
+    timeout_seconds: 120
+  openvino:
+    # Post-v1. Driver raises NotImplementedError until implemented.
+    model_dir: "C:/models/openvino"
+    device: "NPU"
+    timeout_seconds: 60
+
+stages:
+  intake:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.1
+    max_tokens: 1024
+
+  feasibility_scan:
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 2048
+
+  solution_design:
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.4
+    max_tokens: 4096
+
+  solution_analysis:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 3072
+    num_ctx: 16384
+    supports_tools: true
+
+  decomposition:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.15
+    max_tokens: 4096
+    num_ctx: 16384
+    supports_tools: true
+
+  component_validator:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 2048
+    num_ctx: 16384
+    supports_tools: true
+
+  deep_review:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 3072
+    num_ctx: 16384
+    supports_tools: true
+
+  documentation:
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.3
+    max_tokens: 8192
+
+  failure_analysis:
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 2048
+
+  approach_generation:
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.5
+    max_tokens: 1024
+
+  phase2_conversation:
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.4
+    max_tokens: 4096
+    format: ""          # free-form markdown; OllamaDriver omits format field
+    num_ctx: 32768      # large window to hold full conversation + docs context
+
+  phase3_plan:  # Phase 3 pass 0 — JSON file manifest (paths + descriptions only)
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 2048
+    format: "json"
+    num_ctx: 32768
+    supports_tools: false
+
+  phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.3
+    max_tokens: 8192
+    format: ""            # free-form — output written directly to disk
+    num_ctx: 32768
+    supports_tools: false
+
+  phase3_iteration:  # Phase 3 iteration — plan which files to change given user request
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.3
+    max_tokens: 2048
+    format: "json"
+    num_ctx: 65536
+    supports_tools: false
+
+resources:
+  max_concurrent_branches: 4
+  initial_branches_per_idea: 2
+  max_branches_per_idea: 6
+  vram_budget_gb: 20.0

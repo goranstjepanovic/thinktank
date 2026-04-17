@@ -1,0 +1,13 @@
+{
+  "name": "thinktank",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"npm run dev:api\" \"npm run dev:ui\"",
+    "dev:api": "cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000",
+    "dev:ui": "npm --prefix frontend run dev",
+    "install:ui": "cd frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
