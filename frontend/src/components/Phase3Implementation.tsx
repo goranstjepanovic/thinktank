@@ -494,7 +494,7 @@ function HighlightedCode({ content, filename }: { content: string; filename: str
   );
 }
 
-function FileBrowser({ ideaId }: { ideaId: string }) {
+function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: number }) {
   const [files, setFiles] = useState<Phase3FileEntry[]>([]);
   const [outputDir, setOutputDir] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
@@ -507,21 +507,31 @@ function FileBrowser({ ideaId }: { ideaId: string }) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
+    // On initial load show the spinner; on live refreshes keep existing content visible
+    if (files.length === 0) setLoading(true);
     api.listPhase3Files(ideaId)
       .then((data) => {
         setFiles(data.files);
         setOutputDir(data.output_dir ?? null);
         const t = buildTree(data.files);
         setTree(t);
-        // All folders collapsed by default
-        setCollapsed(new Set(collectDirPaths(t)));
-        // Select first file
-        const firstFile = data.files.find(f => !f.path.endsWith('/'));
-        if (firstFile) setSelectedPath(firstFile.path);
+        setCollapsed(prev => {
+          // Preserve existing collapsed state; collapse any new dirs
+          const newDirs = new Set(collectDirPaths(t));
+          const next = new Set(prev);
+          for (const d of newDirs) if (!next.has(d)) next.add(d);
+          return next;
+        });
+        // Only auto-select if nothing is selected yet
+        setSelectedPath(prev => {
+          if (prev) return prev;
+          const firstFile = data.files.find(f => !f.path.endsWith('/'));
+          return firstFile ? firstFile.path : null;
+        });
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [ideaId]);
+  }, [ideaId, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!selectedPath) return;
@@ -693,6 +703,8 @@ export function Phase3Implementation() {
   const [chatInput, setChatInput] = useState('');
   const [sending, setSending] = useState(false);
   const [regenPrd, setRegenPrd] = useState(false);
+  const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -835,6 +847,9 @@ export function Phase3Implementation() {
               sizeBytes: event.payload.size_bytes as number,
               success: true,
             });
+            // Debounce file list refresh — at most once every 4 s during active generation
+            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+            fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
             break;
 
           case 'phase3.file_failed':
@@ -881,6 +896,9 @@ export function Phase3Implementation() {
                 addEntry({ kind: 'complete', id: nextId(), summary: s.summary, outputDir: s.output_dir ?? '' });
               }
             }).catch(() => {});
+            // Final refresh of file list when generation finishes
+            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+            setFileRefreshKey(k => k + 1);
             break;
 
           case 'phase3.message': {
@@ -1090,13 +1108,13 @@ export function Phase3Implementation() {
                 </span>
               )}
             </button>
-            {isComplete && (
+            {fileCount > 0 && (
               <button
                 className={`tab ${mainTab === 'files' ? 'active' : ''}`}
                 onClick={() => setMainTab('files')}
                 style={{ fontSize: 12 }}
               >
-                Files {fileCount > 0 && <span style={{ marginLeft: 4, color: 'var(--green)', fontSize: 11 }}>{fileCount}</span>}
+                Files <span style={{ marginLeft: 4, color: isComplete ? 'var(--green)' : 'var(--text2)', fontSize: 11 }}>{fileCount}</span>
               </button>
             )}
           </div>
@@ -1235,9 +1253,9 @@ export function Phase3Implementation() {
         )}
 
         {/* Files tab */}
-        {mainTab === 'files' && isComplete && (
+        {mainTab === 'files' && fileCount > 0 && (
           <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px' }}>
-            <FileBrowser ideaId={id!} />
+            <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} />
           </div>
         )}
       </div>
