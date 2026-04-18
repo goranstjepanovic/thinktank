@@ -28,18 +28,23 @@ PRD_STAGE_KEY  = "phase3_prd"
 PRD_PATH       = "docs/PRD.md"
 MAX_COMMAND_REPAIR_ROUNDS = 2
 
-# PRD sections generated individually to stay within output token limits
-_PRD_SECTIONS: list[tuple[str, str]] = [
-    ("Project Overview", "What the project is, the problem it solves, and who it is for."),
-    ("Requirements", "Functional and non-functional requirements, listed clearly with bullet points."),
-    ("Constraints", "Technical, resource, and business constraints."),
-    ("Solution Architecture", "The chosen solution approach and key architectural design decisions."),
-    ("Components", "Each component or service, its responsibility, and its main interfaces or APIs."),
-    ("Implementation Roadmap", "Development phases, milestones, and task breakdown in order."),
-    ("Technical Decisions", "Key decisions made during the design and Q&A phase with their rationale."),
-    ("Project Structure", "The directory and file layout of the project with a brief description of each folder."),
-    ("Setup & Development", "How to install dependencies, configure the environment, run the project locally, and run tests."),
+# PRD sections generated individually to stay within output token limits.
+# Third element lists which large Phase-2 docs to include — keeps each call
+# focused and prevents context-window overflow on local models.
+_PRD_SECTIONS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("Project Overview",       "What the project is, the problem it solves, and who it is for.",             ()),
+    ("Requirements",           "Functional and non-functional requirements, listed clearly with bullet points.", ("resolution_summary",)),
+    ("Constraints",            "Technical, resource, and business constraints.",                              ("resolution_summary",)),
+    ("Solution Architecture",  "The chosen solution approach and key architectural design decisions.",         ("architecture_doc",)),
+    ("Components",             "Each component or service, its responsibility, and its main interfaces or APIs.", ("component_specs",)),
+    ("Implementation Roadmap", "Development phases, milestones, and task breakdown in order.",                ("roadmap_doc",)),
+    ("Technical Decisions",    "Key decisions made during the design and Q&A phase with their rationale.",    ("resolution_summary", "architecture_doc")),
+    ("Project Structure",      "The directory and file layout of the project with a brief description of each folder.", ("file_plan_summary",)),
+    ("Setup & Development",    "How to install dependencies, configure the environment, run the project locally, and run tests.", ("file_plan_summary", "component_specs")),
 ]
+
+# Hard cap per large doc — safety net if a single doc is enormous (~3 K tokens)
+_MAX_PRD_DOC_CHARS = 12_000
 
 # Extensions that cannot be generated as text — skip silently with a note
 _BINARY_EXTENSIONS = {
@@ -214,7 +219,25 @@ def _prd_section_user_prompt(
     file_plan_summary: str,
     section_name: str,
     section_scope: str,
+    relevant_docs: tuple[str, ...] = (),
 ) -> str:
+    def _trunc(text: str) -> str:
+        return text if len(text) <= _MAX_PRD_DOC_CHARS else text[:_MAX_PRD_DOC_CHARS] + "\n... (truncated)"
+
+    doc_blocks: list[str] = []
+    if "resolution_summary" in relevant_docs:
+        doc_blocks.append(f"TECHNICAL DECISIONS (Phase 2 Q&A):\n{_trunc(resolution_summary)}")
+    if "architecture_doc" in relevant_docs:
+        doc_blocks.append(f"ARCHITECTURE:\n{_trunc(architecture_doc)}")
+    if "component_specs" in relevant_docs:
+        doc_blocks.append(f"COMPONENT SPECIFICATIONS:\n{_trunc(component_specs)}")
+    if "roadmap_doc" in relevant_docs:
+        doc_blocks.append(f"IMPLEMENTATION ROADMAP:\n{_trunc(roadmap_doc)}")
+    if "file_plan_summary" in relevant_docs:
+        doc_blocks.append(f"PROJECT FILE STRUCTURE:\n{_trunc(file_plan_summary)}")
+
+    docs_section = ("\n\n".join(doc_blocks) + "\n\n") if doc_blocks else ""
+
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION:\n{idea.description}\n\n"
@@ -222,11 +245,7 @@ def _prd_section_user_prompt(
         f"CONSTRAINTS:\n{idea.constraints}\n\n"
         f"SELECTED SOLUTION (Branch {branch.branch_index}):\n"
         f"{branch.approach_summary or 'N/A'}\n\n"
-        f"TECHNICAL DECISIONS (Phase 2 Q&A):\n{resolution_summary}\n\n"
-        f"ARCHITECTURE:\n{architecture_doc}\n\n"
-        f"COMPONENT SPECIFICATIONS:\n{component_specs}\n\n"
-        f"IMPLEMENTATION ROADMAP:\n{roadmap_doc}\n\n"
-        f"PROJECT FILE STRUCTURE:\n{file_plan_summary}\n\n"
+        f"{docs_section}"
         f"Write ONLY the `## {section_name}` section of the PRD.\n"
         f"Scope: {section_scope}"
     )
@@ -946,7 +965,7 @@ class CodeGeneratorAgent:
     ) -> str:
         """Generate the PRD section-by-section to stay within output token limits."""
         sections: list[str] = []
-        for i, (section_name, section_scope) in enumerate(_PRD_SECTIONS):
+        for i, (section_name, section_scope, relevant_docs) in enumerate(_PRD_SECTIONS):
             try:
                 text = await self._client.call_text(
                     stage_key=PRD_STAGE_KEY,
@@ -956,6 +975,7 @@ class CodeGeneratorAgent:
                             idea, branch, resolution_summary,
                             architecture_doc, component_specs, roadmap_doc,
                             file_plan_summary, section_name, section_scope,
+                            relevant_docs,
                         )),
                     ],
                     session=db,
