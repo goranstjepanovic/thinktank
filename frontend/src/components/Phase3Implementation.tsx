@@ -653,6 +653,7 @@ export function Phase3Implementation() {
   const [mainTab, setMainTab] = useState<MainTab>('log');
   const [chatInput, setChatInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [regenPrd, setRegenPrd] = useState(false);
 
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -892,6 +893,20 @@ export function Phase3Implementation() {
     }
   };
 
+  const doRegenPrd = async () => {
+    if (!id || regenPrd) return;
+    setRegenPrd(true);
+    setError(null);
+    try {
+      await api.regeneratePrd(id);
+      addEntry({ kind: 'thinking', id: nextId() });
+    } catch (e: unknown) {
+      setError(`Failed to regenerate PRD: ${(e as Error).message}`);
+    } finally {
+      setRegenPrd(false);
+    }
+  };
+
   if (!idea) {
     return <div className="page"><p style={{ color: 'var(--text2)' }}>Loading…</p></div>;
   }
@@ -1029,6 +1044,17 @@ export function Phase3Implementation() {
               </button>
             )}
           </div>
+          {isComplete && !isRunning && (
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 11, padding: '3px 10px', color: 'var(--text2)' }}
+              disabled={regenPrd}
+              onClick={doRegenPrd}
+              title="Re-generate docs/PRD.md from Phase 2 documents"
+            >
+              {regenPrd ? 'Regenerating…' : 'Regenerate PRD'}
+            </button>
+          )}
         </div>
 
         {/* Activity log tab */}

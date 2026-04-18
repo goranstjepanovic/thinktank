@@ -77,6 +77,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content }),
     }),
+  regeneratePrd: (id: string) =>
+    request<{ queued: boolean }>(`/ideas/${id}/phase3/regenerate-prd`, { method: 'POST', body: '{}' }),
 
   // Audit
   listModelCalls: (ideaId: string, branchId?: string, callType?: string) => {

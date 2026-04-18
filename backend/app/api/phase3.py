@@ -370,6 +370,80 @@ async def get_phase3_file(idea_id: str, path: str, db: AsyncSession = Depends(ge
     return {"path": path, "content": content, "size": size, "truncated": size > max_bytes}
 
 
+async def _run_prd_regeneration(idea_id: str, session_id: str) -> None:
+    from app.agents.code_generator_agent import CodeGeneratorAgent
+    from app.main import get_inference_client
+
+    async with AsyncSessionLocal() as db:
+        sess_r = await db.execute(select(Phase3Session).where(Phase3Session.id == session_id))
+        session = sess_r.scalar_one_or_none()
+        if not session:
+            return
+
+        idea_r = await db.execute(select(Idea).where(Idea.id == idea_id))
+        idea = idea_r.scalar_one_or_none()
+        branch_r = await db.execute(select(SolutionBranch).where(SolutionBranch.id == session.branch_id))
+        branch = branch_r.scalar_one_or_none()
+        if not idea or not branch:
+            return
+
+        session.status = "RUNNING"
+        await db.commit()
+        await event_bus.publish(ev.phase3_running(idea_id, session_id))
+        await event_bus.publish(ev.phase3_thinking(idea_id, session_id))
+
+        async def on_tool_result(tool_name: str, result: dict) -> None:
+            if tool_name == "file_edit" and result.get("success"):
+                payload = {"path": result.get("path", ""), "size_bytes": result.get("size_bytes", 0)}
+                await event_bus.publish(ev.phase3_file_written(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(
+                        session_id=session_id, event_type="file_written",
+                        payload_json=json.dumps(payload),
+                    ))
+                    await adb.commit()
+            elif tool_name == "file_edit" and not result.get("success"):
+                payload = {"path": result.get("path", ""), "detail": result.get("detail", "unknown error")}
+                await event_bus.publish(ev.phase3_file_failed(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(
+                        session_id=session_id, event_type="file_failed",
+                        payload_json=json.dumps(payload),
+                    ))
+                    await adb.commit()
+
+        agent = CodeGeneratorAgent(get_inference_client())
+        try:
+            success = await agent.generate_prd(db, session, idea, branch, on_tool_result)
+        except Exception as e:
+            logger.error("PRD regeneration failed for session %s: %s", session_id[:8], e)
+            success = False
+
+        session.status = "COMPLETE"
+        summary = "PRD regenerated successfully." if success else "PRD regeneration failed."
+        session.summary = summary
+        await db.commit()
+
+        await event_bus.publish(ev.phase3_complete(idea_id, session_id, summary=summary, output_dir=session.output_dir or "", is_iteration=True))
+
+
+@router.post("/{idea_id}/phase3/regenerate-prd", status_code=200)
+async def regenerate_prd(
+    idea_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_session),
+):
+    """Re-generate docs/PRD.md from Phase 2 documents without touching other files."""
+    session = await _get_phase3_or_404(idea_id, db)
+    if session.status in ("PLANNING", "RUNNING"):
+        raise HTTPException(status_code=409, detail="Generation already in progress")
+    if not session.output_dir:
+        raise HTTPException(status_code=409, detail="No output directory — run the full implementation first")
+
+    background_tasks.add_task(_run_prd_regeneration, idea_id, session.id)
+    return {"queued": True}
+
+
 @router.post("/{idea_id}/phase3/cancel", status_code=200)
 async def cancel_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
     """

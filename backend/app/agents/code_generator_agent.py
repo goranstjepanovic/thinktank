@@ -28,6 +28,19 @@ PRD_STAGE_KEY  = "phase3_prd"
 PRD_PATH       = "docs/PRD.md"
 MAX_COMMAND_REPAIR_ROUNDS = 2
 
+# PRD sections generated individually to stay within output token limits
+_PRD_SECTIONS: list[tuple[str, str]] = [
+    ("Project Overview", "What the project is, the problem it solves, and who it is for."),
+    ("Requirements", "Functional and non-functional requirements, listed clearly with bullet points."),
+    ("Constraints", "Technical, resource, and business constraints."),
+    ("Solution Architecture", "The chosen solution approach and key architectural design decisions."),
+    ("Components", "Each component or service, its responsibility, and its main interfaces or APIs."),
+    ("Implementation Roadmap", "Development phases, milestones, and task breakdown in order."),
+    ("Technical Decisions", "Key decisions made during the design and Q&A phase with their rationale."),
+    ("Project Structure", "The directory and file layout of the project with a brief description of each folder."),
+    ("Setup & Development", "How to install dependencies, configure the environment, run the project locally, and run tests."),
+]
+
 # Extensions that cannot be generated as text — skip silently with a note
 _BINARY_EXTENSIONS = {
     ".wasm", ".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
@@ -179,28 +192,19 @@ def _file_user_prompt(
     )
 
 
-def _prd_system_prompt() -> str:
+def _prd_section_system_prompt() -> str:
     return (
         "You are a technical writer and software architect. "
-        "Write a comprehensive Product Requirements Document (PRD) in Markdown.\n\n"
-        "This file will live at `docs/PRD.md` in the generated project and serves as the "
-        "single source of truth for anyone continuing development — including other AI coding tools.\n\n"
-        "## Required sections\n\n"
-        "1. **Project Overview** — what the project is, the problem it solves, who it is for\n"
-        "2. **Requirements** — functional and non-functional requirements, listed clearly\n"
-        "3. **Constraints** — technical, resource, and business constraints\n"
-        "4. **Solution Architecture** — chosen approach and key design decisions\n"
-        "5. **Components** — each component, its responsibility, and its main interfaces\n"
-        "6. **Implementation Roadmap** — phases, milestones, and task breakdown\n"
-        "7. **Technical Decisions** — decisions made during design/Q&A and their rationale\n"
-        "8. **Project Structure** — directory layout with a brief description of each folder\n"
-        "9. **Setup & Development** — how to install dependencies, run the project, and run tests\n\n"
+        "Write a single section of a Product Requirements Document in Markdown.\n\n"
+        "This document lives at `docs/PRD.md` and is the single source of truth for anyone "
+        "continuing development — including other AI coding tools.\n\n"
+        "Output ONLY raw Markdown for the requested section, starting with its `##` heading. "
         "Write for a developer who has never seen this project before. "
-        "Output ONLY raw Markdown — no code fences wrapping the document, no preamble."
+        "No preamble, no other sections, no code fences."
     )
 
 
-def _prd_user_prompt(
+def _prd_section_user_prompt(
     idea: Idea,
     branch: SolutionBranch,
     resolution_summary: str,
@@ -208,6 +212,8 @@ def _prd_user_prompt(
     component_specs: str,
     roadmap_doc: str,
     file_plan_summary: str,
+    section_name: str,
+    section_scope: str,
 ) -> str:
     return (
         f"PROJECT: {idea.name}\n"
@@ -221,7 +227,8 @@ def _prd_user_prompt(
         f"COMPONENT SPECIFICATIONS:\n{component_specs}\n\n"
         f"IMPLEMENTATION ROADMAP:\n{roadmap_doc}\n\n"
         f"PROJECT FILE STRUCTURE:\n{file_plan_summary}\n\n"
-        "Write the complete PRD now."
+        f"Write ONLY the `## {section_name}` section of the PRD.\n"
+        f"Scope: {section_scope}"
     )
 
 
@@ -746,15 +753,18 @@ class CodeGeneratorAgent:
                 })
 
             if path == PRD_PATH:
-                file_messages = [
-                    Message(role="system", content=_prd_system_prompt()),
-                    Message(role="user", content=_prd_user_prompt(
+                try:
+                    content = await self._generate_prd_chunked(
                         idea, branch, resolution_summary,
                         architecture_doc, component_specs, roadmap_doc,
-                        file_plan_summary,
-                    )),
-                ]
-                stage_key = PRD_STAGE_KEY
+                        file_plan_summary, db, call_index_base=500,
+                    )
+                except Exception as e:
+                    logger.error("code_generator: PRD chunked generation failed: %s", e)
+                    content = (
+                        f"# {idea.name} — Product Requirements Document\n\n"
+                        "_PRD generation failed. Re-run from the implementation panel._\n"
+                    )
             else:
                 file_messages = [
                     Message(role="system", content=_file_system_prompt()),
@@ -763,22 +773,20 @@ class CodeGeneratorAgent:
                         file_plan_summary, written_paths, path, description,
                     )),
                 ]
-                stage_key = FILE_STAGE_KEY
-
-            try:
-                raw = await self._client.call_text(
-                    stage_key=stage_key,
-                    messages=file_messages,
-                    session=db,
-                    idea_id=idea.id,
-                    branch_id=branch.id,
-                    call_type="PHASE3",
-                    call_index=i + 1,
-                )
-                content = _strip_code_fence(raw)
-            except Exception as e:
-                logger.error("code_generator: failed to generate %s: %s", path, e)
-                continue
+                try:
+                    raw = await self._client.call_text(
+                        stage_key=FILE_STAGE_KEY,
+                        messages=file_messages,
+                        session=db,
+                        idea_id=idea.id,
+                        branch_id=branch.id,
+                        call_type="PHASE3",
+                        call_index=i + 1,
+                    )
+                    content = _strip_code_fence(raw)
+                except Exception as e:
+                    logger.error("code_generator: failed to generate %s: %s", path, e)
+                    continue
 
             abs_path = str(Path(output_dir) / path)
             result = await file_manager.write_file(abs_path, content)
@@ -816,6 +824,101 @@ class CodeGeneratorAgent:
             f"Wrote {files_written}/{len(files)} file(s): {file_list}.{cmd_summary} "
             f"Project is at: {output_dir}"
         )
+
+    async def _generate_prd_chunked(
+        self,
+        idea: Idea,
+        branch: SolutionBranch,
+        resolution_summary: str,
+        architecture_doc: str,
+        component_specs: str,
+        roadmap_doc: str,
+        file_plan_summary: str,
+        db: AsyncSession,
+        call_index_base: int = 500,
+    ) -> str:
+        """Generate the PRD section-by-section to stay within output token limits."""
+        sections: list[str] = []
+        for i, (section_name, section_scope) in enumerate(_PRD_SECTIONS):
+            try:
+                text = await self._client.call_text(
+                    stage_key=PRD_STAGE_KEY,
+                    messages=[
+                        Message(role="system", content=_prd_section_system_prompt()),
+                        Message(role="user", content=_prd_section_user_prompt(
+                            idea, branch, resolution_summary,
+                            architecture_doc, component_specs, roadmap_doc,
+                            file_plan_summary, section_name, section_scope,
+                        )),
+                    ],
+                    session=db,
+                    idea_id=idea.id,
+                    branch_id=branch.id,
+                    call_type="PHASE3",
+                    call_index=call_index_base + i,
+                )
+                sections.append(_strip_code_fence(text))
+                logger.debug("PRD section '%s' generated (%d chars)", section_name, len(text))
+            except Exception as e:
+                logger.warning("PRD section '%s' failed: %s — using placeholder", section_name, e)
+                sections.append(f"## {section_name}\n\n_Section could not be generated._\n")
+
+        header = f"# {idea.name} — Product Requirements Document\n\n"
+        return header + "\n\n".join(sections)
+
+    async def generate_prd(
+        self,
+        db: AsyncSession,
+        session: Phase3Session,
+        idea: Idea,
+        branch: SolutionBranch,
+        on_tool_result: Callable[[str, dict], Awaitable[None]] | None = None,
+    ) -> bool:
+        """Regenerate docs/PRD.md from Phase 2 docs. Returns True on success."""
+        resolution_summary = await self._load_resolution_summary(db, idea)
+        architecture_doc = await self._load_doc(db, branch, "ARCHITECTURE_OVERVIEW")
+        component_specs = await self._load_doc(db, branch, "COMPONENT_SPECS")
+        roadmap_doc = await self._load_doc(db, branch, "IMPLEMENTATION_ROADMAP")
+        output_dir = session.output_dir or ""
+
+        # Build file plan summary from what's already on disk (best-effort)
+        file_plan_summary = ""
+        try:
+            base = Path(output_dir)
+            if base.is_dir():
+                paths = [
+                    str(p.relative_to(base)).replace("\\", "/")
+                    for p in sorted(base.rglob("*"))
+                    if p.is_file()
+                ]
+                file_plan_summary = "\n".join(f"  {p}" for p in paths)
+        except Exception:
+            pass
+
+        content = await self._generate_prd_chunked(
+            idea, branch, resolution_summary, architecture_doc,
+            component_specs, roadmap_doc, file_plan_summary, db,
+        )
+
+        abs_path = str(Path(output_dir) / PRD_PATH)
+        result = await file_manager.write_file(abs_path, content)
+        size_bytes = len(content.encode("utf-8"))
+
+        if on_tool_result:
+            await on_tool_result("file_edit", {
+                "path": PRD_PATH,
+                "operation": "write_file",
+                "success": result.get("success", False),
+                "size_bytes": size_bytes,
+                "detail": result.get("error", ""),
+            })
+
+        if result.get("success"):
+            logger.info("generate_prd: wrote %s (%d B)", PRD_PATH, size_bytes)
+            return True
+        else:
+            logger.error("generate_prd: failed to write PRD: %s", result.get("error"))
+            return False
 
     async def _load_resolution_summary(self, db: AsyncSession, idea: Idea) -> str:
         result = await db.execute(
