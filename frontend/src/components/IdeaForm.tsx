@@ -3,9 +3,9 @@ import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
 
 interface FormValues { name: string; description: string; requirements: string; constraints: string; }
-interface Props { onClose: () => void; initialValues?: Partial<FormValues>; }
+interface Props { onClose: () => void; onCreated?: (id: string) => void; initialValues?: Partial<FormValues>; }
 
-export function IdeaForm({ onClose, initialValues }: Props) {
+export function IdeaForm({ onClose, onCreated, initialValues }: Props) {
   const [form, setForm] = useState<FormValues>({
     name: initialValues?.name ?? '',
     description: initialValues?.description ?? '',
@@ -39,6 +39,7 @@ export function IdeaForm({ onClose, initialValues }: Props) {
         ...ideas,
       ]);
       onClose();
+      onCreated?.(idea.id);
     } catch (err: any) {
       setError(err.message);
     } finally {
