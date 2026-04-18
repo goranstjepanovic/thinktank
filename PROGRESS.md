@@ -1,7 +1,7 @@
 # Think Tank — Progress & TODO
 
-**Last updated**: 2026-04-18 (session 13)
-**Session summary**: Phase 3 reliability and observability pass. Chunked PRD generation (9 section calls) prevents silent failures from output token limits. Per-section doc targeting fixes context-window overflow on local models — each section only receives the 1-2 Phase 2 docs it actually needs. Post-generation verification pass: after all files are written, a tool-assisted agent reads entry points, checks imports/exports/cross-file consistency, and fixes real bugs before setup commands run. Exploration tool activity (list_files, read_file, grep_files, web_search) now visible in Phase 3 chat UI. Regenerate-PRD endpoint + button added as a recovery path. Files tab shown during generation (not just COMPLETE), with debounced live refresh on file_written events.
+**Last updated**: 2026-04-18 (session 14)
+**Session summary**: Phase 3 multi-agent mode. A new `multi_agent` mode sits alongside `classic` and is selectable on the Phase 3 start screen. The `OrchestratorAgent` (phi4:14b) reads the PRD and iteratively plans tasks, delegating each to a `SubAgent` (gemma4) that writes files and runs commands via `call_with_tools`. The orchestrator can pause and ask the user a question — the session enters `WAITING` status, the frontend shows an active chat input with "Reply" button, and the backend injects the reply into an `asyncio.Queue` to resume. New WebSocket events: `orchestrator_thinking`, `orchestrator_message`, `sub_agent_started`, `sub_agent_update`, `sub_agent_complete`, `waiting`. UI adds `OrchestratorThinkingEntry`, `OrchestratorMessageEntry`, and collapsible `SubAgentBlock` components. New DB column `mode` on `Phase3Session` with auto-migration. Two new model stages in `models.yaml`: `phase3_orchestrator` and `phase3_sub_agent`.
 
 ---
 
@@ -20,7 +20,7 @@
 | M8 | Polish + dogfooding Think Tank with Think Tank | ❌ Not started | |
 | M9 | Solution selection: SELECTED state, selection UI, notes | ✅ Done | |
 | M10 | Phase 2 kickoff: interactive Q&A session, Open Questions resolution | ✅ Done | |
-| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass + iteration + agent tooling + verification pass implemented; real-world validation pending |
+| M11 | Phase 3 software implementation: manifest generation, file write, file browser | ⚠️ Partial | Multi-pass + iteration + agent tooling + verification pass + multi-agent orchestrator implemented; real-world validation pending |
 
 ---
 
@@ -33,7 +33,7 @@
 - **All 8 pipeline stages** — s0 intake → s7 documentation
 - **Orchestrator** — spawns 2 initial branches, manages asyncio task pool
 - **Phase 2** — interactive Q&A loop, resolution summary, READY state
-- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md (chunked, section-targeted), post-generation verification pass, shell commands (foreground + background), background process manager, activity events, WebSocket events, file browser endpoints, regenerate-PRD endpoint
+- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md (chunked, section-targeted), post-generation verification pass, shell commands (foreground + background), background process manager, activity events, WebSocket events, file browser endpoints, regenerate-PRD endpoint, **multi-agent mode** (OrchestratorAgent + SubAgent, WAITING status, asyncio.Queue user injection)
 - **Settings** — configurable implementations directory (user_settings service + JSON override), Settings page UI, move-implementations endpoint with dev-dir skip
 - **Agent reliability** — exploration-first prompts, chat history threading, Windows-aware command guidance, empty-write guard, JSON fence fix, insert_lines removed, round limits raised (40/50), per-section doc targeting for PRD
 
@@ -68,14 +68,16 @@
 ## TODO — Next Session
 
 ### Phase 3: Real-world validation
-- [ ] Run a full pipeline (Phase 1 → 2 → 3) on a real project idea
+- [ ] Run a full pipeline (Phase 1 → 2 → 3) on a real project idea — both classic and multi-agent modes
 - [ ] Verify PRD sections are well-formed and use correct docs
 - [ ] Check verification pass actually catches and fixes import errors
 - [ ] Validate phi4:14b tool-calling in plan stage (web_search for package versions)
+- [ ] Validate multi-agent: orchestrator task decomposition quality, sub-agent file write coverage, WAITING flow
 
 ### Phase 3: Remaining UI / UX
 - [ ] Activity log grouping by phase (Generation / Verification / Commands) — section dividers
 - [ ] Show current writing progress as a mini progress bar in the tab bar
+- [ ] Multi-agent: show orchestrator analysis text alongside sub-agent blocks (currently only logged internally)
 
 ### M7: Pause/resume
 - [ ] Test pause mid-generation; confirm PAUSED state survives and resumes correctly
