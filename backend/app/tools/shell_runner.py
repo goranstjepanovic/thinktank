@@ -240,6 +240,34 @@ def _is_chained_command(command: str) -> bool:
     return bool(re.search(r"(&&|\|\||\s&\s|\s;\s|;\s*$)", cleaned))
 
 
+# Commands that start persistent servers and never exit — block them from run_shell
+# so agents don't hang. They should use run_shell_background instead.
+_LONG_RUNNING_PATTERNS = [
+    r"^npm(?:\.cmd)?\s+(start|run\s+dev|run\s+start|run\s+serve|run\s+preview)\b",
+    r"^yarn\s+(start|dev|serve|preview)\b",
+    r"^pnpm\s+(start|dev|serve|preview)\b",
+    r"^npx\s+(vite|next|nuxt|gatsby|astro|svelte-kit|remix|expo)\b",
+    r"^vite\b",
+    r"^next\s+dev\b",
+    r"^nuxt\s+dev\b",
+    r"^uvicorn\b",
+    r"^gunicorn\b",
+    r"^flask\s+run\b",
+    r"^python\s+.*\bapp\.py\b",
+    r"^python\s+.*\bserver\.py\b",
+    r"^python\s+.*\bmain\.py\b",
+    r"^node\s+.*\bserver\.[cm]?js\b",
+    r"^cargo\s+run\b",
+    r"^go\s+run\b",
+    r"^rails\s+server\b",
+    r"^ruby\s+.*\bserver\.rb\b",
+]
+
+def _is_long_running(command: str) -> bool:
+    stripped = command.strip()
+    return any(re.search(pat, stripped, re.IGNORECASE) for pat in _LONG_RUNNING_PATTERNS)
+
+
 def _blocked_command_error(command: str, working_dir: str) -> str | None:
     """
     Block commands whose tool behavior would escape the generated project root,
@@ -247,6 +275,15 @@ def _blocked_command_error(command: str, working_dir: str) -> str | None:
     """
     cwd = Path(working_dir)
     stripped = command.strip()
+
+    if _is_long_running(stripped):
+        return (
+            f"Blocked long-running command: '{stripped}'. "
+            "run_shell is for commands that exit on their own (installs, builds, tests). "
+            "Do NOT run dev servers, watchers, or start commands — they never exit and will block the agent. "
+            "If you need to verify the project starts, check the build output instead. "
+            "Use run_shell_background if you genuinely need a background process."
+        )
 
     if _is_chained_command(stripped):
         return (
@@ -334,8 +371,19 @@ async def run_shell_command(
                 proc.communicate(), timeout=float(timeout_seconds)
             )
         except asyncio.TimeoutError:
-            proc.kill()
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                # Second communicate() can deadlock on Windows if child processes
+                # survive the kill (e.g. npm spawns Node which holds the pipes).
+                # Give it 10 s then fall back to empty output.
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=10.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                stdout_bytes, stderr_bytes = b"", b""
             timed_out = True
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
