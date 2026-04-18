@@ -1365,7 +1365,124 @@ export function Phase3Implementation() {
         </div>
 
         {/* Activity log tab */}
-        {mainTab === 'log' && (
+        {mainTab === 'log' && session.mode === 'multi_agent' ? (
+          // ── Multi-agent: two-column layout ─────────────────────────────────
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+
+            {/* Left: orchestrator chat */}
+            <div style={{ flex: '0 0 55%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+                {(isRunning || isWaiting) && log.filter(e => ['orchestrator_thinking', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete'].includes(e.kind)).length === 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text2)', fontSize: 12 }}>
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+                    </div>
+                    <span>Generating PRD…</span>
+                  </div>
+                )}
+                {log.map((entry) => {
+                  switch (entry.kind) {
+                    case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
+                    case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
+                    case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
+                    case 'thinking': return <ThinkingEntry key={entry.id} />;
+                    case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
+                    case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
+                    case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
+                    case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;
+                    default: return null;
+                  }
+                })}
+                <div ref={logEndRef} />
+              </div>
+
+              {/* Chat input */}
+              {(showChatInput || isRunning) && (
+                <div style={{
+                  flexShrink: 0,
+                  borderTop: '1px solid var(--border)',
+                  padding: '10px 16px',
+                  background: 'var(--bg2)',
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'flex-end',
+                }}>
+                  <textarea
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isRunning) { e.preventDefault(); doSend(); } }}
+                    placeholder={isRunning ? 'Agent is working…' : isWaiting ? 'Orchestrator is waiting for your reply…' : 'Request a change or addition…'}
+                    disabled={isRunning}
+                    rows={1}
+                    style={{
+                      flex: 1,
+                      background: 'var(--bg)',
+                      border: `1px solid ${isWaiting ? 'var(--accent)' : 'var(--border)'}`,
+                      borderRadius: 8,
+                      color: isRunning ? 'var(--text2)' : 'var(--text)',
+                      padding: '8px 12px',
+                      fontSize: 13,
+                      resize: 'none',
+                      outline: 'none',
+                      lineHeight: 1.5,
+                      maxHeight: 120,
+                      overflowY: 'auto',
+                      opacity: isRunning ? 0.5 : 1,
+                    }}
+                  />
+                  {isRunning ? (
+                    <button className="btn-ghost" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0, color: 'var(--red)' }} disabled={cancelling} onClick={doCancel}>
+                      {cancelling ? 'Stopping…' : 'Stop'}
+                    </button>
+                  ) : (
+                    <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }} disabled={sending || !chatInput.trim()} onClick={doSend}>
+                      {sending ? '…' : isWaiting ? 'Reply' : 'Send'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {showRetryButton && (
+                <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', padding: '10px 16px', background: 'var(--bg2)', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <button className="btn-primary" style={{ fontSize: 12 }} disabled={starting} onClick={doStart}>
+                    {starting ? 'Starting…' : 'Try again →'}
+                  </button>
+                  <button className="btn-ghost" style={{ fontSize: 12, color: 'var(--text2)' }} onClick={() => navigate(`/ideas/${id}`, { state: { tab: 'audit', skipRedirect: true } })}>
+                    View audit trail →
+                  </button>
+                  {session.summary && <span style={{ fontSize: 12, color: 'var(--red)', marginLeft: 4 }}>{session.summary}</span>}
+                </div>
+              )}
+            </div>
+
+            {/* Right: sub-agents panel */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', background: 'var(--bg)' }}>
+              <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+                Sub-agents {log.filter(e => e.kind === 'sub_agent_block').length > 0 && `· ${log.filter(e => e.kind === 'sub_agent_block').length}`}
+              </p>
+              {log.filter(e => e.kind === 'sub_agent_block').length === 0 ? (
+                <p style={{ color: 'var(--text2)', fontSize: 12, lineHeight: 1.6 }}>
+                  Sub-agents will appear here as the orchestrator delegates tasks.
+                </p>
+              ) : (
+                log.map((entry) => entry.kind === 'sub_agent_block' ? (
+                  <SubAgentBlock
+                    key={entry.id}
+                    taskId={entry.taskId}
+                    title={entry.title}
+                    status={entry.status}
+                    summary={entry.summary}
+                    filesWritten={entry.filesWritten}
+                    blocker={entry.blocker}
+                    updates={entry.updates}
+                  />
+                ) : null)
+              )}
+            </div>
+          </div>
+
+        ) : mainTab === 'log' ? (
+          // ── Classic: single-column log ──────────────────────────────────────
           <>
             <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
               {isRunning && log.length === 0 && (
@@ -1402,27 +1519,14 @@ export function Phase3Implementation() {
                   case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;
                   case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
                   case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
-                  case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
-                  case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
-                  case 'sub_agent_block': return (
-                    <SubAgentBlock
-                      key={entry.id}
-                      taskId={entry.taskId}
-                      title={entry.title}
-                      status={entry.status}
-                      summary={entry.summary}
-                      filesWritten={entry.filesWritten}
-                      blocker={entry.blocker}
-                      updates={entry.updates}
-                    />
-                  );
+                  default: return null;
                 }
               })}
 
               <div ref={logEndRef} />
             </div>
 
-            {/* Chat input — visible once session has completed at least once */}
+            {/* Chat input */}
             {showChatInput && (
               <div style={{
                 flexShrink: 0,
@@ -1437,13 +1541,13 @@ export function Phase3Implementation() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isRunning) { e.preventDefault(); doSend(); } }}
-                  placeholder={isRunning ? 'Agent is working…' : isWaiting ? 'Orchestrator is waiting for your reply…' : 'Request a change or addition…'}
+                  placeholder={isRunning ? 'Agent is working…' : 'Request a change or addition…'}
                   disabled={isRunning}
                   rows={1}
                   style={{
                     flex: 1,
                     background: 'var(--bg)',
-                    border: `1px solid ${isWaiting ? 'var(--accent)' : 'var(--border)'}`,
+                    border: '1px solid var(--border)',
                     borderRadius: 8,
                     color: isRunning ? 'var(--text2)' : 'var(--text)',
                     padding: '8px 12px',
@@ -1457,22 +1561,12 @@ export function Phase3Implementation() {
                   }}
                 />
                 {isRunning ? (
-                  <button
-                    className="btn-ghost"
-                    style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0, color: 'var(--red)' }}
-                    disabled={cancelling}
-                    onClick={doCancel}
-                  >
+                  <button className="btn-ghost" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0, color: 'var(--red)' }} disabled={cancelling} onClick={doCancel}>
                     {cancelling ? 'Stopping…' : 'Stop'}
                   </button>
                 ) : (
-                  <button
-                    className="btn-primary"
-                    style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }}
-                    disabled={sending || !chatInput.trim()}
-                    onClick={doSend}
-                  >
-                    {sending ? '…' : isWaiting ? 'Reply' : 'Send'}
+                  <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }} disabled={sending || !chatInput.trim()} onClick={doSend}>
+                    {sending ? '…' : 'Send'}
                   </button>
                 )}
               </div>
@@ -1497,7 +1591,7 @@ export function Phase3Implementation() {
               </div>
             )}
           </>
-        )}
+        ) : null}
 
         {/* Files tab */}
         {mainTab === 'files' && fileCount > 0 && (
