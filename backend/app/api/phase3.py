@@ -230,6 +230,8 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                     exit_code=result.get("exit_code"),
                     message=result.get("message", ""),
                 ))
+            elif tool_name == "verify_started":
+                await event_bus.publish(ev.phase3_verifying(idea_id, session_id, result.get("file_count", 0)))
             elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
                 await _emit_tool_use(idea_id, session_id, tool_name, result)
 

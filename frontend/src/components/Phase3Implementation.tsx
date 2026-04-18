@@ -72,6 +72,7 @@ const WS_BASE = 'ws://localhost:8000';
 type ActivityEntry =
   | { kind: 'thinking'; id: number }
   | { kind: 'tool_use'; id: number; tool: string; detail: string }
+  | { kind: 'verifying'; id: number; fileCount: number }
   | { kind: 'plan_ready'; id: number; fileCount: number; message: string }
   | { kind: 'writing'; id: number; filePath: string; fileIndex: number; totalFiles: number }
   | { kind: 'file'; id: number; path: string; sizeBytes: number; success: boolean }
@@ -125,6 +126,15 @@ function ToolUseEntry({ tool, detail }: { tool: string; detail: string }) {
       </div>
       <span>{icon} {label}</span>
       <code style={{ color: 'var(--text2)', fontFamily: 'monospace', opacity: 0.75 }}>{detail}</code>
+    </div>
+  );
+}
+
+function VerifyingEntry({ fileCount }: { fileCount: number }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0 4px', fontSize: 12 }}>
+      <span style={{ color: 'var(--yellow)', fontWeight: 700 }}>🔎</span>
+      <span style={{ color: 'var(--text2)' }}>Verifying {fileCount} generated file{fileCount !== 1 ? 's' : ''}…</span>
     </div>
   );
 }
@@ -797,6 +807,10 @@ export function Phase3Implementation() {
             });
             break;
 
+          case 'phase3.verifying':
+            addEntry({ kind: 'verifying', id: nextId(), fileCount: event.payload.file_count as number });
+            break;
+
           case 'phase3.plan_ready':
             addEntry({
               kind: 'plan_ready', id: nextId(),
@@ -1116,6 +1130,7 @@ export function Phase3Implementation() {
                 switch (entry.kind) {
                   case 'thinking': return <ThinkingEntry key={entry.id} />;
                   case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
+                  case 'verifying': return <VerifyingEntry key={entry.id} fileCount={entry.fileCount} />;
                   case 'plan_ready': return <PlanReadyEntry key={entry.id} fileCount={entry.fileCount} message={entry.message} />;
                   case 'writing': return <WritingEntry key={entry.id} filePath={entry.filePath} fileIndex={entry.fileIndex} totalFiles={entry.totalFiles} />;
                   case 'file': return <FileEntry key={entry.id} path={entry.path} sizeBytes={entry.sizeBytes} success={entry.success} />;

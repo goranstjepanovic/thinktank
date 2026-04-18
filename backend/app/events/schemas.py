@@ -116,3 +116,6 @@ def phase3_message(idea_id: str, session_id: str, message_id: str, role: str, co
 
 def phase3_tool_use(idea_id: str, session_id: str, tool: str, detail: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.tool_use", idea_id=idea_id, payload={"session_id": session_id, "tool": tool, "detail": detail})
+
+def phase3_verifying(idea_id: str, session_id: str, file_count: int) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.verifying", idea_id=idea_id, payload={"session_id": session_id, "file_count": file_count})

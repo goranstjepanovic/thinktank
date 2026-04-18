@@ -283,6 +283,60 @@ def _format_file_contents(contents: dict[str, str]) -> str:
     return "\n\n".join(parts)
 
 
+def _verify_system_prompt() -> str:
+    return (
+        "You are a code reviewer doing a post-generation verification pass on an auto-generated project.\n\n"
+        "## Your job\n\n"
+        "1. Use `list_files` and `read_file` to inspect the generated files\n"
+        "2. Use `grep_files` to check cross-file consistency — e.g. that functions called in one "
+        "file are actually exported from another, that import paths are correct\n"
+        "3. Look ONLY for real bugs that would cause build or runtime failures:\n"
+        "   - Syntax errors or malformed code\n"
+        "   - Wrong, missing, or circular imports\n"
+        "   - Functions or classes referenced but never defined\n"
+        "   - Cross-file inconsistencies: API routes wired to the wrong handler, env vars "
+        "referenced in code but missing from `.env.example`, port/host mismatches between services\n"
+        "   - Obvious incomplete stubs (e.g. a function that returns `None` when it must return data)\n"
+        "4. Fix each real bug with `file_edit`. Prefer `search_replace` for targeted fixes.\n"
+        "5. Do NOT rewrite entire files. Do NOT improve code style, naming, or comments. "
+        "Fix only what is concretely broken.\n\n"
+        "## Workflow\n\n"
+        "1. List the project root to orient yourself\n"
+        "2. Read entry-point files first (main.py, index.ts, App.tsx, server.js, etc.)\n"
+        "3. Follow imports to check that referenced names exist\n"
+        "4. Check config files for consistency with how services reference each other\n"
+        "5. Fix issues as you find them, then continue reviewing\n\n"
+        "## Output format\n\n"
+        "Return a JSON object only — no prose, no markdown fences:\n"
+        '{"message": "brief summary — what you found and fixed, or \'No issues found\'", '
+        '"fixes": [{"path": "relative/path", "issue": "what was wrong", "fixed": true}]}\n\n'
+        "Rules:\n"
+        "- If there are no real bugs, return immediately: "
+        '{"message": "No issues found.", "fixes": []}\n'
+        "- Do not invent bugs. Only fix what you can concretely see is wrong.\n"
+        f"- Shell environment: {shell_environment_context()}\n"
+    )
+
+
+def _verify_user_prompt(
+    idea: Idea,
+    branch: SolutionBranch,
+    file_plan_summary: str,
+    written_paths: list[str],
+) -> str:
+    written = "\n".join(f"  {p}" for p in written_paths)
+    return (
+        f"PROJECT: {idea.name}\n"
+        f"DESCRIPTION: {idea.description}\n\n"
+        f"SOLUTION APPROACH:\n{branch.approach_summary or 'N/A'}\n\n"
+        f"PLANNED FILE STRUCTURE:\n{file_plan_summary}\n\n"
+        f"FILES WRITTEN ({len(written_paths)}):\n{written}\n\n"
+        "Review the generated files for correctness. "
+        "Start by listing the project root, then read the entry-point and shared-utility files. "
+        "Fix any real bugs you find, then return the JSON summary."
+    )
+
+
 def _iteration_plan_system_prompt() -> str:
     return (
         "You are an expert software developer. Given an existing project and a user change request, "
@@ -561,6 +615,52 @@ class CodeGeneratorAgent:
 
         return " ".join(repair_summaries)
 
+    async def _verify_and_fix_files(
+        self,
+        db: AsyncSession,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        file_plan_summary: str,
+        written_paths: list[str],
+        on_tool_result: Callable[[str, dict], Awaitable[None]] | None,
+    ) -> str:
+        """Post-generation verification pass: read written files, find and fix real bugs."""
+        if not written_paths:
+            return ""
+
+        if on_tool_result:
+            await on_tool_result("verify_started", {"file_count": len(written_paths)})
+
+        logger.info("code_generator: starting verification pass for %d file(s)", len(written_paths))
+
+        result = await self._client.call_with_tools(
+            stage_key="phase3_explore",
+            messages=[
+                Message(role="system", content=_verify_system_prompt()),
+                Message(role="user", content=_verify_user_prompt(idea, branch, file_plan_summary, written_paths)),
+            ],
+            session=db,
+            idea_id=idea.id,
+            branch_id=branch.id,
+            allowed_file_dir=output_dir,
+            explore_only=False,
+            max_tool_rounds=50,
+            return_json=True,
+            call_index=2000,
+            on_tool_result=on_tool_result,
+        )
+
+        if isinstance(result, dict):
+            message = str(result.get("message", "")).strip()
+            fixes = result.get("fixes", [])
+            fix_count = len([f for f in fixes if isinstance(f, dict) and f.get("fixed")])
+            if fix_count:
+                logger.info("code_generator: verification fixed %d issue(s)", fix_count)
+                return f"Verified {len(written_paths)} file(s); fixed {fix_count} issue(s). {message}"
+            return f"Verified {len(written_paths)} file(s). {message}" if message else ""
+        return ""
+
     async def _recent_command_results(
         self,
         db: AsyncSession,
@@ -808,6 +908,12 @@ class CodeGeneratorAgent:
                     "detail": result.get("error", ""),
                 })
 
+        # ── Verification: read written files and fix any real bugs ───────────
+        verify_summary = await self._verify_and_fix_files(
+            db, idea, branch, output_dir,
+            file_plan_summary, written_paths, on_tool_result,
+        )
+
         # ── Final: run setup commands ─────────────────────────────────────────
         command_results = await self._run_commands(commands, output_dir, on_tool_result)
         repair_summary = await self._repair_failed_commands(
@@ -817,11 +923,12 @@ class CodeGeneratorAgent:
         file_list = ", ".join(written_paths[:5])
         if len(written_paths) > 5:
             file_list += f", … ({len(written_paths) - 5} more)"
+        verify_part = f" {verify_summary}" if verify_summary else ""
         cmd_summary = f" Ran {len(commands)} setup command(s)." if commands else ""
         if repair_summary:
             cmd_summary += f" {repair_summary}"
         return (
-            f"Wrote {files_written}/{len(files)} file(s): {file_list}.{cmd_summary} "
+            f"Wrote {files_written}/{len(files)} file(s): {file_list}.{verify_part}{cmd_summary} "
             f"Project is at: {output_dir}"
         )
 
