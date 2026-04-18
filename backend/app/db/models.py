@@ -159,8 +159,10 @@ class Phase3Session(Base):
     branch_id: Mapped[str] = mapped_column(Text, ForeignKey("solution_branches.id"), nullable=False)
     # SOFTWARE | HARDWARE
     implementation_type: Mapped[str] = mapped_column(Text, nullable=False, default="SOFTWARE")
-    # PLANNING | RUNNING | COMPLETE | FAILED
+    # PLANNING | RUNNING | WAITING | COMPLETE | FAILED
     status: Mapped[str] = mapped_column(Text, nullable=False, default="PLANNING")
+    # classic | multi_agent
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="classic")
     plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_root: Mapped[str | None] = mapped_column(Text, nullable=True)  # e.g. "my-project"
     output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)    # absolute path on disk

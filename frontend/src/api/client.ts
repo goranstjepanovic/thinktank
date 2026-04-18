@@ -56,8 +56,8 @@ export const api = {
     request<import('../types').Phase2Session>(`/ideas/${id}/phase2/ready`, { method: 'POST', body: '{}' }),
 
   // Phase 3
-  startPhase3: (id: string) =>
-    request<import('../types').Phase3Session>(`/ideas/${id}/phase3`, { method: 'POST', body: '{}' }),
+  startPhase3: (id: string, mode: 'classic' | 'multi_agent' = 'classic') =>
+    request<import('../types').Phase3Session>(`/ideas/${id}/phase3`, { method: 'POST', body: JSON.stringify({ mode }) }),
   getPhase3: (id: string) =>
     request<import('../types').Phase3Session>(`/ideas/${id}/phase3`),
   cancelPhase3: (id: string) =>

@@ -138,7 +138,8 @@ export interface Phase3Session {
   phase2_session_id: string;
   branch_id: string;
   implementation_type: string;
-  status: 'PLANNING' | 'RUNNING' | 'COMPLETE' | 'FAILED';
+  status: 'PLANNING' | 'RUNNING' | 'WAITING' | 'COMPLETE' | 'FAILED';
+  mode: 'classic' | 'multi_agent';
   project_root: string | null;
   output_dir: string | null;
   summary: string | null;

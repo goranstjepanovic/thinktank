@@ -21,10 +21,25 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+async def _migrate_db() -> None:
+    """Apply additive schema migrations for columns added after initial creation."""
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE phase3_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'classic'",
+    ]
+    async with engine.begin() as conn:
+        for stmt in migrations:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass  # column already exists
+
+
 async def init_db() -> None:
     """Create all tables on startup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrate_db()
 
 
 async def get_session() -> AsyncSession:

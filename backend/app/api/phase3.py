@@ -7,11 +7,12 @@ Routes:
   POST /ideas/{id}/phase3/cancel   Cancel a running session.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,9 @@ from app.events.bus import event_bus
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ideas", tags=["phase3"])
 
+# Per-session queues for injecting user messages into a WAITING orchestrator
+_session_user_queues: dict[str, "asyncio.Queue[str]"] = {}
+
 
 # ---------------------------------------------------------------------------
 # Pydantic output schema
@@ -38,6 +42,7 @@ class Phase3SessionOut(BaseModel):
     branch_id: str
     implementation_type: str
     status: str
+    mode: str
     project_root: str | None
     output_dir: str | None
     summary: str | None
@@ -53,6 +58,7 @@ class Phase3SessionOut(BaseModel):
             branch_id=s.branch_id,
             implementation_type=s.implementation_type,
             status=s.status,
+            mode=getattr(s, "mode", "classic"),
             project_root=s.project_root,
             output_dir=s.output_dir,
             summary=s.summary,
@@ -104,6 +110,189 @@ async def _emit_tool_use(idea_id: str, session_id: str, tool_name: str, result: 
     detail_fn = detail_map.get(tool_name)
     if detail_fn:
         await event_bus.publish(ev.phase3_tool_use(idea_id, session_id, tool_name, detail_fn(result)))
+
+
+async def _run_multi_agent_implementation(idea_id: str, session_id: str) -> None:
+    """Multi-agent mode: generate PRD first, then run OrchestratorAgent loop."""
+    from app.agents.code_generator_agent import CodeGeneratorAgent
+    from app.agents.orchestrator_agent import OrchestratorAgent
+    from app.main import get_inference_client
+    from app.services.user_settings import get_implementations_dir
+    from pathlib import Path as _Path
+
+    async with AsyncSessionLocal() as db:
+        sess_r = await db.execute(select(Phase3Session).where(Phase3Session.id == session_id))
+        session = sess_r.scalar_one_or_none()
+        if not session:
+            return
+
+        idea_r = await db.execute(select(Idea).where(Idea.id == idea_id))
+        idea = idea_r.scalar_one_or_none()
+        branch_r = await db.execute(select(SolutionBranch).where(SolutionBranch.id == session.branch_id))
+        branch = branch_r.scalar_one_or_none()
+        if not idea or not branch:
+            return
+
+        project_root = idea.name.lower().replace(" ", "-").replace("_", "-")[:40] or "project"
+        output_dir = str(get_implementations_dir() / idea_id / project_root)
+        _Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        session.project_root = project_root
+        session.output_dir = output_dir
+        session.status = "RUNNING"
+        await db.commit()
+
+        await event_bus.publish(ev.phase3_running(idea_id, session_id))
+        await event_bus.publish(ev.phase3_thinking(idea_id, session_id))
+
+        client = get_inference_client()
+        gen_agent = CodeGeneratorAgent(client)
+
+        # ── Standard on_tool_result (same as classic mode) ───────────────────
+        async def on_tool_result(tool_name: str, result: dict) -> None:
+            if tool_name == "plan_ready":
+                payload = {"file_count": result.get("file_count", 0), "files": result.get("files", []), "commands": result.get("commands", []), "message": result.get("message", "")}
+                await event_bus.publish(ev.phase3_plan_ready(idea_id, session_id, artifact_count=payload["file_count"], message=payload["message"]))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="plan_ready", payload_json=json.dumps(payload)))
+                    await adb.commit()
+            elif tool_name == "pass_started":
+                payload = {"file_path": result.get("file_path", ""), "file_index": result.get("file_index", 0), "total_files": result.get("total_files", 0)}
+                await event_bus.publish(ev.phase3_pass_started(idea_id, session_id, **payload))
+            elif tool_name == "file_edit" and result.get("success"):
+                payload = {"path": result.get("path", ""), "size_bytes": result.get("size_bytes", 0)}
+                await event_bus.publish(ev.phase3_file_written(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="file_written", payload_json=json.dumps(payload)))
+                    await adb.commit()
+            elif tool_name == "file_edit" and not result.get("success"):
+                payload = {"path": result.get("path", ""), "detail": result.get("detail", "unknown error")}
+                await event_bus.publish(ev.phase3_file_failed(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="file_failed", payload_json=json.dumps(payload)))
+                    await adb.commit()
+            elif tool_name == "run_shell":
+                payload = {"command": result.get("command", ""), "exit_code": result.get("exit_code", -1), "stdout": result.get("stdout", ""), "stderr": result.get("stderr", ""), "timed_out": result.get("timed_out", False), "duration_ms": result.get("duration_ms", 0)}
+                await event_bus.publish(ev.phase3_command_executed(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="command_executed", payload_json=json.dumps(payload)))
+                    await adb.commit()
+            elif tool_name == "shell_stop":
+                await event_bus.publish(ev.phase3_shell_stop(idea_id, session_id, handle=result.get("handle", ""), pid=result.get("pid"), stopped=result.get("stopped", False), exit_code=result.get("exit_code"), message=result.get("message", "")))
+            elif tool_name == "verify_started":
+                await event_bus.publish(ev.phase3_verifying(idea_id, session_id, result.get("file_count", 0)))
+            elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
+                await _emit_tool_use(idea_id, session_id, tool_name, result)
+
+        # ── Orchestrator-level event handler ─────────────────────────────────
+        async def on_orchestrator_event(event_type: str, data: dict) -> None:
+            if event_type == "orchestrator_thinking":
+                await event_bus.publish(ev.phase3_orchestrator_thinking(idea_id, session_id))
+
+            elif event_type == "orchestrator_tool":
+                tool = data.get("tool", "")
+                result = data.get("result", {})
+                if tool in ("list_files", "read_file", "grep_files", "web_search"):
+                    await _emit_tool_use(idea_id, session_id, tool, result)
+
+            elif event_type == "orchestrator_message":
+                content = str(data.get("content", "")).strip()
+                if content:
+                    await event_bus.publish(ev.phase3_orchestrator_message(idea_id, session_id, content))
+                    async with AsyncSessionLocal() as adb:
+                        msg = Phase3Message(session_id=session_id, role="assistant", content=content)
+                        adb.add(msg)
+                        await adb.commit()
+                        await adb.refresh(msg)
+                    await event_bus.publish(ev.phase3_message(idea_id, session_id, msg.id, "assistant", content))
+
+            elif event_type == "waiting":
+                async with AsyncSessionLocal() as adb:
+                    s = await adb.get(Phase3Session, session_id)
+                    if s:
+                        s.status = "WAITING"
+                        await adb.commit()
+                await event_bus.publish(ev.phase3_waiting(idea_id, session_id))
+
+            elif event_type == "orchestrator_running":
+                async with AsyncSessionLocal() as adb:
+                    s = await adb.get(Phase3Session, session_id)
+                    if s:
+                        s.status = "RUNNING"
+                        await adb.commit()
+                await event_bus.publish(ev.phase3_running(idea_id, session_id))
+
+            elif event_type == "sub_agent_started":
+                task_id = str(data.get("task_id", ""))
+                title = str(data.get("title", ""))
+                await event_bus.publish(ev.phase3_sub_agent_started(idea_id, session_id, task_id, title))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_started", payload_json=json.dumps({"task_id": task_id, "title": title})))
+                    await adb.commit()
+
+            elif event_type == "sub_agent_update":
+                task_id = str(data.get("task_id", ""))
+                update_type = str(data.get("update_type", ""))
+                detail = str(data.get("detail", ""))
+                await event_bus.publish(ev.phase3_sub_agent_update(idea_id, session_id, task_id, update_type, detail))
+
+            elif event_type == "sub_agent_complete":
+                task_id = str(data.get("task_id", ""))
+                summary = str(data.get("summary", ""))
+                files_written = list(data.get("files_written") or [])
+                commands_run = list(data.get("commands_run") or [])
+                success = bool(data.get("success", True))
+                blocker = data.get("blocker")
+                await event_bus.publish(ev.phase3_sub_agent_complete(idea_id, session_id, task_id, summary, files_written, success, blocker))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_complete", payload_json=json.dumps({"task_id": task_id, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
+                    await adb.commit()
+
+        # ── Step 1: Generate PRD ──────────────────────────────────────────────
+        try:
+            await gen_agent.generate_prd(db, session, idea, branch, on_tool_result)
+        except Exception as e:
+            logger.warning("multi_agent: PRD generation failed: %s — continuing", e)
+
+        # ── Step 2: Read PRD for orchestrator context ─────────────────────────
+        prd_path = _Path(output_dir) / "docs" / "PRD.md"
+        try:
+            prd_content = prd_path.read_text(encoding="utf-8") if prd_path.is_file() else "(PRD not available)"
+        except Exception:
+            prd_content = "(PRD not available)"
+
+        # ── Step 3: Run orchestrator loop ─────────────────────────────────────
+        user_queue: asyncio.Queue[str] = asyncio.Queue()
+        _session_user_queues[session_id] = user_queue
+
+        orch_agent = OrchestratorAgent(client)
+        try:
+            summary = await orch_agent.run(
+                db, session, idea, branch,
+                prd_content, on_tool_result, on_orchestrator_event, user_queue,
+            )
+        except Exception as e:
+            logger.error("multi_agent: orchestrator failed for session %s: %s", session_id[:8], e)
+            async with AsyncSessionLocal() as adb:
+                s = await adb.get(Phase3Session, session_id)
+                if s:
+                    s.status = "FAILED"
+                    s.summary = str(e)
+                    await adb.commit()
+            await event_bus.publish(ev.phase3_error(idea_id, session_id, str(e)))
+            return
+        finally:
+            _session_user_queues.pop(session_id, None)
+
+        async with AsyncSessionLocal() as adb:
+            s = await adb.get(Phase3Session, session_id)
+            if s:
+                s.status = "COMPLETE"
+                s.summary = summary
+                await adb.commit()
+
+        await event_bus.publish(ev.phase3_complete(idea_id, session_id, summary=summary, output_dir=output_dir))
+        logger.info("multi_agent: complete for session %s", session_id[:8])
 
 
 async def _run_implementation(idea_id: str, session_id: str) -> None:
@@ -263,10 +452,15 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
 # Routes
 # ---------------------------------------------------------------------------
 
+class StartPhase3Body(BaseModel):
+    mode: str = "classic"
+
+
 @router.post("/{idea_id}/phase3", response_model=Phase3SessionOut, status_code=201)
 async def start_phase3(
     idea_id: str,
     background_tasks: BackgroundTasks,
+    body: StartPhase3Body = Body(default=StartPhase3Body()),
     db: AsyncSession = Depends(get_session),
 ):
     """
@@ -297,11 +491,13 @@ async def start_phase3(
     if not idea.selected_branch_id:
         raise HTTPException(status_code=409, detail="No branch selected for this idea")
 
+    mode = body.mode if body.mode in ("classic", "multi_agent") else "classic"
     session = Phase3Session(
         idea_id=idea_id,
         phase2_session_id=phase2.id,
         branch_id=idea.selected_branch_id,
         status="PLANNING",
+        mode=mode,
     )
     db.add(session)
 
@@ -310,7 +506,10 @@ async def start_phase3(
     await db.refresh(session)
 
     await event_bus.publish(ev.phase3_started(idea_id, session.id))
-    background_tasks.add_task(_run_implementation, idea_id, session.id)
+    if mode == "multi_agent":
+        background_tasks.add_task(_run_multi_agent_implementation, idea_id, session.id)
+    else:
+        background_tasks.add_task(_run_implementation, idea_id, session.id)
 
     return Phase3SessionOut.from_orm(session)
 
@@ -613,10 +812,23 @@ async def send_phase3_message(
     db: AsyncSession = Depends(get_session),
 ):
     session = await _get_phase3_or_404(idea_id, db)
-    if session.status == "RUNNING" or session.status == "PLANNING":
-        raise HTTPException(status_code=409, detail="Generation already in progress")
     if not body.content.strip():
         raise HTTPException(status_code=422, detail="Message content cannot be empty")
+
+    # Multi-agent WAITING: inject message into the orchestrator's queue
+    if session.status == "WAITING" and session.id in _session_user_queues:
+        msg = Phase3Message(session_id=session.id, role="user", content=body.content.strip())
+        db.add(msg)
+        session.status = "RUNNING"
+        await db.commit()
+        await db.refresh(msg)
+        await event_bus.publish(ev.phase3_message(idea_id, session.id, msg.id, "user", msg.content))
+        await event_bus.publish(ev.phase3_running(idea_id, session.id))
+        _session_user_queues[session.id].put_nowait(msg.content)
+        return {"id": msg.id, "role": msg.role, "content": msg.content, "created_at": msg.created_at.isoformat()}
+
+    if session.status in ("RUNNING", "PLANNING", "WAITING"):
+        raise HTTPException(status_code=409, detail="Generation already in progress")
 
     msg = Phase3Message(session_id=session.id, role="user", content=body.content.strip())
     db.add(msg)

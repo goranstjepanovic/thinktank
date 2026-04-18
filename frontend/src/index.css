@@ -93,6 +93,7 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px
 .badge-implementing  { background: #1e2d4a; color: var(--blue); }
 .badge-complete      { background: #1a3a2a; color: var(--green); }
 .badge-planning      { background: #252535; color: var(--text2); }
+.badge-waiting       { background: #2a2a1a; color: var(--yellow); }
 
 /* Phase 2 typing animation */
 @keyframes dot-pulse {

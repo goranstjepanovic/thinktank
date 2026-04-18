@@ -69,6 +69,8 @@ const WS_BASE = 'ws://localhost:8000';
 // Activity log entry types
 // ---------------------------------------------------------------------------
 
+type SubAgentUpdate = { updateType: string; detail: string };
+
 type ActivityEntry =
   | { kind: 'thinking'; id: number }
   | { kind: 'tool_use'; id: number; tool: string; detail: string }
@@ -82,7 +84,10 @@ type ActivityEntry =
   | { kind: 'error'; id: number; message: string }
   | { kind: 'complete'; id: number; summary: string; outputDir: string }
   | { kind: 'user_msg'; id: number; messageId: string; content: string }
-  | { kind: 'assistant_msg'; id: number; messageId: string; content: string };
+  | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
+  | { kind: 'orchestrator_thinking'; id: number }
+  | { kind: 'orchestrator_message'; id: number; content: string }
+  | { kind: 'sub_agent_block'; id: number; taskId: string; title: string; status: 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
 
 let _entryId = 0;
 const nextId = () => ++_entryId;
@@ -320,6 +325,125 @@ function AssistantMsgEntry({ content }: { content: string }) {
           <ReactMarkdown>{content}</ReactMarkdown>
         </div>
       </div>
+    </div>
+  );
+}
+
+function OrchestratorThinkingEntry() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', color: 'var(--text2)' }}>
+      <div style={{ display: 'flex', gap: 3 }}>
+        <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+      </div>
+      <span style={{ fontSize: 12 }}>🧭 Orchestrator planning…</span>
+    </div>
+  );
+}
+
+function OrchestratorMessageEntry({ content }: { content: string }) {
+  return (
+    <div style={{ margin: '10px 0 4px' }}>
+      <div style={{ fontSize: 10, color: 'var(--text2)', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        🧭 Orchestrator
+      </div>
+      <div style={{
+        maxWidth: '88%',
+        background: 'var(--bg3)',
+        border: '1px solid var(--border)',
+        borderRadius: '2px 12px 12px 12px',
+        padding: '10px 14px',
+        fontSize: 13,
+        lineHeight: 1.5,
+        color: 'var(--text)',
+        wordBreak: 'break-word',
+      }}>
+        <div className="markdown" style={{ fontSize: 13 }}>
+          <ReactMarkdown>{content}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const UPDATE_ICONS: Record<string, string> = {
+  file_edit: '✓',
+  run_shell: '$',
+  list_files: '📂',
+  read_file: '📄',
+  grep_files: '🔍',
+  web_search: '🌐',
+};
+
+function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates }: {
+  taskId: string; title: string; status: 'running' | 'done' | 'blocked';
+  summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isRunning = status === 'running';
+
+  const statusColor = status === 'done' ? 'var(--green)' : status === 'blocked' ? 'var(--yellow)' : 'var(--text2)';
+  const statusIcon = status === 'done' ? '✓' : status === 'blocked' ? '⚠' : null;
+
+  return (
+    <div style={{
+      margin: '6px 0',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      overflow: 'hidden',
+      background: 'var(--bg2)',
+    }}>
+      {/* Header */}
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 12px', cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{ color: statusColor, fontWeight: 700, flexShrink: 0, fontSize: 13, minWidth: 16 }}>
+          {isRunning ? (
+            <span style={{ display: 'flex', gap: 2 }}>
+              <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+            </span>
+          ) : statusIcon}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 600, flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {title}
+        </span>
+        {filesWritten.length > 0 && (
+          <span style={{ fontSize: 11, color: 'var(--text2)', flexShrink: 0 }}>
+            {filesWritten.length}f
+          </span>
+        )}
+        <span style={{ fontSize: 10, color: 'var(--text2)', flexShrink: 0 }}>
+          {expanded ? '▲' : '▼'}
+        </span>
+      </div>
+
+      {/* Summary line (when done) */}
+      {!isRunning && summary && (
+        <div style={{ padding: '0 12px 6px', fontSize: 12, color: 'var(--text2)', borderTop: '1px solid var(--border)' }}>
+          {blocker && <span style={{ color: 'var(--yellow)', marginRight: 6 }}>⚠ Blocker:</span>}
+          {blocker || summary}
+        </div>
+      )}
+
+      {/* Expanded activity */}
+      {expanded && updates.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '6px 12px', maxHeight: 240, overflowY: 'auto' }}>
+          {updates.map((u, i) => {
+            const icon = UPDATE_ICONS[u.updateType] ?? '·';
+            const isFile = u.updateType === 'file_edit';
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '2px 0', fontSize: 11 }}>
+                <span style={{ color: isFile ? 'var(--green)' : 'var(--text2)', flexShrink: 0 }}>{icon}</span>
+                <code style={{ color: 'var(--text2)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{u.detail}</code>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -704,6 +828,7 @@ export function Phase3Implementation() {
   const [sending, setSending] = useState(false);
   const [regenPrd, setRegenPrd] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const [selectedMode, setSelectedMode] = useState<'classic' | 'multi_agent'>('classic');
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -714,17 +839,25 @@ export function Phase3Implementation() {
         if (prev.some(e => e.kind === 'thinking')) return prev;
         return [...prev, entry];
       }
+      if (entry.kind === 'orchestrator_thinking') {
+        // Replace previous orchestrator_thinking
+        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking'), entry];
+      }
       if (entry.kind === 'tool_use') {
-        // Replace previous tool_use entry — always show only the latest exploration action
         return [...prev.filter(e => e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
       }
       if (entry.kind === 'writing') {
-        // Replace previous writing/tool_use entry to show only current file
         return [...prev.filter(e => e.kind !== 'writing' && e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
       }
-      // Any "real" activity clears transient indicators
+      // orchestrator_message and sub_agent_block clear transient thinking
+      if (entry.kind === 'orchestrator_message' || entry.kind === 'sub_agent_block') {
+        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
+      }
       return [...prev.filter(e => e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
     });
+
+  const updateSubAgentBlock = (taskId: string, updater: (e: Extract<ActivityEntry, { kind: 'sub_agent_block' }>) => Extract<ActivityEntry, { kind: 'sub_agent_block' }>) =>
+    setLog(prev => prev.map(e => e.kind === 'sub_agent_block' && e.taskId === taskId ? updater(e) : e));
 
   // Auto-scroll log on new entries or when switching back to the chat tab
   useEffect(() => {
@@ -909,9 +1042,66 @@ export function Phase3Implementation() {
             if (role === 'assistant') {
               setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
               addEntry({ kind: 'assistant_msg', id: nextId(), messageId, content });
-              // Don't refetch session here — phase3.complete will do it and a stale
-              // fetch resolving after complete would overwrite COMPLETE → RUNNING
             }
+            break;
+          }
+
+          // ── Multi-agent events ────────────────────────────────────────────
+          case 'phase3.waiting':
+            api.getPhase3(id!).then(setSession).catch(() => {});
+            break;
+
+          case 'phase3.orchestrator_thinking':
+            addEntry({ kind: 'orchestrator_thinking', id: nextId() });
+            break;
+
+          case 'phase3.orchestrator_message':
+            addEntry({
+              kind: 'orchestrator_message', id: nextId(),
+              content: event.payload.content as string,
+            });
+            break;
+
+          case 'phase3.sub_agent_started':
+            addEntry({
+              kind: 'sub_agent_block', id: nextId(),
+              taskId: event.payload.task_id as string,
+              title: event.payload.title as string,
+              status: 'running',
+              summary: '',
+              filesWritten: [],
+              blocker: null,
+              updates: [],
+            });
+            break;
+
+          case 'phase3.sub_agent_update': {
+            const taskId = event.payload.task_id as string;
+            const updateType = event.payload.update_type as string;
+            const detail = event.payload.detail as string;
+            updateSubAgentBlock(taskId, e => ({
+              ...e,
+              updates: [...e.updates, { updateType, detail }],
+            }));
+            break;
+          }
+
+          case 'phase3.sub_agent_complete': {
+            const taskId = event.payload.task_id as string;
+            const summary = event.payload.summary as string;
+            const filesWritten = (event.payload.files_written as string[]) ?? [];
+            const success = event.payload.success as boolean;
+            const blocker = event.payload.blocker as string | null;
+            updateSubAgentBlock(taskId, e => ({
+              ...e,
+              status: success && !blocker ? 'done' : 'blocked',
+              summary,
+              filesWritten,
+              blocker,
+            }));
+            // Debounce file list refresh on sub-agent completion
+            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+            fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
             break;
           }
         }
@@ -926,7 +1116,7 @@ export function Phase3Implementation() {
     setStarting(true);
     setError(null);
     try {
-      const s = await api.startPhase3(id);
+      const s = await api.startPhase3(id, selectedMode);
       setSession(s);
       setLog([]);
     } catch (e: unknown) {
@@ -1004,14 +1194,58 @@ export function Phase3Implementation() {
           {selectedBranch?.approach_summary && (
             <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 28 }}>{selectedBranch.approach_summary}</p>
           )}
+          {/* Mode selector */}
+          <div style={{ display: 'flex', gap: 12, marginBottom: 24, justifyContent: 'center' }}>
+            {(['classic', 'multi_agent'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setSelectedMode(m)}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: `2px solid ${selectedMode === m ? 'var(--accent)' : 'var(--border)'}`,
+                  background: selectedMode === m ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--bg2)',
+                  color: selectedMode === m ? 'var(--text)' : 'var(--text2)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  minWidth: 200,
+                  transition: 'all 0.15s',
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                  {m === 'classic' ? '⚡ Classic' : '🧭 Multi-Agent'}
+                </div>
+                <div style={{ fontSize: 11, lineHeight: 1.5, color: selectedMode === m ? 'var(--text2)' : 'var(--text2)', opacity: 0.85 }}>
+                  {m === 'classic'
+                    ? 'Direct generation — one file at a time, fast and predictable'
+                    : 'Orchestrated — planner delegates tasks to specialized sub-agents'}
+                </div>
+              </button>
+            ))}
+          </div>
+
           <div className="card" style={{ textAlign: 'left', marginBottom: 28 }}>
-            <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>What happens in Phase 3</p>
-            <ol style={{ fontSize: 13, color: 'var(--text2)', paddingLeft: 20, lineHeight: 1.8 }}>
-              <li>The agent reads your resolved requirements and architecture documents</li>
-              <li>It generates all project files and writes them to disk</li>
-              <li>Setup commands (install, build, test) are run automatically</li>
-              <li>You can browse the generated files when complete</li>
-            </ol>
+            {selectedMode === 'classic' ? (
+              <>
+                <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Classic mode</p>
+                <ol style={{ fontSize: 13, color: 'var(--text2)', paddingLeft: 20, lineHeight: 1.8 }}>
+                  <li>Generates the PRD and all project files in sequence</li>
+                  <li>Runs setup commands (install, build, test) automatically</li>
+                  <li>Post-generation verification pass fixes import errors</li>
+                  <li>You can browse files and request changes when done</li>
+                </ol>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Multi-agent mode</p>
+                <ol style={{ fontSize: 13, color: 'var(--text2)', paddingLeft: 20, lineHeight: 1.8 }}>
+                  <li>Generates the PRD first to anchor all decisions</li>
+                  <li>An orchestrator reads the PRD and plans tasks autonomously</li>
+                  <li>Sub-agents execute each task: writing files, running commands</li>
+                  <li>The orchestrator can ask you questions if it needs input</li>
+                </ol>
+              </>
+            )}
           </div>
           {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>{error}</p>}
           <button
@@ -1028,14 +1262,13 @@ export function Phase3Implementation() {
   }
 
   const isRunning = session.status === 'PLANNING' || session.status === 'RUNNING';
+  const isWaiting = session.status === 'WAITING';
   const isComplete = session.status === 'COMPLETE';
-  const isFailed = session.status === 'FAILED' || (!isRunning && !isComplete);
+  const isFailed = session.status === 'FAILED' || (!isRunning && !isWaiting && !isComplete);
   const hasActivity = log.length > 0;
   const wasCancelled = isFailed && session.summary === 'Cancelled by user';
-  // Keep chat available after stop/failure so the user can redirect the agent.
-  // Also show it while running if there's been a timeout — user needs to be able to intervene.
   const hasTimedOut = log.some(e => e.kind === 'shell' && (e as Extract<ActivityEntry, { kind: 'shell' }>).timedOut);
-  const showChatInput = isComplete || isFailed || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut));
+  const showChatInput = isComplete || isFailed || isWaiting || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut));
   const showRetryButton = isFailed && !wasCancelled && !hasActivity;
 
   const fileCount = log.filter(e => e.kind === 'file').length;
@@ -1169,6 +1402,20 @@ export function Phase3Implementation() {
                   case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;
                   case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
                   case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
+                  case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
+                  case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
+                  case 'sub_agent_block': return (
+                    <SubAgentBlock
+                      key={entry.id}
+                      taskId={entry.taskId}
+                      title={entry.title}
+                      status={entry.status}
+                      summary={entry.summary}
+                      filesWritten={entry.filesWritten}
+                      blocker={entry.blocker}
+                      updates={entry.updates}
+                    />
+                  );
                 }
               })}
 
@@ -1190,13 +1437,13 @@ export function Phase3Implementation() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isRunning) { e.preventDefault(); doSend(); } }}
-                  placeholder={isRunning ? 'Agent is working…' : 'Request a change or addition…'}
+                  placeholder={isRunning ? 'Agent is working…' : isWaiting ? 'Orchestrator is waiting for your reply…' : 'Request a change or addition…'}
                   disabled={isRunning}
                   rows={1}
                   style={{
                     flex: 1,
                     background: 'var(--bg)',
-                    border: '1px solid var(--border)',
+                    border: `1px solid ${isWaiting ? 'var(--accent)' : 'var(--border)'}`,
                     borderRadius: 8,
                     color: isRunning ? 'var(--text2)' : 'var(--text)',
                     padding: '8px 12px',
@@ -1225,7 +1472,7 @@ export function Phase3Implementation() {
                     disabled={sending || !chatInput.trim()}
                     onClick={doSend}
                   >
-                    {sending ? '…' : 'Send'}
+                    {sending ? '…' : isWaiting ? 'Reply' : 'Send'}
                   </button>
                 )}
               </div>

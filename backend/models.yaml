@@ -139,6 +139,24 @@ stages:
     num_ctx: 32768
     supports_tools: true
 
+  phase3_orchestrator:  # Multi-agent mode — planner that reads PRD and delegates tasks
+    model: "phi4:14b"
+    backend: "ollama"
+    temperature: 0.2
+    max_tokens: 4096
+    format: "json"
+    num_ctx: 32768
+    supports_tools: true
+
+  phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
+    model: "gemma4:latest"
+    backend: "ollama"
+    temperature: 0.3
+    max_tokens: null
+    format: "json"
+    num_ctx: 32768
+    supports_tools: true
+
 resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2

@@ -119,3 +119,21 @@ def phase3_tool_use(idea_id: str, session_id: str, tool: str, detail: str) -> Pi
 
 def phase3_verifying(idea_id: str, session_id: str, file_count: int) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.verifying", idea_id=idea_id, payload={"session_id": session_id, "file_count": file_count})
+
+def phase3_waiting(idea_id: str, session_id: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.waiting", idea_id=idea_id, payload={"session_id": session_id})
+
+def phase3_orchestrator_thinking(idea_id: str, session_id: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.orchestrator_thinking", idea_id=idea_id, payload={"session_id": session_id})
+
+def phase3_orchestrator_message(idea_id: str, session_id: str, content: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.orchestrator_message", idea_id=idea_id, payload={"session_id": session_id, "content": content})
+
+def phase3_sub_agent_started(idea_id: str, session_id: str, task_id: str, title: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.sub_agent_started", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "title": title})
+
+def phase3_sub_agent_update(idea_id: str, session_id: str, task_id: str, update_type: str, detail: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.sub_agent_update", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "update_type": update_type, "detail": detail})
+
+def phase3_sub_agent_complete(idea_id: str, session_id: str, task_id: str, summary: str, files_written: list, success: bool, blocker: str | None) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.sub_agent_complete", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "summary": summary, "files_written": files_written, "success": success, "blocker": blocker})
