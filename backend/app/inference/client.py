@@ -638,6 +638,11 @@ class InferenceClient:
                         }
                         if search_result.error:
                             result_dict["error"] = search_result.error
+                        if on_tool_result:
+                            await on_tool_result("web_search", {
+                                "query": query,
+                                "result_count": len(result_dict.get("results", [])),
+                            })
                         await self._log_web_search(
                             session=session, idea_id=idea_id, branch_id=branch_id,
                             stage_result_id=stage_result_id, call_index=current_call_index,
@@ -820,6 +825,11 @@ class InferenceClient:
                                 result_dict = {"path": _rel or ".", "entries": entries}
                             logger.info("tools stage=%-20s list_files path=%r → %d entries",
                                         stage_key, _rel or ".", len(result_dict.get("entries", [])))
+                            if on_tool_result:
+                                await on_tool_result("list_files", {
+                                    "path": _rel or ".",
+                                    "entry_count": len(result_dict.get("entries", [])),
+                                })
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "read_file":
@@ -854,6 +864,8 @@ class InferenceClient:
                                 except Exception as _e:
                                     result_dict = {"error": f"failed to read: {_e}"}
                             logger.info("tools stage=%-20s read_file path=%r", stage_key, _rel)
+                            if on_tool_result:
+                                await on_tool_result("read_file", {"path": _rel})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "grep_files":
@@ -910,6 +922,11 @@ class InferenceClient:
                                     result_dict = {"error": f"grep failed: {_e}"}
                             logger.info("tools stage=%-20s grep_files pattern=%r → %d matches",
                                         stage_key, _pattern, len(result_dict.get("matches", [])))
+                            if on_tool_result:
+                                await on_tool_result("grep_files", {
+                                    "pattern": _pattern,
+                                    "match_count": len(result_dict.get("matches", [])),
+                                })
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     else:

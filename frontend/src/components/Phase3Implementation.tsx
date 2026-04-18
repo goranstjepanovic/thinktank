@@ -71,6 +71,7 @@ const WS_BASE = 'ws://localhost:8000';
 
 type ActivityEntry =
   | { kind: 'thinking'; id: number }
+  | { kind: 'tool_use'; id: number; tool: string; detail: string }
   | { kind: 'plan_ready'; id: number; fileCount: number; message: string }
   | { kind: 'writing'; id: number; filePath: string; fileIndex: number; totalFiles: number }
   | { kind: 'file'; id: number; path: string; sizeBytes: number; success: boolean }
@@ -96,6 +97,34 @@ function ThinkingEntry() {
         <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
       </div>
       <span style={{ fontSize: 12 }}>Thinking…</span>
+    </div>
+  );
+}
+
+const TOOL_ICONS: Record<string, string> = {
+  list_files: '📂',
+  read_file: '📄',
+  grep_files: '🔍',
+  web_search: '🌐',
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  list_files: 'Listing',
+  read_file: 'Reading',
+  grep_files: 'Searching',
+  web_search: 'Web search',
+};
+
+function ToolUseEntry({ tool, detail }: { tool: string; detail: string }) {
+  const icon = TOOL_ICONS[tool] ?? '⚙';
+  const label = TOOL_LABELS[tool] ?? tool;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', color: 'var(--text2)', fontSize: 12 }}>
+      <div style={{ display: 'flex', gap: 3 }}>
+        <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+      </div>
+      <span>{icon} {label}</span>
+      <code style={{ color: 'var(--text2)', fontFamily: 'monospace', opacity: 0.75 }}>{detail}</code>
     </div>
   );
 }
@@ -663,11 +692,16 @@ export function Phase3Implementation() {
         if (prev.some(e => e.kind === 'thinking')) return prev;
         return [...prev, entry];
       }
-      if (entry.kind === 'writing') {
-        // Replace previous writing entry to show only current file
-        return [...prev.filter(e => e.kind !== 'writing' && e.kind !== 'thinking'), entry];
+      if (entry.kind === 'tool_use') {
+        // Replace previous tool_use entry — always show only the latest exploration action
+        return [...prev.filter(e => e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
       }
-      return [...prev.filter(e => e.kind !== 'thinking'), entry];
+      if (entry.kind === 'writing') {
+        // Replace previous writing/tool_use entry to show only current file
+        return [...prev.filter(e => e.kind !== 'writing' && e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
+      }
+      // Any "real" activity clears transient indicators
+      return [...prev.filter(e => e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
     });
 
   // Auto-scroll log on new entries or when switching back to the chat tab
@@ -753,6 +787,14 @@ export function Phase3Implementation() {
 
           case 'phase3.thinking':
             addEntry({ kind: 'thinking', id: nextId() });
+            break;
+
+          case 'phase3.tool_use':
+            addEntry({
+              kind: 'tool_use', id: nextId(),
+              tool: event.payload.tool as string,
+              detail: event.payload.detail as string,
+            });
             break;
 
           case 'phase3.plan_ready':
@@ -1073,6 +1115,7 @@ export function Phase3Implementation() {
               {log.map((entry) => {
                 switch (entry.kind) {
                   case 'thinking': return <ThinkingEntry key={entry.id} />;
+                  case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
                   case 'plan_ready': return <PlanReadyEntry key={entry.id} fileCount={entry.fileCount} message={entry.message} />;
                   case 'writing': return <WritingEntry key={entry.id} filePath={entry.filePath} fileIndex={entry.fileIndex} totalFiles={entry.totalFiles} />;
                   case 'file': return <FileEntry key={entry.id} path={entry.path} sizeBytes={entry.sizeBytes} success={entry.success} />;

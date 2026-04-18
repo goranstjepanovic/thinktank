@@ -113,3 +113,6 @@ def phase3_shell_stop(idea_id: str, session_id: str, handle: str, pid: int | Non
 
 def phase3_message(idea_id: str, session_id: str, message_id: str, role: str, content: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.message", idea_id=idea_id, payload={"session_id": session_id, "message_id": message_id, "role": role, "content": content})
+
+def phase3_tool_use(idea_id: str, session_id: str, tool: str, detail: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.tool_use", idea_id=idea_id, payload={"session_id": session_id, "tool": tool, "detail": detail})

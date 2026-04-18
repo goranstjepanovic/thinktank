@@ -93,6 +93,19 @@ async def _get_phase3_or_404(idea_id: str, db: AsyncSession) -> Phase3Session:
 # Background task — autonomous implementation run
 # ---------------------------------------------------------------------------
 
+async def _emit_tool_use(idea_id: str, session_id: str, tool_name: str, result: dict) -> None:
+    """Emit a phase3.tool_use WebSocket event for exploration tool calls."""
+    detail_map = {
+        "list_files": lambda r: r.get("path", "."),
+        "read_file":  lambda r: r.get("path", ""),
+        "grep_files": lambda r: f'"{r.get("pattern", "")}" → {r.get("match_count", 0)} match(es)',
+        "web_search": lambda r: r.get("query", ""),
+    }
+    detail_fn = detail_map.get(tool_name)
+    if detail_fn:
+        await event_bus.publish(ev.phase3_tool_use(idea_id, session_id, tool_name, detail_fn(result)))
+
+
 async def _run_implementation(idea_id: str, session_id: str) -> None:
     from app.agents.code_generator_agent import CodeGeneratorAgent
     from app.main import get_inference_client
@@ -217,6 +230,8 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                     exit_code=result.get("exit_code"),
                     message=result.get("message", ""),
                 ))
+            elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
+                await _emit_tool_use(idea_id, session_id, tool_name, result)
 
         agent = CodeGeneratorAgent(get_inference_client())
         try:
@@ -528,6 +543,8 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
                     exit_code=result.get("exit_code"),
                     message=result.get("message", ""),
                 ))
+            elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
+                await _emit_tool_use(idea_id, session_id, tool_name, result)
 
         # Load recent chat history so the agent can see prior corrections
         from app.inference.base import Message as InferenceMessage
