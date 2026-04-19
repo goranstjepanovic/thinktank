@@ -30,6 +30,9 @@ router = APIRouter(prefix="/ideas", tags=["phase3"])
 # Per-session queues for injecting user messages into a WAITING orchestrator
 _session_user_queues: dict[str, "asyncio.Queue[str]"] = {}
 
+# Tracked asyncio Tasks for multi-agent sessions (enables task.cancel())
+_session_tasks: dict[str, "asyncio.Task"] = {}
+
 
 # ---------------------------------------------------------------------------
 # Pydantic output schema
@@ -277,6 +280,15 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 prd_content, on_tool_result, on_orchestrator_event, user_queue,
                 follow_up_message=follow_up_message,
             )
+        except asyncio.CancelledError:
+            logger.info("multi_agent: session %s cancelled by user", session_id[:8])
+            async with AsyncSessionLocal() as adb:
+                s = await adb.get(Phase3Session, session_id)
+                if s and s.status not in ("COMPLETE", "FAILED"):
+                    s.status = "FAILED"
+                    s.summary = "Cancelled by user"
+                    await adb.commit()
+            raise
         except Exception as e:
             logger.error("multi_agent: orchestrator failed for session %s: %s", session_id[:8], e)
             async with AsyncSessionLocal() as adb:
@@ -289,6 +301,7 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
             return
         finally:
             _session_user_queues.pop(session_id, None)
+            _session_tasks.pop(session_id, None)
 
         async with AsyncSessionLocal() as adb:
             s = await adb.get(Phase3Session, session_id)
@@ -577,7 +590,8 @@ async def start_phase3(
 
     await event_bus.publish(ev.phase3_started(idea_id, session.id))
     if mode == "multi_agent":
-        background_tasks.add_task(_run_multi_agent_implementation, idea_id, session.id)
+        task = asyncio.ensure_future(_run_multi_agent_implementation(idea_id, session.id))
+        _session_tasks[session.id] = task
     elif mode == "prd_only":
         background_tasks.add_task(_run_prd_only, idea_id, session.id)
     else:
@@ -735,16 +749,23 @@ async def regenerate_prd(
 @router.post("/{idea_id}/phase3/cancel", status_code=200)
 async def cancel_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
     """
-    Mark a RUNNING or PLANNING session as FAILED/cancelled.
-    Note: this marks the DB status but cannot interrupt an in-flight background task.
+    Cancel a RUNNING, PLANNING, or WAITING session.
+    For multi-agent sessions, cancels the asyncio task so the current sub-agent
+    receives CancelledError and the orchestrator stops cleanly.
     """
     session = await _get_phase3_or_404(idea_id, db)
-    if session.status not in ("PLANNING", "RUNNING"):
+    if session.status not in ("PLANNING", "RUNNING", "WAITING"):
         raise HTTPException(status_code=409, detail=f"Session is {session.status}; cannot cancel")
 
     session.status = "FAILED"
     session.summary = "Cancelled by user"
     await db.commit()
+
+    # Cancel the tracked asyncio task (multi-agent mode) so the in-flight
+    # sub-agent gets CancelledError rather than running to completion.
+    task = _session_tasks.get(session.id)
+    if task and not task.done():
+        task.cancel()
 
     await event_bus.publish(ev.phase3_error(idea_id, session.id, "Cancelled by user"))
     return {"cancelled": True}

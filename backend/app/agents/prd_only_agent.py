@@ -57,13 +57,13 @@ _SECTIONS: list[tuple[str, str, tuple[str, ...]]] = [
         "Architecture",
         "The selected solution approach: major layers or services, how they communicate, "
         "data flow from input to output, and the key architectural decisions with their rationale.",
-        ("architecture_doc",),
+        ("resolution_summary", "architecture_doc"),
     ),
     (
         "Component Specifications",
         "Each component or service in detail: its single responsibility, "
         "inputs and outputs, public interfaces or API contracts, and internal dependencies.",
-        ("component_specs",),
+        ("resolution_summary", "component_specs"),
     ),
     (
         "Tech Stack",
@@ -71,7 +71,7 @@ _SECTIONS: list[tuple[str, str, tuple[str, ...]]] = [
         "List the specific version to use for each. "
         "Use web_search to verify each major dependency's current stable version before listing it — "
         "do not rely on training-data version numbers.",
-        (),
+        ("resolution_summary",),
     ),
     (
         "Data Models",

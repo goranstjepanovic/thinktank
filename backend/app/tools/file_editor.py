@@ -106,3 +106,45 @@ async def edit_file(
     else:
         msg = f"Unknown operation: '{operation}'. Valid: write_file, search_replace, insert_lines"
         return FileEditResult(success=False, operation=operation, path=abs_path, detail=msg)
+
+
+@dataclass
+class DeleteResult:
+    success: bool
+    path: str
+    detail: str = ""
+
+
+async def delete_path(path: str, allowed_base_dir: str) -> DeleteResult:
+    """
+    Delete a file or directory tree restricted to `allowed_base_dir`.
+    Refuses to delete `allowed_base_dir` itself.
+    """
+    import shutil
+
+    resolved = _resolve_safe(allowed_base_dir, path)
+    if resolved is None:
+        msg = f"Path '{path}' escapes allowed directory '{allowed_base_dir}'"
+        logger.warning("delete_path blocked: %s", msg)
+        return DeleteResult(success=False, path=path, detail=msg)
+
+    base = Path(allowed_base_dir).resolve()
+    if resolved == base:
+        return DeleteResult(success=False, path=path, detail="Cannot delete the project root directory")
+
+    if not resolved.exists():
+        return DeleteResult(success=False, path=str(resolved), detail=f"Path not found: {path}")
+
+    try:
+        if resolved.is_dir():
+            shutil.rmtree(resolved)
+            detail = f"Deleted directory: {path}"
+        else:
+            resolved.unlink()
+            detail = f"Deleted file: {path}"
+        logger.info("delete_path: %s", detail)
+        return DeleteResult(success=True, path=str(resolved), detail=detail)
+    except Exception as e:
+        msg = f"Delete failed: {e}"
+        logger.error("delete_path %r: %s", path, msg)
+        return DeleteResult(success=False, path=str(resolved), detail=msg)

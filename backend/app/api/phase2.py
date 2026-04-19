@@ -8,20 +8,23 @@ Routes:
   POST /ideas/{id}/phase2/messages   Post a user message.
                                      Returns an SSE stream; chunks arrive immediately.
   POST /ideas/{id}/phase2/ready      Mark session as READY (transition from RESOLVING).
+  POST /ideas/{id}/phase2/reset      Reset to an earlier state (three depths).
 """
 
 import json
 import logging
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.engine import AsyncSessionLocal, get_session
-from app.db.models import Idea, Phase2Message, Phase2Session, SolutionBranch
+from app.db.models import Idea, Phase2Message, Phase2Session, Phase3Session, SolutionBranch
 from app.events import schemas as ev
 from app.events.bus import event_bus
 
@@ -417,6 +420,86 @@ async def mark_ready(
 
     # Fire-and-forget: generate the resolution summary in the background
     background_tasks.add_task(_build_resolution_summary, idea_id, session.id)
+
+    result = await db.execute(
+        select(Phase2Session)
+        .where(Phase2Session.id == session.id)
+        .options(selectinload(Phase2Session.messages))
+    )
+    return Phase2SessionOut.from_orm(result.scalar_one())
+
+
+class ResetBody(BaseModel):
+    depth: str = "phase3_only"
+    delete_output_dir: bool = False
+
+
+@router.post("/{idea_id}/phase2/reset", response_model=Phase2SessionOut)
+async def reset_phase2(
+    idea_id: str,
+    body: ResetBody = ResetBody(),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Reset implementation state so the user can redo work.
+
+    depth options:
+      phase3_only  — Delete Phase 3 session; reset Phase 2 status back to READY.
+                     Keeps the Q&A conversation and resolution summary intact.
+                     Use when you only want to re-run code generation with the same decisions.
+
+      resolution   — Above + clear the resolution summary and reset Phase 2 to RESOLVING.
+                     The conversation history is kept so you can see what was discussed,
+                     but you must re-answer questions and generate a new resolution summary.
+
+      conversation — Full reset: above + delete all Phase 2 messages.
+                     Use to start the Phase 2 Q&A completely from scratch.
+
+    delete_output_dir — if true, also remove the generated files on disk.
+    """
+    if body.depth not in ("phase3_only", "resolution", "conversation"):
+        raise HTTPException(status_code=422, detail=f"Unknown depth '{body.depth}'")
+
+    await _get_idea_or_404(idea_id, db)
+    session = await _get_session_or_404(idea_id, db)
+
+    # Block reset while Phase 3 is actively running
+    p3_r = await db.execute(select(Phase3Session).where(Phase3Session.idea_id == idea_id))
+    phase3 = p3_r.scalar_one_or_none()
+    if phase3 and phase3.status in ("PLANNING", "RUNNING", "WAITING"):
+        raise HTTPException(
+            status_code=409,
+            detail="Phase 3 is currently running — stop it before resetting",
+        )
+
+    output_dir: str | None = phase3.output_dir if phase3 else None
+
+    # ── Delete Phase 3 session (cascades to activity, messages, artifacts) ──
+    if phase3:
+        await db.delete(phase3)
+
+    # ── Optionally remove generated files from disk ──
+    if body.delete_output_dir and output_dir:
+        try:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception as exc:
+            logger.warning("reset: failed to remove output dir %r: %s", output_dir, exc)
+
+    # ── Reset Phase 2 state according to depth ──
+    if body.depth == "phase3_only":
+        if session.status in ("IMPLEMENTING", "COMPLETE"):
+            session.status = "READY"
+    elif body.depth in ("resolution", "conversation"):
+        session.status = "RESOLVING"
+        session.resolution_summary = None
+        if body.depth == "conversation":
+            await db.execute(
+                delete(Phase2Message).where(Phase2Message.session_id == session.id)
+            )
+
+    await db.commit()
+
+    await event_bus.publish(ev.phase2_status_changed(idea_id, session.id, session.status))
 
     result = await db.execute(
         select(Phase2Session)

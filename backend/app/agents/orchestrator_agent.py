@@ -160,7 +160,8 @@ def _sub_agent_system_prompt() -> str:
         "## File writing rules\n\n"
         "- Write complete file content — never truncate or use ellipsis placeholders\n"
         "- Parent directories are created automatically; never use mkdir\n"
-        "- For binary files, skip them and note it in your summary\n\n"
+        "- For binary files, skip them and note it in your summary\n"
+        "- Use `delete_path` to remove deprecated or unused files/directories — do not leave dead code\n\n"
         "## Command rules\n\n"
         f"- Shell environment: {shell_environment_context()}\n"
         "- One command per `run_shell` call — never chain with && or ;\n"
@@ -310,11 +311,23 @@ class OrchestratorAgent:
 
             await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title})
 
-            sub_result = await self._run_sub_agent(
-                db, idea, branch, output_dir,
-                task_id, task_title, task_instruction,
-                on_tool_result, on_orchestrator_event,
-            )
+            try:
+                sub_result = await self._run_sub_agent(
+                    db, idea, branch, output_dir,
+                    task_id, task_title, task_instruction,
+                    on_tool_result, on_orchestrator_event,
+                )
+            except asyncio.CancelledError:
+                await on_orchestrator_event("sub_agent_complete", {
+                    "task_id": task_id,
+                    "title": task_title,
+                    "summary": "Cancelled by user",
+                    "files_written": [],
+                    "commands_run": [],
+                    "success": False,
+                    "blocker": "Cancelled by user",
+                })
+                raise
 
             await on_orchestrator_event("sub_agent_complete", {
                 "task_id": task_id,
@@ -395,6 +408,8 @@ class OrchestratorAgent:
             await on_tool_result(tool_name, result)
             # Also emit sub_agent_update for UI
             if tool_name == "file_edit":
+                detail = result.get("path", "")
+            elif tool_name == "delete_path":
                 detail = result.get("path", "")
             elif tool_name == "run_shell":
                 detail = result.get("command", "")

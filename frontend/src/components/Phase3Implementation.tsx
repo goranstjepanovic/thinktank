@@ -371,6 +371,7 @@ function OrchestratorMessageEntry({ content }: { content: string }) {
 
 const UPDATE_ICONS: Record<string, string> = {
   file_edit: '✓',
+  delete_path: '🗑',
   run_shell: '$',
   list_files: '📂',
   read_file: '📄',
@@ -378,9 +379,10 @@ const UPDATE_ICONS: Record<string, string> = {
   web_search: '🌐',
 };
 
-function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates }: {
+function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates, onStop }: {
   taskId: string; title: string; status: 'running' | 'done' | 'blocked';
   summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
+  onStop?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isRunning = status === 'running';
@@ -419,6 +421,18 @@ function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, 
           <span style={{ fontSize: 11, color: 'var(--text2)', flexShrink: 0 }}>
             {filesWritten.length}f
           </span>
+        )}
+        {isRunning && onStop && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onStop(); }}
+            style={{
+              background: 'none', border: '1px solid var(--red)', color: 'var(--red)',
+              borderRadius: 4, padding: '2px 7px', fontSize: 11, cursor: 'pointer', flexShrink: 0,
+              lineHeight: 1.4,
+            }}
+          >
+            Stop
+          </button>
         )}
         <span style={{ fontSize: 10, color: 'var(--text2)', flexShrink: 0 }}>
           {expanded ? '▲' : '▼'}
@@ -823,6 +837,78 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
 }
 
 // ---------------------------------------------------------------------------
+// Reset menu
+// ---------------------------------------------------------------------------
+
+function ResetMenu({ disabled, onReset }: {
+  disabled: boolean;
+  onReset: (depth: 'phase3_only' | 'resolution' | 'conversation', deleteOutputDir: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const items: { label: string; sub: string; depth: 'phase3_only' | 'resolution' | 'conversation' }[] = [
+    { label: 'Re-run implementation', sub: 'Keep Q&A decisions, redo code gen', depth: 'phase3_only' },
+    { label: 'Redo resolution summary', sub: 'Keep conversation, clear decisions', depth: 'resolution' },
+    { label: 'Restart Q&A from scratch', sub: 'Delete conversation and decisions', depth: 'conversation' },
+  ];
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        className="btn-ghost"
+        style={{ fontSize: 11, padding: '3px 10px', color: 'var(--text2)' }}
+        disabled={disabled}
+        onClick={() => setOpen(o => !o)}
+      >
+        {disabled ? 'Resetting…' : 'Reset ▾'}
+      </button>
+      {open && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => setOpen(false)} />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, zIndex: 100,
+            background: 'var(--bg2)', border: '1px solid var(--border)',
+            borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+            minWidth: 260, padding: '6px 0',
+          }}>
+            {items.map(item => (
+              <button
+                key={item.depth}
+                onClick={() => { setOpen(false); onReset(item.depth, false); }}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '8px 14px', color: 'var(--text)',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg3, var(--bg))')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{item.label}</div>
+                <div style={{ fontSize: 11, color: 'var(--text2)' }}>{item.sub}</div>
+              </button>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border)', margin: '4px 0' }} />
+            <button
+              onClick={() => { setOpen(false); onReset('phase3_only', true); }}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: '8px 14px', color: 'var(--red)',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg3, var(--bg))')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Re-run + delete generated files</div>
+              <div style={{ fontSize: 11, color: 'var(--text2)' }}>Removes output folder from disk</div>
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -842,6 +928,7 @@ export function Phase3Implementation() {
   const [chatInput, setChatInput] = useState('');
   const [sending, setSending] = useState(false);
   const [regenPrd, setRegenPrd] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const [selectedMode, setSelectedMode] = useState<'classic' | 'multi_agent' | 'prd_only'>('classic');
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1194,6 +1281,26 @@ export function Phase3Implementation() {
     }
   };
 
+  const doReset = async (depth: 'phase3_only' | 'resolution' | 'conversation', deleteOutputDir: boolean) => {
+    if (!id) return;
+    const labels: Record<string, string> = {
+      phase3_only: 'This will delete the Phase 3 session and let you re-run implementation with the same Q&A decisions.',
+      resolution: 'This will delete Phase 3 and clear the resolution summary. You will need to re-answer questions and regenerate the summary.',
+      conversation: 'This will delete Phase 3 and the entire Phase 2 conversation. The Q&A will start completely from scratch.',
+    };
+    const extra = deleteOutputDir ? '\n\nGenerated files on disk will also be deleted.' : '';
+    if (!window.confirm(`${labels[depth]}${extra}\n\nContinue?`)) return;
+    setResetting(true);
+    setError(null);
+    try {
+      await api.resetPhase2(id, depth, deleteOutputDir);
+      navigate(`/ideas/${id}/phase2`);
+    } catch (e: unknown) {
+      setError(`Reset failed: ${(e as Error).message}`);
+      setResetting(false);
+    }
+  };
+
   if (!idea) {
     return <div className="page"><p style={{ color: 'var(--text2)' }}>Loading…</p></div>;
   }
@@ -1399,6 +1506,11 @@ export function Phase3Implementation() {
               {regenPrd ? 'Regenerating…' : 'Regenerate PRD'}
             </button>
           )}
+          {(isComplete || isFailed) && !isRunning && (
+            <div style={{ position: 'relative', display: 'inline-block' }}>
+              <ResetMenu disabled={resetting} onReset={doReset} />
+            </div>
+          )}
         </div>
 
         {/* Activity log tab */}
@@ -1512,6 +1624,7 @@ export function Phase3Implementation() {
                     filesWritten={entry.filesWritten}
                     blocker={entry.blocker}
                     updates={entry.updates}
+                    onStop={entry.status === 'running' ? doCancel : undefined}
                   />
                 ) : null)
               )}

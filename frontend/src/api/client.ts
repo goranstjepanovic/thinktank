@@ -54,6 +54,11 @@ export const api = {
     }),
   markPhase2Ready: (id: string) =>
     request<import('../types').Phase2Session>(`/ideas/${id}/phase2/ready`, { method: 'POST', body: '{}' }),
+  resetPhase2: (id: string, depth: 'phase3_only' | 'resolution' | 'conversation', deleteOutputDir = false) =>
+    request<import('../types').Phase2Session>(`/ideas/${id}/phase2/reset`, {
+      method: 'POST',
+      body: JSON.stringify({ depth, delete_output_dir: deleteOutputDir }),
+    }),
 
   // Phase 3
   startPhase3: (id: string, mode: 'classic' | 'multi_agent' = 'classic') =>

@@ -234,6 +234,26 @@ FILE_EDIT_TOOL = ToolDefinition(
 )
 
 
+DELETE_PATH_TOOL = ToolDefinition(
+    name="delete_path",
+    description=(
+        "Delete a file or directory (including all its contents) from the project directory. "
+        "Use this to remove deprecated files, dead code, or empty directories. "
+        "All paths are relative to the project root and restricted to the project directory. "
+        "Cannot delete the project root itself."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Relative path to the file or directory to delete (e.g. 'src/legacy.py', 'old_module/').",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
 RUN_SHELL_BG_TOOL = ToolDefinition(
     name="run_shell_background",
     description=(
@@ -569,7 +589,7 @@ class InferenceClient:
         if allowed_file_dir:
             available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
             if not explore_only:
-                available_tools += [FILE_EDIT_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
+                available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
         if extra_tools:
             available_tools += extra_tools
 
@@ -773,6 +793,32 @@ class InferenceClient:
                                     "success": edit_result.success,
                                     "size_bytes": content_bytes,
                                     "detail": edit_result.detail,
+                                })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "delete_path":
+                        if not allowed_file_dir:
+                            result_dict = {"success": False, "error": "delete_path tool not available in this context"}
+                        else:
+                            from app.tools.file_editor import delete_path
+                            del_result = await delete_path(
+                                path=tc.arguments.get("path", ""),
+                                allowed_base_dir=allowed_file_dir,
+                            )
+                            result_dict = {
+                                "success": del_result.success,
+                                "path": del_result.path,
+                                "detail": del_result.detail,
+                            }
+                            logger.info(
+                                "tools stage=%-20s delete_path path=%r ok=%s",
+                                stage_key, tc.arguments.get("path", ""), del_result.success,
+                            )
+                            if on_tool_result:
+                                await on_tool_result("delete_path", {
+                                    "path": tc.arguments.get("path", ""),
+                                    "success": del_result.success,
+                                    "detail": del_result.detail,
                                 })
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
