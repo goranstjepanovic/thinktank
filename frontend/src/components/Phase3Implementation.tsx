@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import hljs from 'highlight.js/lib/core';
 import langBash from 'highlight.js/lib/languages/bash';
 import langCss from 'highlight.js/lib/languages/css';
@@ -837,6 +837,46 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
 }
 
 // ---------------------------------------------------------------------------
+// Wake lock — keep screen on while the agent is running
+// ---------------------------------------------------------------------------
+
+function useWakeLock(active: boolean) {
+  const lockRef = useRef<WakeLockSentinel | null>(null);
+
+  const acquire = useCallback(async () => {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      lockRef.current = await navigator.wakeLock.request('screen');
+    } catch { /* permission denied or unsupported — silently ignore */ }
+  }, []);
+
+  const release = useCallback(async () => {
+    if (lockRef.current) {
+      await lockRef.current.release().catch(() => {});
+      lockRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (active) {
+      acquire();
+    } else {
+      release();
+    }
+    return () => { release(); };
+  }, [active, acquire, release]);
+
+  // Re-acquire if the page becomes visible again (e.g. user switched tabs)
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && active) acquire();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [active, acquire]);
+}
+
+// ---------------------------------------------------------------------------
 // Reset menu
 // ---------------------------------------------------------------------------
 
@@ -934,6 +974,9 @@ export function Phase3Implementation() {
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const isActivelyRunning = session?.status === 'PLANNING' || session?.status === 'RUNNING' || session?.status === 'WAITING';
+  useWakeLock(isActivelyRunning);
 
   const addEntry = (entry: ActivityEntry) =>
     setLog(prev => {
