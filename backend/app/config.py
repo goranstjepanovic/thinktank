@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     script_runner_max_output_kb: int = 64
 
     # Shell runner (F19) — unrestricted shell for Phase 3 agents
-    shell_runner_timeout_seconds: int = 120   # npm install can take a while
+    shell_runner_timeout_seconds: int = 300   # npm install / pip install can take a while
     shell_runner_max_output_kb: int = 64
 
     # Server — CORS is open (*) since this runs local-only with no auth

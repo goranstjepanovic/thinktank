@@ -366,30 +366,53 @@ async def run_shell_command(
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
         )
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _read_stream(stream: asyncio.StreamReader, chunks: list[bytes]) -> None:
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+        stdout_reader = asyncio.create_task(_read_stream(proc.stdout, stdout_chunks))
+        stderr_reader = asyncio.create_task(_read_stream(proc.stderr, stderr_chunks))
+
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=float(timeout_seconds)
-            )
+            # Wait for the main process to exit (not for pipe EOF).
+            # On Windows, npm/node child processes keep pipes open after npm exits,
+            # so using proc.communicate() would hang until the full timeout.
+            await asyncio.wait_for(proc.wait(), timeout=float(timeout_seconds))
+            # Process exited — give a short grace period to drain buffered pipe output.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_reader, stderr_reader, return_exceptions=True),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                stdout_reader.cancel()
+                stderr_reader.cancel()
         except asyncio.TimeoutError:
             try:
                 proc.kill()
             except Exception:
                 pass
+            stdout_reader.cancel()
+            stderr_reader.cancel()
             try:
-                # Second communicate() can deadlock on Windows if child processes
-                # survive the kill (e.g. npm spawns Node which holds the pipes).
-                # Give it 10 s then fall back to empty output.
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=10.0
-                )
-            except (asyncio.TimeoutError, Exception):
-                stdout_bytes, stderr_bytes = b"", b""
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
             timed_out = True
     except Exception as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
         return ShellResult(stdout="", stderr=f"Failed to launch shell: {exc}", exit_code=1, duration_ms=duration_ms)
 
     duration_ms = int((time.monotonic() - start) * 1000)
+    stdout_bytes = b"".join(stdout_chunks)
+    stderr_bytes = b"".join(stderr_chunks)
     stdout = stdout_bytes[:max_output_bytes].decode("utf-8", errors="replace")
     stderr = stderr_bytes[:max_output_bytes].decode("utf-8", errors="replace")
     if timed_out:
