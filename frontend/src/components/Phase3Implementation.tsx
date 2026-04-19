@@ -263,7 +263,7 @@ function ErrorEntry({ message }: { message: string }) {
   );
 }
 
-function CompleteEntry({ summary, outputDir, onBrowse }: { summary: string; outputDir: string; onBrowse: () => void }) {
+function CompleteEntry({ summary, outputDir, onBrowse, isPrdOnly }: { summary: string; outputDir: string; onBrowse: () => void; isPrdOnly?: boolean }) {
   return (
     <div style={{
       margin: '12px 0 4px',
@@ -272,7 +272,9 @@ function CompleteEntry({ summary, outputDir, onBrowse }: { summary: string; outp
       border: '1px solid #1a3a1a',
       borderRadius: 8,
     }}>
-      <p style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600, marginBottom: 6 }}>✓ Implementation complete</p>
+      <p style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600, marginBottom: 6 }}>
+        {isPrdOnly ? '✓ PRD generated' : '✓ Implementation complete'}
+      </p>
       {outputDir && (
         <p style={{ fontSize: 11, color: 'var(--text2)', marginBottom: summary ? 6 : 8, fontFamily: 'monospace' }}>
           {outputDir}
@@ -283,7 +285,9 @@ function CompleteEntry({ summary, outputDir, onBrowse }: { summary: string; outp
           <ReactMarkdown>{summary}</ReactMarkdown>
         </div>
       )}
-      <button className="btn-ghost" style={{ fontSize: 12 }} onClick={onBrowse}>Browse files →</button>
+      <button className="btn-ghost" style={{ fontSize: 12 }} onClick={onBrowse}>
+        {isPrdOnly ? 'View PRD →' : 'Browse files →'}
+      </button>
     </div>
   );
 }
@@ -622,7 +626,7 @@ function HighlightedCode({ content, filename }: { content: string; filename: str
   );
 }
 
-function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: number }) {
+function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refreshKey: number; initialPath?: string }) {
   const [files, setFiles] = useState<Phase3FileEntry[]>([]);
   const [outputDir, setOutputDir] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
@@ -650,9 +654,10 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
           for (const d of newDirs) if (!next.has(d)) next.add(d);
           return next;
         });
-        // Only auto-select if nothing is selected yet
+        // Only auto-select if nothing is selected yet; prefer initialPath if provided
         setSelectedPath(prev => {
           if (prev) return prev;
+          if (initialPath && data.files.some(f => f.path === initialPath)) return initialPath;
           const firstFile = data.files.find(f => !f.path.endsWith('/'));
           return firstFile ? firstFile.path : null;
         });
@@ -832,7 +837,7 @@ export function Phase3Implementation() {
   const [sending, setSending] = useState(false);
   const [regenPrd, setRegenPrd] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
-  const [selectedMode, setSelectedMode] = useState<'classic' | 'multi_agent'>('classic');
+  const [selectedMode, setSelectedMode] = useState<'classic' | 'multi_agent' | 'prd_only'>('classic');
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -1036,6 +1041,10 @@ export function Phase3Implementation() {
               if (s.summary && !event.payload.is_iteration) {
                 addEntry({ kind: 'complete', id: nextId(), summary: s.summary, outputDir: s.output_dir ?? '' });
               }
+              // Auto-switch to PRD/files tab when prd_only finishes
+              if (s.mode === 'prd_only') {
+                setMainTab('files');
+              }
             }).catch(() => {});
             // Final refresh of file list when generation finishes
             if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
@@ -1203,8 +1212,8 @@ export function Phase3Implementation() {
             <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 28 }}>{selectedBranch.approach_summary}</p>
           )}
           {/* Mode selector */}
-          <div style={{ display: 'flex', gap: 12, marginBottom: 24, justifyContent: 'center' }}>
-            {(['classic', 'multi_agent'] as const).map(m => (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {(['classic', 'multi_agent', 'prd_only'] as const).map(m => (
               <button
                 key={m}
                 onClick={() => setSelectedMode(m)}
@@ -1216,17 +1225,19 @@ export function Phase3Implementation() {
                   color: selectedMode === m ? 'var(--text)' : 'var(--text2)',
                   cursor: 'pointer',
                   textAlign: 'left',
-                  minWidth: 200,
+                  minWidth: 180,
                   transition: 'all 0.15s',
                 }}
               >
                 <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
-                  {m === 'classic' ? '⚡ Classic' : '🧭 Multi-Agent'}
+                  {m === 'classic' ? '⚡ Classic' : m === 'multi_agent' ? '🧭 Multi-Agent' : '📄 PRD Only'}
                 </div>
-                <div style={{ fontSize: 11, lineHeight: 1.5, color: selectedMode === m ? 'var(--text2)' : 'var(--text2)', opacity: 0.85 }}>
+                <div style={{ fontSize: 11, lineHeight: 1.5, opacity: 0.85 }}>
                   {m === 'classic'
                     ? 'Direct generation — one file at a time, fast and predictable'
-                    : 'Orchestrated — planner delegates tasks to specialized sub-agents'}
+                    : m === 'multi_agent'
+                    ? 'Orchestrated — planner delegates tasks to specialized sub-agents'
+                    : 'Generate a standalone PRD to implement elsewhere'}
                 </div>
               </button>
             ))}
@@ -1243,7 +1254,7 @@ export function Phase3Implementation() {
                   <li>You can browse files and request changes when done</li>
                 </ol>
               </>
-            ) : (
+            ) : selectedMode === 'multi_agent' ? (
               <>
                 <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Multi-agent mode</p>
                 <ol style={{ fontSize: 13, color: 'var(--text2)', paddingLeft: 20, lineHeight: 1.8 }}>
@@ -1251,6 +1262,16 @@ export function Phase3Implementation() {
                   <li>An orchestrator reads the PRD and plans tasks autonomously</li>
                   <li>Sub-agents execute each task: writing files, running commands</li>
                   <li>The orchestrator can ask you questions if it needs input</li>
+                </ol>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>PRD Only mode</p>
+                <ol style={{ fontSize: 13, color: 'var(--text2)', paddingLeft: 20, lineHeight: 1.8 }}>
+                  <li>Synthesises all Phase 1 + Phase 2 context into a single document</li>
+                  <li>Covers architecture, components, data models, API, tech stack (with current versions), implementation phases, and setup guide</li>
+                  <li>Searches the web to verify library versions before writing</li>
+                  <li>Output is a standalone PRD.md ready to hand to any developer or AI tool</li>
                 </ol>
               </>
             )}
@@ -1262,7 +1283,7 @@ export function Phase3Implementation() {
             disabled={starting}
             onClick={doStart}
           >
-            {starting ? 'Starting…' : 'Begin Implementation'}
+            {starting ? 'Starting…' : selectedMode === 'prd_only' ? 'Generate PRD' : 'Begin Implementation'}
           </button>
         </div>
       </div>
@@ -1276,7 +1297,8 @@ export function Phase3Implementation() {
   const hasActivity = log.length > 0;
   const wasCancelled = isFailed && session.summary === 'Cancelled by user';
   const hasTimedOut = log.some(e => e.kind === 'shell' && (e as Extract<ActivityEntry, { kind: 'shell' }>).timedOut);
-  const showChatInput = isComplete || isFailed || isWaiting || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut));
+  const isPrdOnly = session?.mode === 'prd_only';
+  const showChatInput = !isPrdOnly && (isComplete || isFailed || isWaiting || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut)));
   const showRetryButton = isFailed && !wasCancelled && !hasActivity;
 
   const fileCount = log.filter(e => e.kind === 'file').length;
@@ -1349,17 +1371,18 @@ export function Phase3Implementation() {
                 </span>
               )}
             </button>
-            {fileCount > 0 && (
+            {(fileCount > 0 || session?.mode === 'prd_only') && (
               <button
                 className={`tab ${mainTab === 'files' ? 'active' : ''}`}
                 onClick={() => setMainTab('files')}
                 style={{ fontSize: 12 }}
               >
-                Files <span style={{ marginLeft: 4, color: isComplete ? 'var(--green)' : 'var(--text2)', fontSize: 11 }}>{fileCount}</span>
+                {session?.mode === 'prd_only' ? 'PRD' : 'Files'}
+                {fileCount > 0 && <span style={{ marginLeft: 4, color: isComplete ? 'var(--green)' : 'var(--text2)', fontSize: 11 }}>{fileCount}</span>}
               </button>
             )}
           </div>
-          {isComplete && !isRunning && (
+          {isComplete && !isRunning && !isPrdOnly && (
             <button
               className="btn-ghost"
               style={{ fontSize: 11, padding: '3px 10px', color: 'var(--text2)' }}
@@ -1397,7 +1420,7 @@ export function Phase3Implementation() {
                     case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
                     case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
                     case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
-                    case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;
+                    case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} isPrdOnly={session?.mode === 'prd_only'} />;
                     default: return null;
                   }
                 })}
@@ -1524,7 +1547,7 @@ export function Phase3Implementation() {
                     </div>
                   );
                   case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
-                  case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} />;
+                  case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} isPrdOnly={session?.mode === 'prd_only'} />;
                   case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
                   case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
                   default: return null;
@@ -1602,9 +1625,9 @@ export function Phase3Implementation() {
         ) : null}
 
         {/* Files tab */}
-        {mainTab === 'files' && fileCount > 0 && (
+        {mainTab === 'files' && (fileCount > 0 || session?.mode === 'prd_only') && (
           <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px' }}>
-            <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} />
+            <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} initialPath={session?.mode === 'prd_only' ? 'PRD.md' : undefined} />
           </div>
         )}
       </div>

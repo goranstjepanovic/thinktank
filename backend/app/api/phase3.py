@@ -454,6 +454,70 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
         logger.info("Phase3 complete for session %s — output: %s", session_id[:8], output_dir)
 
 
+async def _run_prd_only(idea_id: str, session_id: str) -> None:
+    """PRD-only mode: generate a single standalone PRD.md, no code."""
+    from app.agents.prd_only_agent import PrdOnlyAgent
+    from app.main import get_inference_client
+    from app.services.user_settings import get_implementations_dir
+
+    async with AsyncSessionLocal() as db:
+        sess_r = await db.execute(select(Phase3Session).where(Phase3Session.id == session_id))
+        session = sess_r.scalar_one_or_none()
+        if not session:
+            return
+
+        idea_r = await db.execute(select(Idea).where(Idea.id == idea_id))
+        idea = idea_r.scalar_one_or_none()
+        branch_r = await db.execute(select(SolutionBranch).where(SolutionBranch.id == session.branch_id))
+        branch = branch_r.scalar_one_or_none()
+        if not idea or not branch:
+            return
+
+        project_root = idea.name.lower().replace(" ", "-").replace("_", "-")[:40] or "project"
+        output_dir = str(get_implementations_dir() / idea_id / project_root)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        session.project_root = project_root
+        session.output_dir = output_dir
+        session.status = "RUNNING"
+        await db.commit()
+
+        await event_bus.publish(ev.phase3_running(idea_id, session_id))
+        await event_bus.publish(ev.phase3_thinking(idea_id, session_id))
+
+        async def on_tool_result(tool_name: str, result: dict) -> None:
+            if tool_name == "file_edit" and result.get("success"):
+                payload = {"path": result.get("path", ""), "size_bytes": result.get("size_bytes", 0)}
+                await event_bus.publish(ev.phase3_file_written(idea_id, session_id, **payload))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(
+                        session_id=session_id, event_type="file_written",
+                        payload_json=json.dumps(payload),
+                    ))
+                    await adb.commit()
+            elif tool_name == "web_search":
+                await _emit_tool_use(idea_id, session_id, "web_search", result)
+
+        agent = PrdOnlyAgent(get_inference_client())
+        try:
+            success = await agent.run(db, session, idea, branch, on_tool_result)
+        except Exception as e:
+            logger.error("prd_only: failed for session %s: %s", session_id[:8], e)
+            session.status = "FAILED"
+            session.summary = str(e)
+            await db.commit()
+            await event_bus.publish(ev.phase3_error(idea_id, session_id, str(e)))
+            return
+
+        summary = "PRD generated successfully." if success else "PRD generation failed."
+        session.status = "COMPLETE"
+        session.summary = summary
+        await db.commit()
+
+        await event_bus.publish(ev.phase3_complete(idea_id, session_id, summary=summary, output_dir=output_dir))
+        logger.info("prd_only: complete for session %s", session_id[:8])
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -497,7 +561,7 @@ async def start_phase3(
     if not idea.selected_branch_id:
         raise HTTPException(status_code=409, detail="No branch selected for this idea")
 
-    mode = body.mode if body.mode in ("classic", "multi_agent") else "classic"
+    mode = body.mode if body.mode in ("classic", "multi_agent", "prd_only") else "classic"
     session = Phase3Session(
         idea_id=idea_id,
         phase2_session_id=phase2.id,
@@ -514,6 +578,8 @@ async def start_phase3(
     await event_bus.publish(ev.phase3_started(idea_id, session.id))
     if mode == "multi_agent":
         background_tasks.add_task(_run_multi_agent_implementation, idea_id, session.id)
+    elif mode == "prd_only":
+        background_tasks.add_task(_run_prd_only, idea_id, session.id)
     else:
         background_tasks.add_task(_run_implementation, idea_id, session.id)
 
