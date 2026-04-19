@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePipelineEvents } from '../hooks/usePipelineEvents';
@@ -438,16 +439,22 @@ export function IdeaDetail() {
         <div className="card" style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div>
             <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>DESCRIPTION</p>
-            <p style={{ fontSize: 13 }}>{idea.description}</p>
+            <div className="idea-md" style={{ fontSize: 13 }}>
+              <ReactMarkdown>{idea.description || ''}</ReactMarkdown>
+            </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div>
               <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 2 }}>REQUIREMENTS</p>
-              <p style={{ fontSize: 13 }}>{idea.requirements}</p>
+              <div className="idea-md" style={{ fontSize: 13 }}>
+                <ReactMarkdown>{idea.requirements || ''}</ReactMarkdown>
+              </div>
             </div>
             <div>
               <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 2 }}>CONSTRAINTS</p>
-              <p style={{ fontSize: 13 }}>{idea.constraints}</p>
+              <div className="idea-md" style={{ fontSize: 13 }}>
+                <ReactMarkdown>{idea.constraints || ''}</ReactMarkdown>
+              </div>
             </div>
           </div>
         </div>

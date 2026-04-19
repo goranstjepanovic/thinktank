@@ -42,6 +42,9 @@ _BLOCKED_MODULES = frozenset({
     "signal",
     "gc",
     "resource",
+    "webbrowser",  # blocks browser.open() calls that would launch the user's browser
+    "playwright",
+    "selenium",
 })
 
 # os is special: we allow it but block the dangerous sub-attributes at AST level

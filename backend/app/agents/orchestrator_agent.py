@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
-from app.inference.client import InferenceClient
+from app.inference.client import InferenceClient, INSPECT_FILES_TOOL
 from app.tools.shell_runner import shell_environment_context
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,12 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "to a sub-agent. YOU do NOT write files or run commands — you only read the project state to "
         "understand what is done and what remains.\n\n"
         "## Available tools\n\n"
-        "You may call `list_files`, `read_file`, and `grep_files` to inspect the project. "
+        "You may call `list_files`, `inspect_files`, and `grep_files` to inspect the project. "
+        "- `list_files`: list directory contents to understand project layout\n"
+        "- `inspect_files`: delegate reading to a sub-agent that returns compact summaries of each file "
+        "(what is implemented, what is complete, what is missing). Use this instead of reading files yourself. "
+        "Pass up to 10 file paths at a time.\n"
+        "- `grep_files`: search across files for a pattern\n"
         "Do NOT call `file_edit` or `run_shell` — those are reserved for the sub-agent.\n\n"
         "## Product Requirements Document\n\n"
         f"{prd_excerpt}\n\n"
@@ -67,7 +72,7 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         f"- Shell environment: {shell_environment_context()}\n\n"
         "## Rules\n\n"
         "- Delegate ONE cohesive task per response (e.g. 'backend API layer', 'frontend components')\n"
-        "- Before choosing the next task, call `list_files` to verify what is already on disk\n"
+        "- Before choosing the next task, call `list_files` to see what is on disk, then `inspect_files` on relevant files to understand their state\n"
         "- Track which PRD sections have been implemented and ensure full coverage\n"
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
@@ -78,6 +83,7 @@ def _orchestrator_user_prompt(
     idea: Idea,
     branch: SolutionBranch,
     completed_tasks: list[dict],
+    follow_up_message: str | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -94,13 +100,21 @@ def _orchestrator_user_prompt(
                 lines.append(f"   ⚠ Blocker: {t['blocker']}")
         history_block = "\n\n## Completed Tasks\n\n" + "\n".join(lines)
 
-    start_hint = (
-        "No tasks have been started yet. "
-        "Begin with the project scaffold: root files (README.md, .gitignore, .env.example, pyproject.toml / package.json), "
-        "then proceed layer by layer."
-        if not completed_tasks
-        else "Call `list_files` to check what is on disk, then decide the next task."
-    )
+    if follow_up_message:
+        start_hint = (
+            f"## User follow-up request\n\n"
+            f"{follow_up_message}\n\n"
+            "Call `list_files` to inspect the current project state, then plan and delegate tasks "
+            "that address the user's request. Set `done=true` only when the request is fully implemented."
+        )
+    elif not completed_tasks:
+        start_hint = (
+            "No tasks have been started yet. "
+            "Begin with the project scaffold: root files (README.md, .gitignore, .env.example, pyproject.toml / package.json), "
+            "then proceed layer by layer."
+        )
+    else:
+        start_hint = "Call `list_files` to check what is on disk, then decide the next task."
 
     return (
         f"PROJECT: {idea.name}\n"
@@ -108,6 +122,30 @@ def _orchestrator_user_prompt(
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
         f"{history_block}\n\n"
         f"{start_hint}"
+    )
+
+
+def _inspector_system_prompt() -> str:
+    return (
+        "You are a code inspector sub-agent. Read the specified files and return concise structured summaries.\n\n"
+        "For each file, report:\n"
+        "- What it implements (classes, functions, endpoints, schemas, etc.)\n"
+        "- What appears complete vs. stub/placeholder\n"
+        "- What is likely missing based on typical patterns for this file type\n\n"
+        "Output JSON only — no prose, no fences:\n"
+        '{"files": [{"path": "...", "language": "...", "summary": "one-sentence overview", '
+        '"implemented": ["item1", "item2"], "missing_or_incomplete": ["gap1", "gap2"]}]}'
+    )
+
+
+def _inspector_user_prompt(paths: list[str], focus: str, output_dir: str) -> str:
+    paths_list = "\n".join(f"- {p}" for p in paths)
+    focus_line = f"\nFocus on: {focus}" if focus else ""
+    return (
+        f"OUTPUT DIRECTORY: {output_dir}\n\n"
+        f"Inspect these files:{focus_line}\n{paths_list}\n\n"
+        "For each file: call read_file, then include it in the JSON summary. "
+        "Keep each summary concise — 1 sentence overview, key items only."
     )
 
 
@@ -176,9 +214,12 @@ class OrchestratorAgent:
         on_tool_result: OnToolResult,
         on_orchestrator_event: OnOrchestratorEvent,
         user_message_queue: "asyncio.Queue[str]",
+        follow_up_message: str | None = None,
     ) -> str:
         output_dir = session.output_dir or ""
         completed_tasks: list[dict] = []
+        # Only inject follow-up context on the first round
+        _initial_follow_up = follow_up_message
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
             logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
@@ -187,11 +228,21 @@ class OrchestratorAgent:
             # Build orchestrator messages with accumulated context
             orch_messages = [
                 Message(role="system", content=_orchestrator_system_prompt(prd_content)),
-                Message(role="user", content=_orchestrator_user_prompt(idea, branch, completed_tasks)),
+                Message(role="user", content=_orchestrator_user_prompt(idea, branch, completed_tasks, _initial_follow_up)),
             ]
+            _initial_follow_up = None  # only include on first round
 
             async def _orch_tool_cb(tool: str, result: dict) -> None:
                 await on_orchestrator_event("orchestrator_tool", {"tool": tool, "result": result})
+
+            async def _handle_inspect_files(args: dict) -> dict:
+                paths = [str(p) for p in (args.get("paths") or []) if p][:10]
+                focus = str(args.get("focus") or "")
+                if not paths:
+                    return {"files": [], "error": "no paths provided"}
+                return await self._run_inspector_agent(
+                    db, idea, branch, output_dir, paths, focus, on_orchestrator_event, round_idx
+                )
 
             try:
                 orch_result = await self._client.call_with_tools(
@@ -202,10 +253,12 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    max_tool_rounds=10,
+                    max_tool_rounds=12,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
+                    extra_tools=[INSPECT_FILES_TOOL],
+                    custom_tool_handlers={"inspect_files": _handle_inspect_files},
                 )
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)
@@ -265,6 +318,7 @@ class OrchestratorAgent:
 
             await on_orchestrator_event("sub_agent_complete", {
                 "task_id": task_id,
+                "title": task_title,
                 "summary": sub_result.get("summary", ""),
                 "files_written": sub_result.get("files_written", []),
                 "commands_run": sub_result.get("commands_run", []),
@@ -283,6 +337,44 @@ class OrchestratorAgent:
         if n_tasks > 4:
             summary += f" … (+{n_tasks - 4} more)"
         return summary.strip()
+
+    async def _run_inspector_agent(
+        self,
+        db: AsyncSession,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        paths: list[str],
+        focus: str,
+        on_orchestrator_event: OnOrchestratorEvent,
+        round_idx: int,
+    ) -> dict:
+        logger.info("inspector: reading %d file(s): %s", len(paths), paths)
+        await on_orchestrator_event("orchestrator_tool", {"tool": "inspect_files", "result": {"paths": paths, "focus": focus}})
+
+        try:
+            result = await self._client.call_with_tools(
+                stage_key="phase3_orchestrator",
+                messages=[
+                    Message(role="system", content=_inspector_system_prompt()),
+                    Message(role="user", content=_inspector_user_prompt(paths, focus, output_dir)),
+                ],
+                session=db,
+                idea_id=idea.id,
+                branch_id=branch.id,
+                allowed_file_dir=output_dir,
+                explore_only=True,
+                max_tool_rounds=len(paths) + 2,
+                return_json=True,
+                call_index=round_idx * 100 + 50,
+            )
+        except Exception as e:
+            logger.error("inspector: failed: %s", e)
+            return {"files": [{"path": p, "summary": f"failed to inspect: {e}", "implemented": [], "missing_or_incomplete": []} for p in paths]}
+
+        if isinstance(result, dict) and "files" in result:
+            return result
+        return {"files": [{"path": p, "summary": "inspection returned unexpected format", "implemented": [], "missing_or_incomplete": []} for p in paths]}
 
     async def _run_sub_agent(
         self,

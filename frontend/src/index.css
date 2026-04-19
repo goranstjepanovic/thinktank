@@ -185,6 +185,20 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px
 .markdown th { background: var(--bg3); color: var(--text2); font-weight: 600; }
 .markdown blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--text2); margin: 8px 0; }
 
+/* Compact markdown for idea fields (description / requirements / constraints) */
+.idea-md { color: var(--text); line-height: 1.6; }
+.idea-md p  { margin: 4px 0; }
+.idea-md p:first-child { margin-top: 0; }
+.idea-md ul, .idea-md ol { padding-left: 18px; margin: 4px 0; }
+.idea-md li { margin: 2px 0; }
+.idea-md strong { font-weight: 600; }
+.idea-md em { font-style: italic; }
+.idea-md code { background: var(--bg3); padding: 1px 4px; border-radius: 3px; font-size: 0.9em; font-family: monospace; }
+.idea-md h1, .idea-md h2, .idea-md h3 { font-weight: 600; margin: 8px 0 4px; color: var(--text); }
+.idea-md h1 { font-size: 1.1em; }
+.idea-md h2 { font-size: 1em; }
+.idea-md h3 { font-size: 0.95em; }
+
 /* highlight.js — transparent bg so file browser pane color shows through */
 .hljs { background: transparent !important; }
 

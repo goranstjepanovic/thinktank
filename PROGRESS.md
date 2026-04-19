@@ -1,7 +1,7 @@
 # Think Tank — Progress & TODO
 
-**Last updated**: 2026-04-18 (session 14)
-**Session summary**: Phase 3 multi-agent mode. A new `multi_agent` mode sits alongside `classic` and is selectable on the Phase 3 start screen. The `OrchestratorAgent` (phi4:14b) reads the PRD and iteratively plans tasks, delegating each to a `SubAgent` (gemma4) that writes files and runs commands via `call_with_tools`. The orchestrator can pause and ask the user a question — the session enters `WAITING` status, the frontend shows an active chat input with "Reply" button, and the backend injects the reply into an `asyncio.Queue` to resume. New WebSocket events: `orchestrator_thinking`, `orchestrator_message`, `sub_agent_started`, `sub_agent_update`, `sub_agent_complete`, `waiting`. UI adds `OrchestratorThinkingEntry`, `OrchestratorMessageEntry`, and collapsible `SubAgentBlock` components. New DB column `mode` on `Phase3Session` with auto-migration. Two new model stages in `models.yaml`: `phase3_orchestrator` and `phase3_sub_agent`.
+**Last updated**: 2026-04-19 (session 15)
+**Session summary**: Three improvements across the pipeline. (1) Phase 3 orchestrator now uses `inspect_files` tool instead of `read_file` — a dedicated inspector sub-agent reads each file and returns compact JSON summaries (implemented / missing_or_incomplete) keeping orchestrator context lean. Added `extra_tools` + `custom_tool_handlers` extension points to `call_with_tools` for wiring custom in-process tool handlers without modifying InferenceClient. (2) `fetch_webpage` tool added (F23) — headless Chromium via Playwright renders JS-heavy pages and returns visible text content (12 k char cap, images/fonts blocked for speed); `playwright` added to pyproject.toml, Chromium browser installed. `webbrowser`, `playwright`, and `selenium` added to `script_runner` blocklist so models can no longer open the user's browser via `run_python`. (3) Phase 1 idea detail view now renders description, requirements, and constraints as markdown (ReactMarkdown + `.idea-md` CSS) — supports bullet lists, bold, headers, inline code.
 
 ---
 
@@ -33,7 +33,10 @@
 - **All 8 pipeline stages** — s0 intake → s7 documentation
 - **Orchestrator** — spawns 2 initial branches, manages asyncio task pool
 - **Phase 2** — interactive Q&A loop, resolution summary, READY state
-- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md (chunked, section-targeted), post-generation verification pass, shell commands (foreground + background), background process manager, activity events, WebSocket events, file browser endpoints, regenerate-PRD endpoint, **multi-agent mode** (OrchestratorAgent + SubAgent, WAITING status, asyncio.Queue user injection)
+- **Phase 3** — session creation, multi-pass file generation, iteration chat loop, file exploration tools (list_files/read_file/grep_files), always-generated docs/PRD.md (chunked, section-targeted), post-generation verification pass, shell commands (foreground + background), background process manager, activity events, WebSocket events, file browser endpoints, regenerate-PRD endpoint, **multi-agent mode** (OrchestratorAgent + SubAgent, WAITING status, asyncio.Queue user injection, **inspector sub-agent** for compact file summaries via `inspect_files` tool)
+- **Webpage fetch tool** — `fetch_webpage` via headless Playwright Chromium; JS rendered, 12 k char cap, available to all pipeline stages
+- **Script runner hardening** — `webbrowser`, `playwright`, `selenium` added to blocklist (prevents browser pop-open from `run_python` scripts)
+- **`call_with_tools` extensions** — `extra_tools` and `custom_tool_handlers` params for custom in-process tool dispatch without modifying InferenceClient
 - **Settings** — configurable implementations directory (user_settings service + JSON override), Settings page UI, move-implementations endpoint with dev-dir skip
 - **Agent reliability** — exploration-first prompts, chat history threading, Windows-aware command guidance, empty-write guard, JSON fence fix, insert_lines removed, round limits raised (40/50), per-section doc targeting for PRD
 
@@ -45,7 +48,8 @@
 - Phase nav breadcrumbs (1. Analysis › 2. Q&A › 3. Build)
 - Smart redirect to deepest active phase
 - Phase 2 chat with typing indicators and streaming
-- Phase 3 activity log with exploration tool visibility (list_files/read_file/grep_files/web_search shown as transient indicators)
+- Phase 3 activity log with exploration tool visibility (list_files/read_file/grep_files/web_search/fetch_webpage shown as transient indicators)
+- Phase 1 idea detail: description, requirements, constraints render as markdown (ReactMarkdown)
 - Phase 3 Files tab available during generation (appears after first file written, debounced live refresh)
 - File browser: file-type icons, syntax highlighting, copy button, VS Code link, failed-file indicator, total size
 - Regenerate PRD button (visible when COMPLETE)

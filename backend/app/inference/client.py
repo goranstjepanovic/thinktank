@@ -251,6 +251,51 @@ RUN_SHELL_BG_TOOL = ToolDefinition(
     },
 )
 
+WEB_FETCH_TOOL = ToolDefinition(
+    name="fetch_webpage",
+    description=(
+        "Fetch a web page using a headless browser that executes JavaScript, then return its readable text content. "
+        "Use this when a web_search snippet is insufficient and you need the full page — e.g. to read library docs, "
+        "check a package's README, verify an API's capabilities, or inspect a GitHub repo page. "
+        "Avoid fetching very large pages; prefer specific doc URLs over homepages."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The full URL to fetch (must start with http:// or https://).",
+            },
+        },
+        "required": ["url"],
+    },
+)
+
+INSPECT_FILES_TOOL = ToolDefinition(
+    name="inspect_files",
+    description=(
+        "Delegate file inspection to a specialized sub-agent that reads each file and returns "
+        "concise summaries: what is implemented, what is complete, and what appears missing. "
+        "Use this instead of read_file to understand multiple files without loading raw content "
+        "into your context. Pass up to 10 file paths at a time."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Relative paths (within the project) of files to inspect.",
+            },
+            "focus": {
+                "type": "string",
+                "description": "Optional: what to look for, e.g. 'API endpoints', 'auth logic', 'DB models'.",
+            },
+        },
+        "required": ["paths"],
+    },
+)
+
 GET_SHELL_OUTPUT_TOOL = ToolDefinition(
     name="get_shell_output",
     description=(
@@ -479,6 +524,8 @@ class InferenceClient:
         explore_only: bool = False,
         on_tool_result=None,  # Optional[Callable[[str, dict], Awaitable[None]]]
         return_json: bool = True,
+        extra_tools: "list[ToolDefinition] | None" = None,
+        custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
     ) -> dict | str:
         """
         Multi-turn tool-use call. The model may invoke `run_python` zero or more times
@@ -515,14 +562,16 @@ class InferenceClient:
                 call_index=call_index,
             )
 
-        # web_search is always available — uses DuckDuckGo by default, Tavily if key is set
+        # web_search + fetch_webpage are always available
         # file exploration tools (list/read/grep) are available whenever a project dir is provided
         # file_edit and run_shell are available when allowed_file_dir is set and NOT explore_only
-        available_tools: list[ToolDefinition] = [RUN_PYTHON_TOOL, WEB_SEARCH_TOOL]
+        available_tools: list[ToolDefinition] = [RUN_PYTHON_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
         if allowed_file_dir:
             available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
             if not explore_only:
                 available_tools += [FILE_EDIT_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
+        if extra_tools:
+            available_tools += extra_tools
 
         logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s",
                     stage_key, stage_cfg.model, [t.name for t in available_tools], max_tool_rounds if max_tool_rounds is not None else "unlimited")
@@ -649,6 +698,33 @@ class InferenceClient:
                             query=query, result=result_dict,
                             duration_ms=search_result.duration_ms,
                         )
+                        current_call_index += 1
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "fetch_webpage":
+                        url = tc.arguments.get("url", "").strip()
+                        logger.info("tools stage=%-20s fetch_webpage url=%r", stage_key, url)
+                        from app.tools.web_fetch import fetch_webpage as fetch_webpage_fn
+                        fetch_result = await fetch_webpage_fn(
+                            url=url,
+                            timeout_seconds=25,
+                        )
+                        result_dict = {
+                            "url": fetch_result.url,
+                            "title": fetch_result.title,
+                            "content": fetch_result.content,
+                            "truncated": fetch_result.truncated,
+                        }
+                        if fetch_result.error:
+                            result_dict["error"] = fetch_result.error
+                        if on_tool_result:
+                            await on_tool_result("fetch_webpage", {
+                                "url": url,
+                                "title": fetch_result.title,
+                                "content_length": len(fetch_result.content),
+                                "truncated": fetch_result.truncated,
+                                "error": fetch_result.error,
+                            })
                         current_call_index += 1
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
@@ -927,6 +1003,16 @@ class InferenceClient:
                                     "pattern": _pattern,
                                     "match_count": len(result_dict.get("matches", [])),
                                 })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif custom_tool_handlers and tc.name in custom_tool_handlers:
+                        try:
+                            result_dict = await custom_tool_handlers[tc.name](tc.arguments)
+                        except Exception as _e:
+                            logger.error("tools stage=%-20s custom handler %s failed: %s", stage_key, tc.name, _e)
+                            result_dict = {"error": str(_e)}
+                        if on_tool_result:
+                            await on_tool_result(tc.name, {"tool": tc.name, **result_dict})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     else:

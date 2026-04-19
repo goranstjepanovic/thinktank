@@ -2,8 +2,8 @@
 
 **Status**: Draft  
 **Author**: Solo  
-**Date**: 2026-04-17  
-**Version**: 1.6
+**Date**: 2026-04-19  
+**Version**: 1.7
 
 ---
 
@@ -115,7 +115,7 @@ Phase 3 is the main development cycle, driven by the artifacts created in Phase 
 
 | # | Feature | Description | Priority |
 |---|---------|-------------|----------|
-| F1 | Idea Submission | Form to capture idea name, description, goals, requirements, and constraints | P0 |
+| F1 | Idea Submission | Form to capture idea name, description, goals, requirements, and constraints. All three text fields (description, requirements, constraints) support markdown: users may write bullet lists, bold, headers, etc., and the idea detail view renders them with full markdown styling. | P0 |
 | F2 | Orchestrator Agent | Manages the solution pool per idea: spawns initial branches, monitors failures, triggers new branches, detects convergence | P0 |
 | F3 | Parallel Solution Branches | Each idea runs multiple solution branches simultaneously, each progressing independently through pipeline stages | P0 |
 | F4 | Failure-driven Branch Spawning | When a solution fails, a failure analysis determines whether a new unexplored path exists; if so, spawns a new branch with inherited failure context | P0 |
@@ -138,6 +138,8 @@ Phase 3 is the main development cycle, driven by the artifacts created in Phase 
 | F20 | Background Shell Processes | Long-running commands (dev servers, watchers) run as background processes. Agent can start, poll output, and stop them independently without blocking the tool loop | P1 |
 | F21 | Configurable Implementations Directory | User-configurable output directory for generated projects, set via a Settings page. Offers to move all existing projects when the path changes, skipping ephemeral dev directories (node_modules, .venv, etc.) during the move | P1 |
 | F22 | Agent Web Search for Package Verification | Agent uses `web_search` before finalising a tech stack or fixing package errors, checking current stable versions and import paths. Prevents stale training-data assumptions from producing broken dependency declarations | P1 |
+| F23 | Webpage Fetch Tool | Tool available to all pipeline models: model provides a URL, backend renders the full page in a headless Chromium browser (Playwright), executes JavaScript, and returns the visible text content (up to 12 000 chars). Enables models to read library documentation, inspect package README pages, and verify API capabilities when search snippets are insufficient. Images, fonts, and stylesheets are blocked for speed. Falls back gracefully when Playwright is not installed. Fetch results logged in audit trail. | P1 |
+| F24 | Orchestrator Inspector Sub-Agent | In Phase 3 multi-agent mode, the orchestrator delegates file reading to dedicated inspector sub-agents via an `inspect_files` tool. Instead of loading raw file content into the orchestrator's context, inspector agents read up to 10 files and return compact JSON summaries (what is implemented, what is complete, what appears missing). Keeps orchestrator context lean and focused on planning rather than raw content. | P1 |
 
 ### Analysis Pipeline (per Solution Branch)
 
@@ -396,7 +398,7 @@ Models in any pipeline stage can invoke a `run_python` tool call. The backend ex
 - Subprocess timeout: configurable, default **30 s**
 - No network access: outbound calls blocked at the subprocess level (`socket` module disabled via `sys.modules`)
 - No filesystem writes outside a per-call temp directory (cleaned up after execution)
-- `subprocess`, `os.system`, and shell-escape vectors blocked via a pre-execution AST check
+- `subprocess`, `os.system`, shell-escape vectors, and browser-launching modules (`webbrowser`, `playwright`, `selenium`) blocked via a pre-execution AST check
 - stdout + stderr capped at **64 KB** before being returned to the model
 
 **Typical use cases during analysis:**
@@ -489,3 +491,4 @@ Models in any pipeline stage can invoke a `run_python` tool call. The backend ex
 | 1.3 | 2026-04-16 | Solo | Captured two-phase vision: Phase 1 = analysis & selection (current), Phase 2 = implementation assistance (future, software → working app, hardware → CAD/3D artifacts). Added deliberate human review/selection stopping point between phases. Added F17 (Solution Selection), F18 (Web Search Tool). Moved code generation from Non-Goal to deferred Phase 2 scope. Updated milestones to reflect phase structure and current status. |
 | 1.5 | 2026-04-16 | Solo | Revisions Phases 1, 2 and 3 to establish a clear three-phase workflow: Analysis $\\to$ Open Question Resolution $\\to$ Implementation. Added Phase 3 focus area and detailed initial plans for agent integration. |
 | 1.6 | 2026-04-17 | Solo | Added F20–F22: background shell processes for long-running commands, configurable implementations directory with move support, agent web search for package version verification. Updated M11 to Partial. |
+| 1.7 | 2026-04-19 | Solo | Added F23 (Webpage Fetch Tool — headless Chromium via Playwright for JS-rendered pages), F24 (Orchestrator Inspector Sub-Agent — compact file summaries to keep orchestrator context lean). Updated F1 to document markdown support in idea text fields. Updated F16 to document browser-launching module blocklist (`webbrowser`, `playwright`, `selenium`). |
