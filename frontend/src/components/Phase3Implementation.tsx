@@ -807,7 +807,13 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
                   ⚠ File truncated at 256 KB for display
                 </div>
               )}
-              <HighlightedCode content={fileContent} filename={selectedPath ?? ''} />
+              {(selectedPath ?? '').endsWith('.md') ? (
+                <div className="markdown" style={{ padding: '20px 24px', fontSize: 13, maxWidth: 860 }}>
+                  <ReactMarkdown>{fileContent}</ReactMarkdown>
+                </div>
+              ) : (
+                <HighlightedCode content={fileContent} filename={selectedPath ?? ''} />
+              )}
             </>
           )}
         </div>
