@@ -5,6 +5,8 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+from app.tools.path_utils import normalize_project_relative_path
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -755,9 +757,13 @@ class InferenceClient:
                             from app.tools.file_editor import edit_file
                             import time as _time
                             _t0 = _time.monotonic()
+                            display_path = normalize_project_relative_path(
+                                allowed_file_dir,
+                                tc.arguments.get("path", ""),
+                            )
                             edit_result = await edit_file(
                                 operation=tc.arguments.get("operation", ""),
-                                path=tc.arguments.get("path", ""),
+                                path=display_path,
                                 allowed_base_dir=allowed_file_dir,
                                 content=tc.arguments.get("content", ""),
                                 search_text=tc.arguments.get("search_text", ""),
@@ -769,7 +775,7 @@ class InferenceClient:
                             result_dict = {
                                 "success": edit_result.success,
                                 "operation": edit_result.operation,
-                                "path": edit_result.path,
+                                "path": display_path,
                                 "detail": edit_result.detail,
                             }
                             logger.info(
@@ -780,7 +786,7 @@ class InferenceClient:
                                 session=session, idea_id=idea_id, branch_id=branch_id,
                                 stage_result_id=stage_result_id, call_index=current_call_index,
                                 operation=tc.arguments.get("operation", ""),
-                                path=tc.arguments.get("path", ""),
+                                path=display_path,
                                 result=result_dict,
                                 duration_ms=_duration_ms,
                             )
@@ -788,7 +794,7 @@ class InferenceClient:
                             if on_tool_result:
                                 content_bytes = len((tc.arguments.get("content") or "").encode("utf-8"))
                                 await on_tool_result("file_edit", {
-                                    "path": tc.arguments.get("path", ""),
+                                    "path": display_path,
                                     "operation": edit_result.operation,
                                     "success": edit_result.success,
                                     "size_bytes": content_bytes,
@@ -801,22 +807,26 @@ class InferenceClient:
                             result_dict = {"success": False, "error": "delete_path tool not available in this context"}
                         else:
                             from app.tools.file_editor import delete_path
+                            display_path = normalize_project_relative_path(
+                                allowed_file_dir,
+                                tc.arguments.get("path", ""),
+                            )
                             del_result = await delete_path(
-                                path=tc.arguments.get("path", ""),
+                                path=display_path,
                                 allowed_base_dir=allowed_file_dir,
                             )
                             result_dict = {
                                 "success": del_result.success,
-                                "path": del_result.path,
+                                "path": display_path,
                                 "detail": del_result.detail,
                             }
                             logger.info(
                                 "tools stage=%-20s delete_path path=%r ok=%s",
-                                stage_key, tc.arguments.get("path", ""), del_result.success,
+                                stage_key, display_path, del_result.success,
                             )
                             if on_tool_result:
                                 await on_tool_result("delete_path", {
-                                    "path": tc.arguments.get("path", ""),
+                                    "path": display_path,
                                     "success": del_result.success,
                                     "detail": del_result.detail,
                                 })
@@ -924,7 +934,10 @@ class InferenceClient:
                             import os as _os
                             from pathlib import Path as _Path
                             _base = _Path(allowed_file_dir).resolve()
-                            _rel = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _rel = normalize_project_relative_path(
+                                allowed_file_dir,
+                                tc.arguments.get("path") or "",
+                            )
                             _target = (_base / _rel).resolve() if _rel and _rel != "." else _base
                             _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
                             if not str(_target).startswith(str(_base)):
@@ -961,7 +974,10 @@ class InferenceClient:
                             from pathlib import Path as _Path
                             _MAX_READ = 12_000
                             _base = _Path(allowed_file_dir).resolve()
-                            _rel = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _rel = normalize_project_relative_path(
+                                allowed_file_dir,
+                                tc.arguments.get("path") or "",
+                            )
                             _full = (_base / _rel).resolve()
                             if not str(_full).startswith(str(_base)):
                                 result_dict = {"error": "path outside project directory"}
@@ -998,7 +1014,10 @@ class InferenceClient:
                             from pathlib import Path as _Path
                             _base = _Path(allowed_file_dir).resolve()
                             _pattern = tc.arguments.get("pattern") or ""
-                            _search_dir = (tc.arguments.get("path") or "").strip().lstrip("/\\")
+                            _search_dir = normalize_project_relative_path(
+                                allowed_file_dir,
+                                tc.arguments.get("path") or "",
+                            )
                             _glob = (tc.arguments.get("file_glob") or "").strip()
                             _target = (_base / _search_dir).resolve() if _search_dir and _search_dir != "." else _base
                             _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}

@@ -18,6 +18,7 @@ from app.db.models import Document, Idea, Phase2Session, Phase3ActivityEvent, Ph
 from app.inference.base import Message
 from app.inference.client import InferenceClient
 from app.services.file_manager import file_manager, strip_leading_markdown_fence
+from app.tools.path_utils import normalize_project_relative_path
 from app.tools.shell_runner import ShellResult, run_shell_command, shell_environment_context
 
 logger = logging.getLogger(__name__)
@@ -427,6 +428,18 @@ def _format_file_plan(files: list[dict]) -> str:
     return "\n".join(f"  {f['path']} — {f['description']}" for f in files)
 
 
+def _normalize_file_paths_for_output(files: list[dict], output_dir: str) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for file_spec in files:
+        path = normalize_project_relative_path(output_dir, file_spec.get("path", ""))
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append({**file_spec, "path": path})
+    return normalized
+
+
 def _command_failed(result: ShellResult) -> bool:
     # Timed-out commands are likely long-running servers (never exit by design) — don't treat as failures
     return result.exit_code != 0 and not result.timed_out
@@ -822,7 +835,10 @@ class CodeGeneratorAgent:
         if not isinstance(plan_data, dict):
             logger.warning("code_generator: plan stage returned non-dict: %s", type(plan_data))
             plan_data = {}
-        files: list[dict] = _normalize_files(plan_data.get("files", []))
+        files: list[dict] = _normalize_file_paths_for_output(
+            _normalize_files(plan_data.get("files", [])),
+            output_dir,
+        )
         commands: list[str] = [str(c) for c in plan_data.get("commands", []) if c]
 
         if not files:
@@ -1101,7 +1117,10 @@ class CodeGeneratorAgent:
         if not isinstance(plan_data, dict):
             logger.warning("iteration: explore stage returned non-dict: %s", type(plan_data))
             plan_data = {}
-        files: list[dict] = _normalize_files(plan_data.get("files", []))
+        files: list[dict] = _normalize_file_paths_for_output(
+            _normalize_files(plan_data.get("files", [])),
+            output_dir,
+        )
         commands: list[str] = [str(c) for c in plan_data.get("commands", []) if c]
 
         if not files:

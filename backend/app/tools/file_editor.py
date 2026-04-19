@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.services.file_manager import file_manager
+from app.tools.path_utils import normalize_project_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,7 @@ def _resolve_safe(base_dir: str, relative_path: str) -> Path | None:
     Returns None if the resolved path would escape the base directory.
     """
     base = Path(base_dir).resolve()
-    # Strip any leading slash so the path is treated as relative even if the
-    # model accidentally prefixes it with "/"
-    sanitised = relative_path.lstrip("/\\")
+    sanitised = normalize_project_relative_path(base_dir, relative_path)
     resolved = (base / sanitised).resolve()
     try:
         resolved.relative_to(base)
