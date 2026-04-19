@@ -421,12 +421,16 @@ function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, 
         </span>
       </div>
 
-      {/* Summary line (when done) */}
-      {!isRunning && summary && (
-        <div style={{ padding: '0 12px 6px', fontSize: 12, color: 'var(--text2)', borderTop: '1px solid var(--border)' }}>
-          {blocker && <span style={{ color: 'var(--yellow)', marginRight: 6 }}>⚠ Blocker:</span>}
-          {blocker || summary}
-        </div>
+      {/* Expanded body */}
+      {expanded && (
+        <>
+          {!isRunning && summary && (
+            <div style={{ padding: '0 12px 6px', fontSize: 12, color: 'var(--text2)', borderTop: '1px solid var(--border)' }}>
+              {blocker && <span style={{ color: 'var(--yellow)', marginRight: 6 }}>⚠ Blocker:</span>}
+              {blocker || summary}
+            </div>
+          )}
+        </>
       )}
 
       {/* Expanded activity */}
@@ -893,8 +897,12 @@ export function Phase3Implementation() {
             return [{ kind: 'file_failed', id: nextId(), path: e.payload.path as string, detail: e.payload.detail as string, ts: e.created_at }];
           } else if (e.event_type === 'command_executed') {
             return [{ kind: 'shell', id: nextId(), command: e.payload.command as string, exitCode: e.payload.exit_code as number, stdout: e.payload.stdout as string, stderr: e.payload.stderr as string, timedOut: e.payload.timed_out as boolean, durationMs: e.payload.duration_ms as number, ts: e.created_at }];
+          } else if (e.event_type === 'sub_agent_complete') {
+            const success = e.payload.success as boolean;
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId: e.payload.task_id as string, title: (e.payload.title as string) || `Task ${e.payload.task_id}`, status: success ? 'done' : 'blocked', summary: e.payload.summary as string, filesWritten: (e.payload.files_written as string[]) ?? [], blocker: (e.payload.blocker as string) ?? null, updates: [], ts: e.created_at }];
           } else {
-            return [{ kind: 'error', id: nextId(), message: e.payload.message as string, ts: e.created_at }];
+            // Skip unknown event types (sub_agent_started, orchestrator_thinking, etc.)
+            return [];
           }
         });
 

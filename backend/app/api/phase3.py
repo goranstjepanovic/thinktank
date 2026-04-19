@@ -112,8 +112,8 @@ async def _emit_tool_use(idea_id: str, session_id: str, tool_name: str, result: 
         await event_bus.publish(ev.phase3_tool_use(idea_id, session_id, tool_name, detail_fn(result)))
 
 
-async def _run_multi_agent_implementation(idea_id: str, session_id: str) -> None:
-    """Multi-agent mode: generate PRD first, then run OrchestratorAgent loop."""
+async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_up_message: str | None = None) -> None:
+    """Multi-agent mode: generate PRD first (skipped on follow-up), then run OrchestratorAgent loop."""
     from app.agents.code_generator_agent import CodeGeneratorAgent
     from app.agents.orchestrator_agent import OrchestratorAgent
     from app.main import get_inference_client
@@ -133,12 +133,16 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str) -> None
         if not idea or not branch:
             return
 
-        project_root = idea.name.lower().replace(" ", "-").replace("_", "-")[:40] or "project"
-        output_dir = str(get_implementations_dir() / idea_id / project_root)
+        if session.output_dir:
+            output_dir = session.output_dir
+            project_root = session.project_root or ""
+        else:
+            project_root = idea.name.lower().replace(" ", "-").replace("_", "-")[:40] or "project"
+            output_dir = str(get_implementations_dir() / idea_id / project_root)
+            session.project_root = project_root
+            session.output_dir = output_dir
         _Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        session.project_root = project_root
-        session.output_dir = output_dir
         session.status = "RUNNING"
         await db.commit()
 
@@ -248,14 +252,15 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str) -> None
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_complete", payload_json=json.dumps({"task_id": task_id, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
                     await adb.commit()
 
-        # ── Step 1: Generate PRD ──────────────────────────────────────────────
-        try:
-            await gen_agent.generate_prd(db, session, idea, branch, on_tool_result)
-        except Exception as e:
-            logger.warning("multi_agent: PRD generation failed: %s — continuing", e)
+        # ── Step 1: Generate PRD (skip on follow-up iterations) ──────────────
+        prd_path = _Path(output_dir) / "docs" / "PRD.md"
+        if not follow_up_message:
+            try:
+                await gen_agent.generate_prd(db, session, idea, branch, on_tool_result)
+            except Exception as e:
+                logger.warning("multi_agent: PRD generation failed: %s — continuing", e)
 
         # ── Step 2: Read PRD for orchestrator context ─────────────────────────
-        prd_path = _Path(output_dir) / "docs" / "PRD.md"
         try:
             prd_content = prd_path.read_text(encoding="utf-8") if prd_path.is_file() else "(PRD not available)"
         except Exception:
@@ -270,6 +275,7 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str) -> None
             summary = await orch_agent.run(
                 db, session, idea, branch,
                 prd_content, on_tool_result, on_orchestrator_event, user_queue,
+                follow_up_message=follow_up_message,
             )
         except Exception as e:
             logger.error("multi_agent: orchestrator failed for session %s: %s", session_id[:8], e)
@@ -836,6 +842,11 @@ async def send_phase3_message(
     await db.refresh(msg)
 
     await event_bus.publish(ev.phase3_message(idea_id, session.id, msg.id, "user", msg.content))
-    background_tasks.add_task(_run_iteration, idea_id, session.id, msg.id)
+
+    mode = getattr(session, "mode", "classic")
+    if mode == "multi_agent":
+        background_tasks.add_task(_run_multi_agent_implementation, idea_id, session.id, msg.content)
+    else:
+        background_tasks.add_task(_run_iteration, idea_id, session.id, msg.id)
 
     return {"id": msg.id, "role": msg.role, "content": msg.content, "created_at": msg.created_at.isoformat()}
