@@ -755,7 +755,8 @@ async def cancel_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
     """
     session = await _get_phase3_or_404(idea_id, db)
     if session.status not in ("PLANNING", "RUNNING", "WAITING"):
-        raise HTTPException(status_code=409, detail=f"Session is {session.status}; cannot cancel")
+        # Already done — return gracefully so stale UI stop buttons don't show errors.
+        return {"cancelled": False}
 
     session.status = "FAILED"
     session.summary = "Cancelled by user"
@@ -908,15 +909,18 @@ async def send_phase3_message(
     if not body.content.strip():
         raise HTTPException(status_code=422, detail="Message content cannot be empty")
 
-    # Multi-agent WAITING: inject message into the orchestrator's queue
-    if session.status == "WAITING" and session.id in _session_user_queues:
+    # Multi-agent active (WAITING or RUNNING): inject message into the orchestrator's queue.
+    # WAITING  → transition back to RUNNING so the orchestrator resumes.
+    # RUNNING  → queue the message; the orchestrator drains it at the next round via get_nowait().
+    if session.status in ("WAITING", "RUNNING") and session.id in _session_user_queues:
         msg = Phase3Message(session_id=session.id, role="user", content=body.content.strip())
         db.add(msg)
-        session.status = "RUNNING"
+        if session.status == "WAITING":
+            session.status = "RUNNING"
+            await event_bus.publish(ev.phase3_running(idea_id, session.id))
         await db.commit()
         await db.refresh(msg)
         await event_bus.publish(ev.phase3_message(idea_id, session.id, msg.id, "user", msg.content))
-        await event_bus.publish(ev.phase3_running(idea_id, session.id))
         _session_user_queues[session.id].put_nowait(msg.content)
         return {"id": msg.id, "role": msg.role, "content": msg.content, "created_at": msg.created_at.isoformat()}
 
