@@ -1454,7 +1454,9 @@ export function Phase3Implementation() {
   const wasCancelled = isFailed && session.summary === 'Cancelled by user';
   const hasTimedOut = log.some(e => e.kind === 'shell' && (e as Extract<ActivityEntry, { kind: 'shell' }>).timedOut);
   const isPrdOnly = session?.mode === 'prd_only';
-  const showChatInput = !isPrdOnly && (isComplete || isFailed || isWaiting || (isRunning && (log.some(e => e.kind === 'complete') || hasTimedOut)));
+  const isMultiAgent = session?.mode === 'multi_agent';
+  const showChatInput = !isPrdOnly && (isComplete || isFailed || isWaiting ||
+    (isRunning && (isMultiAgent || log.some(e => e.kind === 'complete') || hasTimedOut)));
   const showRetryButton = isFailed && !wasCancelled && !hasActivity;
 
   const fileCount = log.filter(e => e.kind === 'file').length;
@@ -1589,7 +1591,7 @@ export function Phase3Implementation() {
               </div>
 
               {/* Chat input */}
-              {(showChatInput || isRunning) && (
+              {showChatInput && (
                 <div style={{
                   flexShrink: 0,
                   borderTop: '1px solid var(--border)',
@@ -1602,16 +1604,15 @@ export function Phase3Implementation() {
                   <textarea
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isRunning) { e.preventDefault(); doSend(); } }}
-                    placeholder={isRunning ? 'Agent is working…' : isWaiting ? 'Orchestrator is waiting for your reply…' : 'Request a change or addition…'}
-                    disabled={isRunning}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } }}
+                    placeholder={isWaiting ? 'Orchestrator is waiting for your reply…' : isRunning ? 'Send a message — picked up before the next task batch…' : 'Request a change or addition…'}
                     rows={1}
                     style={{
                       flex: 1,
                       background: 'var(--bg)',
                       border: `1px solid ${isWaiting ? 'var(--accent)' : 'var(--border)'}`,
                       borderRadius: 8,
-                      color: isRunning ? 'var(--text2)' : 'var(--text)',
+                      color: 'var(--text)',
                       padding: '8px 12px',
                       fontSize: 13,
                       resize: 'none',
@@ -1619,16 +1620,14 @@ export function Phase3Implementation() {
                       lineHeight: 1.5,
                       maxHeight: 120,
                       overflowY: 'auto',
-                      opacity: isRunning ? 0.5 : 1,
                     }}
                   />
-                  {isRunning ? (
+                  <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }} disabled={sending || !chatInput.trim()} onClick={doSend}>
+                    {sending ? '…' : isWaiting ? 'Reply' : 'Send'}
+                  </button>
+                  {isRunning && (
                     <button className="btn-ghost" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0, color: 'var(--red)' }} disabled={cancelling} onClick={doCancel}>
                       {cancelling ? 'Stopping…' : 'Stop'}
-                    </button>
-                  ) : (
-                    <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }} disabled={sending || !chatInput.trim()} onClick={doSend}>
-                      {sending ? '…' : isWaiting ? 'Reply' : 'Send'}
                     </button>
                   )}
                 </div>

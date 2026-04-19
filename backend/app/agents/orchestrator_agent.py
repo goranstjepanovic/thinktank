@@ -1,16 +1,19 @@
 """
 Phase 3 Orchestrator Agent — multi-agent mode.
 
-The orchestrator reads the PRD, plans tasks autonomously, and delegates each task
-to a SubAgent that does the actual file writing and command execution.
+The orchestrator reads the PRD, plans tasks autonomously, and delegates batches of
+tasks to SubAgents that do the actual file writing and command execution.
 
 Flow:
   1. (Caller generates PRD first, passes content in)
-  2. Orchestrator loop: inspect project state → decide next task → delegate to sub-agent
-  3. Sub-agent writes files and runs commands, reporting back via callbacks
-  4. Orchestrator incorporates result, decides next task or finishes
+  2. Orchestrator loop: inspect project state → decide next batch of tasks (1-3) →
+     run all tasks in the batch concurrently → repeat
+  3. Sub-agents write files and run commands, reporting back via callbacks
+  4. Orchestrator incorporates results, decides next batch or finishes
   5. If orchestrator needs user input, it sets user_message and yields to the caller;
      the caller suspends the session (WAITING) and resumes when a message arrives.
+  6. User messages sent at any time are drained at the start of each round and
+     surfaced to the orchestrator as context (non-blocking feedback path).
 """
 
 import asyncio
@@ -20,6 +23,7 @@ from typing import Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.engine import AsyncSessionLocal
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
 from app.inference.client import InferenceClient, INSPECT_FILES_TOOL
@@ -54,14 +58,18 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "## Output format\n\n"
         "After any tool use (or immediately), output a JSON object only — no prose:\n"
         '{"analysis": "what has been done and what remains", '
-        '"next_task": {"id": "snake_case_id", "title": "short title ≤ 60 chars", '
-        '"instruction": "complete self-contained instructions for the sub-agent — list all files to create, '
-        'their purpose, any cross-file dependencies, and any commands to run"}, '
-        '"done": false, "user_message": null}\n\n'
+        '"next_tasks": ['
+        '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
+        '"instruction": "complete self-contained instructions — list all files to create, '
+        'their purpose, cross-file dependencies, and commands to run"}'
+        '], "done": false, "user_message": null}\n\n'
+        "You may include 1–3 tasks in `next_tasks`. Tasks in the same batch run concurrently, "
+        "so they MUST target completely independent files and modules — no two tasks in a batch "
+        "may write to the same file.\n\n"
         "When all PRD sections are implemented:\n"
-        '{"analysis": "all tasks complete", "next_task": null, "done": true, "user_message": null}\n\n'
+        '{"analysis": "all tasks complete", "next_tasks": [], "done": true, "user_message": null}\n\n'
         "When you need the user to make a decision before you can proceed:\n"
-        '{"analysis": "...", "next_task": null, "done": false, '
+        '{"analysis": "...", "next_tasks": [], "done": false, '
         '"user_message": "the specific question or decision you need from the user"}\n\n'
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field and the output directory path. Make it:\n"
@@ -71,8 +79,9 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Command-aware: list any post-write commands (install, build, test) to run\n"
         f"- Shell environment: {shell_environment_context()}\n\n"
         "## Rules\n\n"
-        "- Delegate ONE cohesive task per response (e.g. 'backend API layer', 'frontend components')\n"
-        "- Before choosing the next task, call `list_files` to see what is on disk, then `inspect_files` on relevant files to understand their state\n"
+        "- Delegate 1–3 cohesive, independent tasks per response\n"
+        "- Before choosing tasks, call `list_files` to see what is on disk, then `inspect_files` on relevant files\n"
+        "- Tasks in the same batch must NOT overlap: each should own its own set of files\n"
         "- Track which PRD sections have been implemented and ensure full coverage\n"
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
@@ -84,6 +93,7 @@ def _orchestrator_user_prompt(
     branch: SolutionBranch,
     completed_tasks: list[dict],
     follow_up_message: str | None = None,
+    pending_user_messages: list[str] | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -116,11 +126,17 @@ def _orchestrator_user_prompt(
     else:
         start_hint = "Call `list_files` to check what is on disk, then decide the next task."
 
+    feedback_block = ""
+    if pending_user_messages:
+        msgs = "\n".join(f"- {m}" for m in pending_user_messages)
+        feedback_block = f"\n\n## User feedback (received while last batch was running)\n\n{msgs}\n\nIncorporate this feedback into your next task decisions."
+
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
-        f"{history_block}\n\n"
+        f"{history_block}"
+        f"{feedback_block}\n\n"
         f"{start_hint}"
     )
 
@@ -226,10 +242,26 @@ class OrchestratorAgent:
             logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
             await on_orchestrator_event("orchestrator_thinking", {})
 
+            # Drain any user messages sent while the last batch was running (non-blocking)
+            pending_messages: list[str] = []
+            while True:
+                try:
+                    pending_messages.append(user_message_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if pending_messages:
+                logger.info("orchestrator: %d pending user message(s) injected into round %d",
+                            len(pending_messages), round_idx + 1)
+                for m in pending_messages:
+                    await on_orchestrator_event("orchestrator_message", {"content": f"[User]: {m}"})
+
             # Build orchestrator messages with accumulated context
             orch_messages = [
                 Message(role="system", content=_orchestrator_system_prompt(prd_content)),
-                Message(role="user", content=_orchestrator_user_prompt(idea, branch, completed_tasks, _initial_follow_up)),
+                Message(role="user", content=_orchestrator_user_prompt(
+                    idea, branch, completed_tasks, _initial_follow_up,
+                    pending_user_messages=pending_messages or None,
+                )),
             ]
             _initial_follow_up = None  # only include on first round
 
@@ -269,14 +301,19 @@ class OrchestratorAgent:
                 logger.warning("orchestrator: non-dict result in round %d", round_idx + 1)
                 break
 
-            analysis = str(orch_result.get("analysis", "")).strip()
             user_message = orch_result.get("user_message")
             done = bool(orch_result.get("done", False))
-            next_task = orch_result.get("next_task")
 
-            logger.info("orchestrator: done=%s task=%s question=%s", done, next_task and next_task.get("id"), bool(user_message))
+            # Accept both next_tasks (new) and next_task (legacy single-task format)
+            raw_tasks = orch_result.get("next_tasks")
+            if not raw_tasks and orch_result.get("next_task"):
+                raw_tasks = [orch_result["next_task"]]
+            next_tasks: list[dict] = [t for t in (raw_tasks or []) if isinstance(t, dict)]
 
-            # Orchestrator needs user input
+            logger.info("orchestrator: done=%s tasks=%d question=%s",
+                        done, len(next_tasks), bool(user_message))
+
+            # Orchestrator needs blocking user input before it can continue
             if user_message:
                 content = str(user_message).strip()
                 await on_orchestrator_event("orchestrator_message", {"content": content})
@@ -297,24 +334,79 @@ class OrchestratorAgent:
                 await on_orchestrator_event("orchestrator_running", {})
                 continue
 
-            if done or not next_task or not isinstance(next_task, dict):
+            if done or not next_tasks:
                 logger.info("orchestrator: signalled done after %d round(s)", round_idx + 1)
                 break
 
-            task_id = str(next_task.get("id") or f"task_{round_idx}")
-            task_title = str(next_task.get("title") or f"Task {round_idx + 1}")[:80]
-            task_instruction = str(next_task.get("instruction") or "")
-
-            if not task_instruction.strip():
-                logger.warning("orchestrator: empty instruction in round %d — stopping", round_idx + 1)
+            # Validate tasks
+            valid_tasks = []
+            for t in next_tasks[:3]:  # cap at 3 concurrent sub-agents
+                instruction = str(t.get("instruction") or "").strip()
+                if instruction:
+                    valid_tasks.append(t)
+                else:
+                    logger.warning("orchestrator: task %r has empty instruction — skipping", t.get("id"))
+            if not valid_tasks:
+                logger.warning("orchestrator: no valid tasks in round %d — stopping", round_idx + 1)
                 break
 
-            await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title})
+            # Emit started events for all tasks upfront
+            for t in valid_tasks:
+                task_id = str(t.get("id") or f"task_{round_idx}")
+                task_title = str(t.get("title") or "Task")[:80]
+                t["_id"] = task_id
+                t["_title"] = task_title
+                await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title})
 
+            # Run all tasks in this batch concurrently
+            batch_results = await self._run_task_batch(
+                idea, branch, output_dir, valid_tasks,
+                on_tool_result, on_orchestrator_event,
+            )
+
+            for t, sub_result in zip(valid_tasks, batch_results):
+                task_id = t["_id"]
+                task_title = t["_title"]
+                await on_orchestrator_event("sub_agent_complete", {
+                    "task_id": task_id,
+                    "title": task_title,
+                    "summary": sub_result.get("summary", ""),
+                    "files_written": sub_result.get("files_written", []),
+                    "commands_run": sub_result.get("commands_run", []),
+                    "success": sub_result.get("success", True),
+                    "blocker": sub_result.get("blocker"),
+                })
+                completed_tasks.append({"id": task_id, "title": task_title, **sub_result})
+
+        # Build completion summary
+        task_summaries = [t for t in completed_tasks if not t["id"].startswith("user_input_")]
+        total_files = sum(len(t.get("files_written", [])) for t in task_summaries)
+        n_tasks = len(task_summaries)
+        summary = f"Completed {n_tasks} task(s), wrote {total_files} file(s). "
+        summary += " | ".join(t["title"] for t in task_summaries[:4])
+        if n_tasks > 4:
+            summary += f" … (+{n_tasks - 4} more)"
+        return summary.strip()
+
+    async def _run_task_batch(
+        self,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        tasks: list[dict],
+        on_tool_result: OnToolResult,
+        on_orchestrator_event: OnOrchestratorEvent,
+    ) -> list[dict]:
+        """Run a batch of tasks concurrently. Each task gets its own DB session."""
+
+        async def _run_one(t: dict) -> dict:
+            task_id = t["_id"]
+            task_title = t["_title"]
+            instruction = str(t.get("instruction") or "").strip()
             try:
-                sub_result = await self._run_sub_agent(
-                    db, idea, branch, output_dir,
-                    task_id, task_title, task_instruction,
+                return await self._run_sub_agent(
+                    idea, branch, output_dir,
+                    task_id, task_title, instruction,
                     on_tool_result, on_orchestrator_event,
                 )
             except asyncio.CancelledError:
@@ -329,27 +421,26 @@ class OrchestratorAgent:
                 })
                 raise
 
-            await on_orchestrator_event("sub_agent_complete", {
-                "task_id": task_id,
-                "title": task_title,
-                "summary": sub_result.get("summary", ""),
-                "files_written": sub_result.get("files_written", []),
-                "commands_run": sub_result.get("commands_run", []),
-                "success": sub_result.get("success", True),
-                "blocker": sub_result.get("blocker"),
-            })
+        if len(tasks) == 1:
+            return [await _run_one(tasks[0])]
 
-            completed_tasks.append({"id": task_id, "title": task_title, **sub_result})
-
-        # Build completion summary
-        task_summaries = [t for t in completed_tasks if not t["id"].startswith("user_input_")]
-        total_files = sum(len(t.get("files_written", [])) for t in task_summaries)
-        n_tasks = len(task_summaries)
-        summary = f"Completed {n_tasks} task(s), wrote {total_files} file(s). "
-        summary += " | ".join(t["title"] for t in task_summaries[:4])
-        if n_tasks > 4:
-            summary += f" … (+{n_tasks - 4} more)"
-        return summary.strip()
+        results = await asyncio.gather(*[_run_one(t) for t in tasks], return_exceptions=True)
+        out: list[dict] = []
+        for t, r in zip(tasks, results):
+            if isinstance(r, BaseException):
+                if isinstance(r, asyncio.CancelledError):
+                    raise r
+                logger.error("sub_agent: task '%s' raised: %s", t["_id"], r)
+                out.append({
+                    "summary": f"Task failed: {r}",
+                    "files_written": [],
+                    "commands_run": [],
+                    "success": False,
+                    "blocker": str(r),
+                })
+            else:
+                out.append(r)
+        return out
 
     async def _run_inspector_agent(
         self,
@@ -391,7 +482,6 @@ class OrchestratorAgent:
 
     async def _run_sub_agent(
         self,
-        db: AsyncSession,
         idea: Idea,
         branch: SolutionBranch,
         output_dir: str,
@@ -404,9 +494,7 @@ class OrchestratorAgent:
         logger.info("sub_agent: starting task '%s' (%s)", task_title, task_id)
 
         async def _wrapped_on_tool(tool_name: str, result: dict) -> None:
-            # Forward to standard handler (emits file_written, command_executed events)
             await on_tool_result(tool_name, result)
-            # Also emit sub_agent_update for UI
             if tool_name == "file_edit":
                 detail = result.get("path", "")
             elif tool_name == "delete_path":
@@ -425,22 +513,23 @@ class OrchestratorAgent:
             })
 
         try:
-            result = await self._client.call_with_tools(
-                stage_key="phase3_sub_agent",
-                messages=[
-                    Message(role="system", content=_sub_agent_system_prompt()),
-                    Message(role="user", content=_sub_agent_user_prompt(task_instruction, output_dir, idea.name)),
-                ],
-                session=db,
-                idea_id=idea.id,
-                branch_id=branch.id,
-                allowed_file_dir=output_dir,
-                explore_only=False,
-                max_tool_rounds=60,
-                return_json=True,
-                call_index=0,
-                on_tool_result=_wrapped_on_tool,
-            )
+            async with AsyncSessionLocal() as sub_db:
+                result = await self._client.call_with_tools(
+                    stage_key="phase3_sub_agent",
+                    messages=[
+                        Message(role="system", content=_sub_agent_system_prompt()),
+                        Message(role="user", content=_sub_agent_user_prompt(task_instruction, output_dir, idea.name)),
+                    ],
+                    session=sub_db,
+                    idea_id=idea.id,
+                    branch_id=branch.id,
+                    allowed_file_dir=output_dir,
+                    explore_only=False,
+                    max_tool_rounds=60,
+                    return_json=True,
+                    call_index=0,
+                    on_tool_result=_wrapped_on_tool,
+                )
         except Exception as e:
             logger.error("sub_agent: task '%s' failed: %s", task_id, e)
             return {
