@@ -94,6 +94,7 @@ def _orchestrator_user_prompt(
     completed_tasks: list[dict],
     follow_up_message: str | None = None,
     pending_user_messages: list[str] | None = None,
+    verify_prd: bool = False,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -131,6 +132,20 @@ def _orchestrator_user_prompt(
         msgs = "\n".join(f"- {m}" for m in pending_user_messages)
         feedback_block = f"\n\n## User feedback (received while last batch was running)\n\n{msgs}\n\nIncorporate this feedback into your next task decisions."
 
+    verify_block = ""
+    if verify_prd:
+        verify_block = (
+            "\n\n## PRD Verification Required\n\n"
+            "You indicated the implementation is complete. Before setting `done=true` again, "
+            "you MUST explicitly verify every section of the PRD:\n\n"
+            "1. Call `list_files` to get the current project file tree\n"
+            "2. Call `inspect_files` on key implementation files\n"
+            "3. For each PRD section, confirm it is covered by what was built\n"
+            "4. If any section is missing or incomplete, add tasks to finish it (set `done=false`)\n"
+            "5. Only set `done=true` once you have confirmed all PRD sections are implemented\n\n"
+            "Do not skip this check — incomplete implementations that claim to be done are a critical failure."
+        )
+
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
@@ -138,6 +153,7 @@ def _orchestrator_user_prompt(
         f"{history_block}"
         f"{feedback_block}\n\n"
         f"{start_hint}"
+        f"{verify_block}"
     )
 
 
@@ -237,6 +253,7 @@ class OrchestratorAgent:
         completed_tasks: list[dict] = []
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
+        _verification_pending = False  # True after first done=true; forces one explicit PRD check round
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
             logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
@@ -261,6 +278,7 @@ class OrchestratorAgent:
                 Message(role="user", content=_orchestrator_user_prompt(
                     idea, branch, completed_tasks, _initial_follow_up,
                     pending_user_messages=pending_messages or None,
+                    verify_prd=_verification_pending,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
@@ -335,6 +353,11 @@ class OrchestratorAgent:
                 continue
 
             if done or not next_tasks:
+                if done and not _verification_pending:
+                    # First time done=true: force an explicit PRD verification round
+                    _verification_pending = True
+                    logger.info("orchestrator: done=true signalled — starting PRD verification round")
+                    continue
                 logger.info("orchestrator: signalled done after %d round(s)", round_idx + 1)
                 break
 
