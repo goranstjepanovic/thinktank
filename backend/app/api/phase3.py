@@ -10,6 +10,9 @@ Routes:
 import asyncio
 import json
 import logging
+import platform
+import shutil
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
@@ -676,6 +679,39 @@ async def get_phase3_file(idea_id: str, path: str, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"path": path, "content": content, "size": size, "truncated": size > max_bytes}
+
+
+@router.post("/{idea_id}/phase3/open-terminal")
+async def open_terminal(idea_id: str, db: AsyncSession = Depends(get_session)):
+    """Open a terminal window in the project output directory."""
+    session = await _get_phase3_or_404(idea_id, db)
+    if not session.output_dir or not Path(session.output_dir).is_dir():
+        raise HTTPException(status_code=404, detail="Output directory not found")
+
+    cwd = str(Path(session.output_dir).resolve())
+
+    if platform.system() == "Windows":
+        if shutil.which("powershell"):
+            subprocess.Popen(["powershell", "-NoExit", "-Command", f"Set-Location '{cwd}'"],
+                             creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            subprocess.Popen(["cmd", "/K", f"cd /d \"{cwd}\""],
+                             creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif platform.system() == "Darwin":
+        script = f'tell application "Terminal" to do script "cd {shutil.quote(cwd)}"'
+        subprocess.Popen(["osascript", "-e", script])
+    else:
+        for term in ["gnome-terminal", "xterm", "xfce4-terminal", "konsole"]:
+            if shutil.which(term):
+                if term == "gnome-terminal":
+                    subprocess.Popen([term, "--", "bash", "--login"], cwd=cwd)
+                else:
+                    subprocess.Popen([term], cwd=cwd)
+                break
+        else:
+            raise HTTPException(status_code=501, detail="No supported terminal emulator found")
+
+    return {"opened": True}
 
 
 async def _run_prd_regeneration(idea_id: str, session_id: str) -> None:

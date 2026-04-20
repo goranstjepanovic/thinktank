@@ -647,6 +647,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   const [copied, setCopied] = useState(false);
   const [fileCount, setFileCount] = useState(0);
   const [totalSize, setTotalSize] = useState(0);
+  const [terminalOpening, setTerminalOpening] = useState(false);
   const loadedDirsRef = useRef<Set<string>>(new Set());
 
   const loadDir = useCallback(async (dirPath: string) => {
@@ -761,6 +762,12 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
     ? `vscode://file/${outputDir.replace(/\\/g, '/')}/${selectedPath}`
     : null;
 
+  const handleOpenTerminal = async () => {
+    setTerminalOpening(true);
+    try { await api.openTerminal(ideaId); } catch {}
+    finally { setTerminalOpening(false); }
+  };
+
   if (loading) return <p style={{ color: 'var(--text2)', padding: '12px 0', fontSize: 13 }}>Loading files…</p>;
 
   if (tree.length === 0) {
@@ -783,9 +790,24 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
         overflowY: 'auto',
         padding: '8px 0',
       }}>
-        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '4px 14px 8px' }}>
-          {fileCount} file{fileCount !== 1 ? 's' : ''} · {totalSizeLabel}
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px 8px 14px' }}>
+          <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 }}>
+            {fileCount} file{fileCount !== 1 ? 's' : ''} · {totalSizeLabel}
+          </p>
+          <button
+            onClick={handleOpenTerminal}
+            disabled={terminalOpening}
+            title="Open terminal in project folder"
+            style={{
+              fontSize: 11, color: 'var(--text2)', padding: '2px 6px',
+              borderRadius: 4, border: '1px solid var(--border)',
+              background: 'none', cursor: 'pointer', lineHeight: '18px',
+              opacity: terminalOpening ? 0.5 : 1,
+            }}
+          >
+            &gt;_
+          </button>
+        </div>
         {tree.map(node => (
           <TreeNodeRow key={node.fullPath} node={node} depth={0}
             selectedPath={selectedPath} collapsed={collapsed} loadingDirs={loadingDirs}

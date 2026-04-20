@@ -71,6 +71,8 @@ export const api = {
     request<import('../types').Phase3ActivityEvent[]>(`/ideas/${id}/phase3/activity`),
   listPhase3Dir: (id: string, dir?: string) =>
     request<import('../types').Phase3DirList>(`/ideas/${id}/phase3/files?dir=${encodeURIComponent(dir ?? '')}`),
+  openTerminal: (id: string) =>
+    request<{ opened: boolean }>(`/ideas/${id}/phase3/open-terminal`, { method: 'POST', body: '{}' }),
   getPhase3File: (id: string, path: string) =>
     request<{ path: string; content: string; size: number; truncated: boolean }>(
       `/ideas/${id}/phase3/file?path=${encodeURIComponent(path)}`
