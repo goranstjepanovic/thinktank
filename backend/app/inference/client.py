@@ -486,6 +486,7 @@ class InferenceClient:
         branch_id: str | None = None,
         call_type: str = "PHASE2",
         call_index: int = 0,
+        model_override: str | None = None,
     ) -> str:
         """
         Free-form text call — returns plain text instead of parsed JSON.
@@ -493,9 +494,10 @@ class InferenceClient:
         """
         stage_cfg = self._registry.get_stage(stage_key)
         driver = self._get_driver(stage_cfg.backend)
+        effective_model = model_override or stage_cfg.model
 
         request = InferenceRequest(
-            model=stage_cfg.model,
+            model=effective_model,
             messages=messages,
             format="",  # no JSON enforcement — driver skips format field
             temperature=stage_cfg.temperature,
@@ -506,7 +508,7 @@ class InferenceClient:
         response: InferenceResponse | None = None
         error_str: str | None = None
 
-        logger.info("call_text  stage=%-20s model=%s", stage_key, stage_cfg.model)
+        logger.info("call_text  stage=%-20s model=%s", stage_key, effective_model)
         try:
             response = await driver.complete(request)
         except InferenceBackendError as e:
@@ -548,6 +550,7 @@ class InferenceClient:
         return_json: bool = True,
         extra_tools: "list[ToolDefinition] | None" = None,
         custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
+        model_override: str | None = None,
     ) -> dict | str:
         """
         Multi-turn tool-use call. The model may invoke `run_python` zero or more times
@@ -595,13 +598,14 @@ class InferenceClient:
         if extra_tools:
             available_tools += extra_tools
 
+        effective_model = model_override or stage_cfg.model
         logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s",
-                    stage_key, stage_cfg.model, [t.name for t in available_tools], max_tool_rounds if max_tool_rounds is not None else "unlimited")
+                    stage_key, effective_model, [t.name for t in available_tools], max_tool_rounds if max_tool_rounds is not None else "unlimited")
         round_num = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d", stage_key, round_num)
             request = InferenceRequest(
-                model=stage_cfg.model,
+                model=effective_model,
                 messages=working_messages,
                 format=stage_cfg.format,
                 temperature=stage_cfg.temperature,

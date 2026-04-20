@@ -917,19 +917,26 @@ class CodeGeneratorAgent:
                         file_plan_summary, written_paths, path, description,
                     )),
                 ]
-                try:
-                    raw = await self._client.call_text(
-                        stage_key=FILE_STAGE_KEY,
-                        messages=file_messages,
-                        session=db,
-                        idea_id=idea.id,
-                        branch_id=branch.id,
-                        call_type="PHASE3",
-                        call_index=i + 1,
-                    )
-                    content = _strip_code_fence(raw)
-                except Exception as e:
-                    logger.error("code_generator: failed to generate %s: %s", path, e)
+                content = None
+                _file_fallbacks = [None] + list(self._client._registry.get_stage(FILE_STAGE_KEY).fallback_models)
+                for _fb_model in _file_fallbacks:
+                    try:
+                        raw = await self._client.call_text(
+                            stage_key=FILE_STAGE_KEY,
+                            messages=file_messages,
+                            session=db,
+                            idea_id=idea.id,
+                            branch_id=branch.id,
+                            call_type="PHASE3",
+                            call_index=i + 1,
+                            model_override=_fb_model,
+                        )
+                        content = _strip_code_fence(raw)
+                        break
+                    except Exception as e:
+                        logger.warning("code_generator: failed to generate %s with model %s: %s", path, _fb_model or "primary", e)
+                if content is None:
+                    logger.error("code_generator: all models failed for %s — skipping", path)
                     continue
 
             abs_path = str(Path(output_dir) / path)
@@ -1192,19 +1199,26 @@ class CodeGeneratorAgent:
                     f"Write the complete updated content of `{path}` now."
                 )),
             ]
-            try:
-                raw = await self._client.call_text(
-                    stage_key=FILE_STAGE_KEY,
-                    messages=file_messages,
-                    session=db,
-                    idea_id=idea.id,
-                    branch_id=branch.id,
-                    call_type="PHASE3_ITER",
-                    call_index=i + 1,
-                )
-                content = _strip_code_fence(raw)
-            except Exception as e:
-                logger.error("iteration: failed to generate %s: %s", path, e)
+            content = None
+            _iter_fallbacks = [None] + list(self._client._registry.get_stage(FILE_STAGE_KEY).fallback_models)
+            for _fb_model in _iter_fallbacks:
+                try:
+                    raw = await self._client.call_text(
+                        stage_key=FILE_STAGE_KEY,
+                        messages=file_messages,
+                        session=db,
+                        idea_id=idea.id,
+                        branch_id=branch.id,
+                        call_type="PHASE3_ITER",
+                        call_index=i + 1,
+                        model_override=_fb_model,
+                    )
+                    content = _strip_code_fence(raw)
+                    break
+                except Exception as e:
+                    logger.warning("iteration: failed to generate %s with model %s: %s", path, _fb_model or "primary", e)
+            if content is None:
+                logger.error("iteration: all models failed for %s — skipping", path)
                 continue
 
             abs_path = str(Path(output_dir) / path)

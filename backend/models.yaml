@@ -114,6 +114,9 @@ stages:
 
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
     model: "gemma4:latest"
+    fallback_models:
+      - "phi4:14b"
+      - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: 8192
@@ -150,6 +153,9 @@ stages:
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
     model: "gemma4:latest"
+    fallback_models:
+      - "phi4:14b"
+      - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: null

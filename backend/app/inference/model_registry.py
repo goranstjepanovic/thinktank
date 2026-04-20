@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -13,6 +13,7 @@ class StageConfig:
     format: str
     num_ctx: int = 8192
     supports_tools: bool = False
+    fallback_models: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -54,6 +55,7 @@ class ModelRegistry:
                 format=cfg.get("format", self._defaults.get("format", "json")),
                 num_ctx=cfg.get("num_ctx", self._defaults.get("num_ctx", 8192)),
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
+                fallback_models=list(cfg.get("fallback_models") or []),
             )
 
         res = data.get("resources", {})

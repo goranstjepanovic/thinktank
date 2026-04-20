@@ -1340,6 +1340,16 @@ export function Phase3Implementation() {
             });
             break;
 
+          case 'phase3.sub_agent_model_fallback': {
+            const taskId = event.payload.task_id as string;
+            const model = event.payload.model as string;
+            updateSubAgentBlock(taskId, e => ({
+              ...e,
+              updates: [...e.updates, { updateType: 'model_fallback', detail: `retrying with ${model}` }],
+            }));
+            break;
+          }
+
           case 'phase3.sub_agent_update': {
             const taskId = event.payload.task_id as string;
             const updateType = event.payload.update_type as string;

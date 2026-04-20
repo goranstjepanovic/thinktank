@@ -247,6 +247,12 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 detail = str(data.get("detail", ""))
                 await event_bus.publish(ev.phase3_sub_agent_update(idea_id, session_id, task_id, update_type, detail))
 
+            elif event_type == "sub_agent_model_fallback":
+                task_id = str(data.get("task_id", ""))
+                model = str(data.get("model", ""))
+                attempt = int(data.get("attempt", 0))
+                await event_bus.publish(ev.phase3_sub_agent_model_fallback(idea_id, session_id, task_id, model, attempt))
+
             elif event_type == "sub_agent_complete":
                 task_id = str(data.get("task_id", ""))
                 summary = str(data.get("summary", ""))

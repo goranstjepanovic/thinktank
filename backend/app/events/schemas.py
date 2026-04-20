@@ -137,3 +137,6 @@ def phase3_sub_agent_update(idea_id: str, session_id: str, task_id: str, update_
 
 def phase3_sub_agent_complete(idea_id: str, session_id: str, task_id: str, summary: str, files_written: list, success: bool, blocker: str | None) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.sub_agent_complete", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "summary": summary, "files_written": files_written, "success": success, "blocker": blocker})
+
+def phase3_sub_agent_model_fallback(idea_id: str, session_id: str, task_id: str, model: str, attempt: int) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.sub_agent_model_fallback", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "model": model, "attempt": attempt})

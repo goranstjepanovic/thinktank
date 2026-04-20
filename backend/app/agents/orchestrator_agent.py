@@ -573,40 +573,53 @@ class OrchestratorAgent:
                 "result": result,
             })
 
-        try:
-            async with AsyncSessionLocal() as sub_db:
-                result = await self._client.call_with_tools(
-                    stage_key="phase3_sub_agent",
-                    messages=[
-                        Message(role="system", content=_sub_agent_system_prompt()),
-                        Message(role="user", content=_sub_agent_user_prompt(task_instruction, output_dir, idea.name)),
-                    ],
-                    session=sub_db,
-                    idea_id=idea.id,
-                    branch_id=branch.id,
-                    allowed_file_dir=output_dir,
-                    explore_only=False,
-                    max_tool_rounds=60,
-                    return_json=True,
-                    call_index=0,
-                    on_tool_result=_wrapped_on_tool,
-                )
-        except Exception as e:
-            logger.error("sub_agent: task '%s' failed: %s", task_id, e)
-            return {
-                "summary": f"Task failed with error: {e}",
-                "files_written": [],
-                "commands_run": [],
-                "success": False,
-                "blocker": str(e),
-            }
+        stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
+        models_to_try: list[str | None] = [None] + list(stage_cfg.fallback_models)
+        last_result: dict = {}
 
-        if isinstance(result, dict):
-            return result
-        return {
-            "summary": str(result) if result else "Task completed.",
-            "files_written": [],
-            "commands_run": [],
-            "success": True,
-            "blocker": None,
-        }
+        for attempt, model_override in enumerate(models_to_try):
+            if model_override:
+                logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_override)
+                await on_orchestrator_event("sub_agent_model_fallback", {
+                    "task_id": task_id,
+                    "model": model_override,
+                    "attempt": attempt,
+                })
+
+            try:
+                async with AsyncSessionLocal() as sub_db:
+                    last_result = await self._client.call_with_tools(
+                        stage_key="phase3_sub_agent",
+                        messages=[
+                            Message(role="system", content=_sub_agent_system_prompt()),
+                            Message(role="user", content=_sub_agent_user_prompt(task_instruction, output_dir, idea.name)),
+                        ],
+                        session=sub_db,
+                        idea_id=idea.id,
+                        branch_id=branch.id,
+                        allowed_file_dir=output_dir,
+                        explore_only=False,
+                        max_tool_rounds=60,
+                        return_json=True,
+                        call_index=0,
+                        on_tool_result=_wrapped_on_tool,
+                        model_override=model_override,
+                    )
+            except Exception as e:
+                logger.error("sub_agent: task '%s' attempt %d failed: %s", task_title, attempt, e)
+                last_result = {
+                    "summary": f"Task failed with error: {e}",
+                    "files_written": [],
+                    "commands_run": [],
+                    "success": False,
+                    "blocker": str(e),
+                }
+
+            if last_result.get("success", True):
+                return last_result
+
+            logger.info("sub_agent: task '%s' attempt %d unsuccessful (success=false), %s",
+                        task_title, attempt,
+                        f"retrying with {models_to_try[attempt + 1]}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
+
+        return last_result
