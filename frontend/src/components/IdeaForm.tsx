@@ -3,9 +3,9 @@ import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
 
 interface FormValues { name: string; description: string; requirements: string; constraints: string; }
-interface Props { onClose: () => void; onCreated?: (id: string) => void; initialValues?: Partial<FormValues>; }
+interface Props { onClose: () => void; onCreated?: (id: string) => void; initialValues?: Partial<FormValues>; parentIdeaId?: string; }
 
-export function IdeaForm({ onClose, onCreated, initialValues }: Props) {
+export function IdeaForm({ onClose, onCreated, initialValues, parentIdeaId }: Props) {
   const [form, setForm] = useState<FormValues>({
     name: initialValues?.name ?? '',
     description: initialValues?.description ?? '',
@@ -27,13 +27,16 @@ export function IdeaForm({ onClose, onCreated, initialValues }: Props) {
     setLoading(true);
     setError('');
     try {
-      const idea = await api.createIdea(form);
+      const idea = await api.createIdea({ ...form, ...(parentIdeaId ? { parent_idea_id: parentIdeaId } : {}) });
       setIdeaDetail(idea);
       setIdeas([
         {
           id: idea.id, name: idea.name, status: idea.status,
           active_branch_count: idea.branches.length,
           viable_branch_count: 0,
+          phase: 1, phase_label: 'Queued',
+          parent_idea_id: parentIdeaId ?? null,
+          parent_idea_name: null,
           created_at: idea.created_at, updated_at: idea.updated_at,
         },
         ...ideas,

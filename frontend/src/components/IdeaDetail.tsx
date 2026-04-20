@@ -643,6 +643,7 @@ export function IdeaDetail() {
         <IdeaForm
           onClose={() => setShowFork(false)}
           onCreated={(newId) => navigate(`/ideas/${newId}`)}
+          parentIdeaId={idea.id}
           initialValues={{
             name: idea.name,
             description: idea.description,

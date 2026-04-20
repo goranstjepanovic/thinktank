@@ -16,7 +16,7 @@ export const api = {
   // Ideas
   listIdeas: () => request<import('../types').IdeaSummary[]>('/ideas'),
   getIdea: (id: string) => request<import('../types').IdeaDetail>(`/ideas/${id}`),
-  createIdea: (body: { name: string; description: string; requirements: string; constraints: string }) =>
+  createIdea: (body: { name: string; description: string; requirements: string; constraints: string; parent_idea_id?: string }) =>
     request<import('../types').IdeaDetail>('/ideas', { method: 'POST', body: JSON.stringify(body) }),
   pauseIdea: (id: string) => request<{ status: string }>(`/ideas/${id}/pause`, { method: 'POST' }),
   resumeIdea: (id: string) => request<{ status: string }>(`/ideas/${id}/resume`, { method: 'POST' }),

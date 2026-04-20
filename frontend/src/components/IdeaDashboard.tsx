@@ -6,16 +6,28 @@ import type { IdeaSummary } from '../types';
 import { IdeaForm } from './IdeaForm';
 import { StatusBadge } from './StatusBadge';
 
-const STATUS_SORT: Record<string, number> = {
-  RUNNING: 0,
-  PAUSED: 1,
-  QUEUED: 2,
-  SELECTED: 3,
-  CONVERGED: 4,
-  ABANDONED: 5,
-};
-
 const ACTIVE_STATUSES = new Set(['QUEUED', 'RUNNING', 'PAUSED']);
+
+const TERMINAL_PHASE_LABELS = new Set(['Phase 3 · Complete', 'Phase 3 · Failed']);
+
+function isActive(idea: IdeaSummary): boolean {
+  if (ACTIVE_STATUSES.has(idea.status)) return true;
+  if (idea.status === 'SELECTED' && !TERMINAL_PHASE_LABELS.has(idea.phase_label)) return true;
+  return false;
+}
+
+
+const PHASE_BADGE_STYLE: Record<string, { color: string; background: string }> = {
+  'Phase 2 · Clarifying': { color: '#a78bfa', background: 'rgba(167,139,250,0.12)' },
+  'Phase 2 · Ready':      { color: '#a78bfa', background: 'rgba(167,139,250,0.12)' },
+  'Phase 2 · Implementing': { color: '#a78bfa', background: 'rgba(167,139,250,0.12)' },
+  'Phase 2 · Complete':   { color: '#a78bfa', background: 'rgba(167,139,250,0.12)' },
+  'Phase 3 · Planning':   { color: 'var(--blue)', background: 'rgba(96,165,250,0.12)' },
+  'Phase 3 · Building':   { color: 'var(--blue)', background: 'rgba(96,165,250,0.12)' },
+  'Phase 3 · Waiting':    { color: 'var(--orange, #fb923c)', background: 'rgba(251,146,60,0.12)' },
+  'Phase 3 · Complete':   { color: 'var(--green)', background: 'rgba(34,197,94,0.12)' },
+  'Phase 3 · Failed':     { color: 'var(--red)', background: 'rgba(239,68,68,0.12)' },
+};
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -27,8 +39,28 @@ function timeAgo(iso: string): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
+function PhaseBadge({ label }: { label: string }) {
+  const style = PHASE_BADGE_STYLE[label];
+  if (!style) return <StatusBadge status={label} />;
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+      color: style.color, background: style.background,
+      whiteSpace: 'nowrap',
+    }}>
+      {label}
+    </span>
+  );
+}
+
 function IdeaCard({ idea }: { idea: IdeaSummary }) {
-  const isActive = ACTIVE_STATUSES.has(idea.status);
+  const active = isActive(idea);
+  const showPhaseBadge = idea.phase > 1 || idea.status === 'SELECTED';
+  const borderColor = idea.phase === 3 && !TERMINAL_PHASE_LABELS.has(idea.phase_label)
+    ? 'var(--blue)'
+    : idea.phase === 2
+      ? '#a78bfa'
+      : active ? 'var(--blue)' : undefined;
 
   return (
     <Link to={`/ideas/${idea.id}`} style={{ textDecoration: 'none' }}>
@@ -40,18 +72,24 @@ function IdeaCard({ idea }: { idea: IdeaSummary }) {
           justifyContent: 'space-between',
           cursor: 'pointer',
           transition: 'border-color 0.15s',
-          borderLeft: isActive ? '3px solid var(--blue)' : undefined,
+          borderLeft: borderColor ? `3px solid ${borderColor}` : undefined,
         }}
         onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
-        onMouseLeave={(e) => (e.currentTarget.style.borderColor = isActive ? 'var(--blue)' : 'var(--border)')}
+        onMouseLeave={(e) => (e.currentTarget.style.borderColor = borderColor ?? 'var(--border)')}
       >
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{idea.name}</p>
-          <p style={{ color: 'var(--text2)', fontSize: 12 }}>{timeAgo(idea.updated_at)}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--text2)', fontSize: 12 }}>{timeAgo(idea.updated_at)}</span>
+            {idea.parent_idea_name && (
+              <span style={{ color: 'var(--text2)', fontSize: 11 }}>
+                ↳ fork of <span style={{ fontStyle: 'italic' }}>{idea.parent_idea_name}</span>
+              </span>
+            )}
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, marginLeft: 16 }}>
-          {/* Branch counts */}
           <div style={{ textAlign: 'right', fontSize: 12 }}>
             {idea.active_branch_count > 0 && (
               <span style={{ color: 'var(--blue)' }}>
@@ -64,7 +102,12 @@ function IdeaCard({ idea }: { idea: IdeaSummary }) {
               </span>
             )}
           </div>
-          <StatusBadge status={idea.status} />
+          {showPhaseBadge
+            ? <PhaseBadge label={idea.phase_label} />
+            : idea.status === 'CONVERGED' && idea.viable_branch_count === 0
+              ? <span className="badge" style={{ background: '#3a1a1a', color: 'var(--red)' }}>No Solution</span>
+              : <StatusBadge status={idea.status} />
+          }
         </div>
       </div>
     </Link>
@@ -82,23 +125,19 @@ export function IdeaDashboard() {
     api.listIdeas().then((data) => { setIdeas(data); setLoading(false); }).catch(() => setLoading(false));
   }, []);
 
-  // Poll every 4 s while any idea is in-progress
-  const hasActive = ideas.some((i) => ACTIVE_STATUSES.has(i.status));
+  const hasActive = ideas.some(isActive);
   useEffect(() => {
     if (!hasActive) return;
     const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
   }, [hasActive]);
 
-  const sorted = [...ideas].sort((a, b) => {
-    const aOrd = STATUS_SORT[a.status] ?? 9;
-    const bOrd = STATUS_SORT[b.status] ?? 9;
-    if (aOrd !== bOrd) return aOrd - bOrd;
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-  });
+  const sorted = [...ideas].sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  );
 
-  const running = sorted.filter((i) => ACTIVE_STATUSES.has(i.status));
-  const done = sorted.filter((i) => !ACTIVE_STATUSES.has(i.status));
+  const running = sorted.filter(isActive);
+  const done = sorted.filter((i) => !isActive(i));
 
   return (
     <div className="page">

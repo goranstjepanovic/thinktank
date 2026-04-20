@@ -25,6 +25,7 @@ class Idea(Base):
     constraints: Mapped[str] = mapped_column(Text, nullable=False)
     # QUEUED | RUNNING | PAUSED | CONVERGED | ABANDONED | SELECTED
     status: Mapped[str] = mapped_column(Text, nullable=False, default="QUEUED")
+    parent_idea_id: Mapped[str | None] = mapped_column(Text, ForeignKey("ideas.id"), nullable=True)
     selected_branch_id: Mapped[str | None] = mapped_column(Text, ForeignKey("solution_branches.id"), nullable=True)
     selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     selection_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

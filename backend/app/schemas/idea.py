@@ -8,6 +8,7 @@ class IdeaCreate(BaseModel):
     description: str
     requirements: str
     constraints: str
+    parent_idea_id: str | None = None
 
 
 class BranchSummary(BaseModel):
@@ -30,6 +31,10 @@ class IdeaSummaryResponse(BaseModel):
     status: str
     active_branch_count: int
     viable_branch_count: int
+    phase: int
+    phase_label: str
+    parent_idea_id: str | None = None
+    parent_idea_name: str | None = None
     created_at: datetime
     updated_at: datetime
 

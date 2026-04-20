@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.engine import get_session
-from app.db.models import Idea, SolutionBranch
+from app.db.models import Idea, Phase2Session, Phase3Session, SolutionBranch
 from app.events import schemas as ev
 from app.events.bus import event_bus
 from app.schemas.idea import IdeaCreate, IdeaDetailResponse, IdeaSummaryResponse
@@ -25,6 +25,7 @@ async def create_idea(body: IdeaCreate, session: AsyncSession = Depends(get_sess
         requirements=body.requirements,
         constraints=body.constraints,
         status="QUEUED",
+        parent_idea_id=body.parent_idea_id,
     )
     session.add(idea)
     await session.commit()
@@ -43,7 +44,16 @@ async def list_ideas(session: AsyncSession = Depends(get_session)):
         select(Idea).options(selectinload(Idea.branches)).order_by(Idea.created_at.desc())
     )
     ideas = result.scalars().all()
-    return [_to_summary(i) for i in ideas]
+
+    p2_result = await session.execute(select(Phase2Session.idea_id, Phase2Session.status))
+    p2_map: dict[str, str] = {row.idea_id: row.status for row in p2_result}
+
+    p3_result = await session.execute(select(Phase3Session.idea_id, Phase3Session.status))
+    p3_map: dict[str, str] = {row.idea_id: row.status for row in p3_result}
+
+    idea_names: dict[str, str] = {i.id: i.name for i in ideas}
+
+    return [_to_summary(i, p2_map.get(i.id), p3_map.get(i.id), idea_names.get(i.parent_idea_id) if i.parent_idea_id else None) for i in ideas]
 
 
 @router.get("/{idea_id}", response_model=IdeaDetailResponse)
@@ -161,15 +171,55 @@ async def _get_or_404(idea_id: str, session: AsyncSession) -> Idea:
     return idea
 
 
-def _to_summary(idea: Idea) -> IdeaSummaryResponse:
+_P3_LABELS = {
+    "PLANNING": "Phase 3 · Planning",
+    "RUNNING": "Phase 3 · Building",
+    "WAITING": "Phase 3 · Waiting",
+    "COMPLETE": "Phase 3 · Complete",
+    "FAILED": "Phase 3 · Failed",
+}
+_P2_LABELS = {
+    "RESOLVING": "Phase 2 · Clarifying",
+    "READY": "Phase 2 · Ready",
+    "IMPLEMENTING": "Phase 2 · Implementing",
+    "COMPLETE": "Phase 2 · Complete",
+}
+_P1_LABELS = {
+    "QUEUED": "Queued",
+    "RUNNING": "Running",
+    "PAUSED": "Paused",
+    "CONVERGED": "Converged",
+    "ABANDONED": "Abandoned",
+    "SELECTED": "Selected",
+}
+
+
+def _to_summary(
+    idea: Idea,
+    p2_status: str | None = None,
+    p3_status: str | None = None,
+    parent_idea_name: str | None = None,
+) -> IdeaSummaryResponse:
     active = sum(1 for b in idea.branches if b.status in ("QUEUED", "RUNNING", "PAUSED"))
     viable = sum(1 for b in idea.branches if b.status == "VIABLE")
+
+    if p3_status:
+        phase, phase_label = 3, _P3_LABELS.get(p3_status, f"Phase 3 · {p3_status}")
+    elif p2_status:
+        phase, phase_label = 2, _P2_LABELS.get(p2_status, f"Phase 2 · {p2_status}")
+    else:
+        phase, phase_label = 1, _P1_LABELS.get(idea.status, idea.status.title())
+
     return IdeaSummaryResponse(
         id=idea.id,
         name=idea.name,
         status=idea.status,
         active_branch_count=active,
         viable_branch_count=viable,
+        phase=phase,
+        phase_label=phase_label,
+        parent_idea_id=idea.parent_idea_id,
+        parent_idea_name=parent_idea_name,
         created_at=idea.created_at,
         updated_at=idea.updated_at,
     )

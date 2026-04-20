@@ -26,6 +26,7 @@ async def _migrate_db() -> None:
     from sqlalchemy import text
     migrations = [
         "ALTER TABLE phase3_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'classic'",
+        "ALTER TABLE ideas ADD COLUMN parent_idea_id TEXT REFERENCES ideas(id)",
     ]
     async with engine.begin() as conn:
         for stmt in migrations:

@@ -20,6 +20,10 @@ export interface IdeaSummary {
   status: IdeaStatus;
   active_branch_count: number;
   viable_branch_count: number;
+  phase: number;
+  phase_label: string;
+  parent_idea_id: string | null;
+  parent_idea_name: string | null;
   created_at: string;
   updated_at: string;
 }
