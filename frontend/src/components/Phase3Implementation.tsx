@@ -26,7 +26,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3FileEntry, Phase3Session, PipelineEvent } from '../types';
+import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3DirEntry, Phase3Session, PipelineEvent } from '../types';
 import { PhaseNav } from './PhaseNav';
 
 // Register only the languages we need to keep the bundle small
@@ -486,47 +486,35 @@ interface TreeNode {
   size?: number;
 }
 
-function buildTree(files: Phase3FileEntry[]): TreeNode[] {
-  const root: TreeNode = { name: '', fullPath: '', type: 'dir', children: [] };
-
-  for (const f of files) {
-    const parts = f.path.split('/');
-    let node = root;
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const isLast = i === parts.length - 1;
-      let child = node.children.find(c => c.name === part);
-      if (!child) {
-        const fullPath = parts.slice(0, i + 1).join('/');
-        child = { name: part, fullPath, type: isLast ? 'file' : 'dir', children: [], size: isLast ? f.size : undefined };
-        node.children.push(child);
-      }
-      node = child;
-    }
-  }
-
-  // Sort: dirs first, then files, both alphabetically
-  const sort = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    for (const n of nodes) if (n.type === 'dir') sort(n.children);
-  };
-  sort(root.children);
-
-  return root.children;
+function entriesToNodes(entries: Phase3DirEntry[]): TreeNode[] {
+  const nodes: TreeNode[] = entries.map(e => ({
+    name: e.path.split('/').pop()!,
+    fullPath: e.path,
+    type: e.type,
+    children: [],
+    size: e.type === 'file' ? e.size : undefined,
+  }));
+  nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return nodes;
 }
 
-function collectDirPaths(nodes: TreeNode[]): string[] {
-  const paths: string[] = [];
-  const walk = (ns: TreeNode[]) => {
-    for (const n of ns) {
-      if (n.type === 'dir') { paths.push(n.fullPath); walk(n.children); }
-    }
-  };
-  walk(nodes);
-  return paths;
+function insertChildren(nodes: TreeNode[], parentPath: string, children: TreeNode[]): TreeNode[] {
+  return nodes.map(n => {
+    if (n.fullPath === parentPath) return { ...n, children };
+    if (n.type === 'dir' && n.children.length > 0) return { ...n, children: insertChildren(n.children, parentPath, children) };
+    return n;
+  });
+}
+
+function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const n of nodes) {
+    if (n.fullPath === path) return n;
+    if (n.type === 'dir') { const f = findNode(n.children, path); if (f) return f; }
+  }
+  return null;
 }
 
 function fileIcon(name: string): React.ReactNode {
@@ -558,11 +546,13 @@ function fileIcon(name: string): React.ReactNode {
   }
 }
 
-function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect }: {
+function TreeNodeRow({ node, depth, selectedPath, collapsed, loadingDirs, onToggle, onSelect }: {
   node: TreeNode; depth: number; selectedPath: string | null;
-  collapsed: Set<string>; onToggle: (p: string) => void; onSelect: (p: string) => void;
+  collapsed: Set<string>; loadingDirs: Set<string>;
+  onToggle: (p: string) => void; onSelect: (p: string) => void;
 }) {
   const isCollapsed = collapsed.has(node.fullPath);
+  const isLoadingChildren = loadingDirs.has(node.fullPath);
   const indent = 8 + depth * 14;
 
   if (node.type === 'dir') {
@@ -589,11 +579,15 @@ function TreeNodeRow({ node, depth, selectedPath, collapsed, onToggle, onSelect 
             {node.name}
           </span>
         </div>
-        {!isCollapsed && node.children.map(child => (
-          <TreeNodeRow key={child.fullPath} node={child} depth={depth + 1}
-            selectedPath={selectedPath} collapsed={collapsed}
-            onToggle={onToggle} onSelect={onSelect} />
-        ))}
+        {!isCollapsed && (
+          isLoadingChildren
+            ? <div style={{ paddingLeft: indent + 19, padding: `3px 0 3px ${indent + 19}px`, fontSize: 11, color: 'var(--text2)', fontStyle: 'italic' }}>Loading…</div>
+            : node.children.map(child => (
+                <TreeNodeRow key={child.fullPath} node={child} depth={depth + 1}
+                  selectedPath={selectedPath} collapsed={collapsed} loadingDirs={loadingDirs}
+                  onToggle={onToggle} onSelect={onSelect} />
+              ))
+        )}
       </>
     );
   }
@@ -640,44 +634,80 @@ function HighlightedCode({ content, filename }: { content: string; filename: str
   );
 }
 
-function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refreshKey: number; initialPath?: string }) {
-  const [files, setFiles] = useState<Phase3FileEntry[]>([]);
-  const [outputDir, setOutputDir] = useState<string | null>(null);
+function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: number }) {
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const [outputDir, setOutputDir] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [loadingFile, setLoadingFile] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [fileCount, setFileCount] = useState(0);
+  const [totalSize, setTotalSize] = useState(0);
+  const loadedDirsRef = useRef<Set<string>>(new Set());
+
+  const loadDir = useCallback(async (dirPath: string) => {
+    setLoadingDirs(prev => new Set([...prev, dirPath]));
+    try {
+      const data = await api.listPhase3Dir(ideaId, dirPath);
+      if (dirPath === '') setOutputDir(data.output_dir ?? null);
+
+      const children = entriesToNodes(data.entries);
+
+      if (dirPath === '') {
+        setTree(children);
+      } else {
+        setTree(prev => insertChildren(prev, dirPath, children));
+      }
+      loadedDirsRef.current.add(dirPath);
+
+      const newFiles = data.entries.filter(e => e.type === 'file');
+      setFileCount(prev => prev + newFiles.length);
+      setTotalSize(prev => prev + newFiles.reduce((s, e) => s + e.size, 0));
+
+      // Collapse new dirs that haven't been loaded yet
+      setCollapsed(prev => {
+        const next = new Set(prev);
+        for (const e of data.entries) {
+          if (e.type === 'dir' && !loadedDirsRef.current.has(e.path)) next.add(e.path);
+        }
+        return next;
+      });
+    } catch {}
+    finally {
+      setLoadingDirs(prev => { const next = new Set(prev); next.delete(dirPath); return next; });
+    }
+  }, [ideaId]);
+
+  // Reset selection when switching ideas
+  useEffect(() => {
+    setSelectedPath(null);
+    setFileContent('');
+  }, [ideaId]);
 
   useEffect(() => {
-    // On initial load show the spinner; on live refreshes keep existing content visible
-    if (files.length === 0) setLoading(true);
-    api.listPhase3Files(ideaId)
-      .then((data) => {
-        setFiles(data.files);
-        setOutputDir(data.output_dir ?? null);
-        const t = buildTree(data.files);
-        setTree(t);
-        setCollapsed(prev => {
-          // Preserve existing collapsed state; collapse any new dirs
-          const newDirs = new Set(collectDirPaths(t));
-          const next = new Set(prev);
-          for (const d of newDirs) if (!next.has(d)) next.add(d);
-          return next;
-        });
-        // Only auto-select if nothing is selected yet; prefer initialPath if provided
-        setSelectedPath(prev => {
-          if (prev) return prev;
-          if (initialPath && data.files.some(f => f.path === initialPath)) return initialPath;
-          const firstFile = data.files.find(f => !f.path.endsWith('/'));
-          return firstFile ? firstFile.path : null;
-        });
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    const prevLoaded = new Set(loadedDirsRef.current);
+    setTree([]);
+    setFileCount(0);
+    setTotalSize(0);
+    setCollapsed(new Set());
+    loadedDirsRef.current = new Set();
+
+    if (prevLoaded.size === 0) {
+      setLoading(true);
+      loadDir('').finally(() => setLoading(false));
+    } else {
+      // Reload all previously-loaded dirs shallowest-first so parent nodes exist before children
+      const sorted = [...prevLoaded].sort((a, b) => {
+        const da = a === '' ? 0 : a.split('/').length;
+        const db = b === '' ? 0 : b.split('/').length;
+        return da - db;
+      });
+      (async () => { for (const dir of sorted) await loadDir(dir); })();
+    }
   }, [ideaId, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -685,35 +715,36 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
     setLoadingFile(true);
     setFileContent('');
     api.getPhase3File(ideaId, selectedPath)
-      .then((d) => { setFileContent(d.content); setTruncated(d.truncated); })
+      .then(d => { setFileContent(d.content); setTruncated(d.truncated); })
       .catch(() => setFileContent('(failed to load file)'))
       .finally(() => setLoadingFile(false));
-  }, [selectedPath]);
+  }, [selectedPath, ideaId]);
 
-  const toggleDir = (path: string) => {
+  const toggleDir = useCallback((path: string) => {
     setCollapsed(prev => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
+      if (next.has(path)) {
+        next.delete(path);
+        if (!loadedDirsRef.current.has(path)) loadDir(path);
+      } else {
+        next.add(path);
+      }
       return next;
     });
-  };
+  }, [loadDir]);
 
-  // When a file is selected, expand all its ancestor folders
-  const selectFile = (path: string) => {
+  const selectFile = useCallback((path: string) => {
     setSelectedPath(path);
     const parts = path.split('/');
     if (parts.length > 1) {
       setCollapsed(prev => {
         const next = new Set(prev);
-        for (let i = 1; i < parts.length; i++) {
-          next.delete(parts.slice(0, i).join('/'));
-        }
+        for (let i = 1; i < parts.length; i++) next.delete(parts.slice(0, i).join('/'));
         return next;
       });
     }
-  };
+  }, []);
 
-  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
   const totalSizeLabel = totalSize >= 1024 * 1024
     ? `${(totalSize / (1024 * 1024)).toFixed(1)} MB`
     : `${(totalSize / 1024).toFixed(1)} KB`;
@@ -732,7 +763,7 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
 
   if (loading) return <p style={{ color: 'var(--text2)', padding: '12px 0', fontSize: 13 }}>Loading files…</p>;
 
-  if (files.length === 0) {
+  if (tree.length === 0) {
     return (
       <div className="card" style={{ padding: '32px 24px', textAlign: 'center' }}>
         <p style={{ color: 'var(--text2)', fontSize: 13 }}>No files found in output directory.</p>
@@ -740,7 +771,7 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
     );
   }
 
-  const selectedFile = files.find((f) => f.path === selectedPath);
+  const selectedNode = selectedPath ? findNode(tree, selectedPath) : null;
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 220px)', gap: 0, border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
@@ -753,11 +784,11 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
         padding: '8px 0',
       }}>
         <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '4px 14px 8px' }}>
-          {files.length} file{files.length !== 1 ? 's' : ''} · {totalSizeLabel}
+          {fileCount} file{fileCount !== 1 ? 's' : ''} · {totalSizeLabel}
         </p>
         {tree.map(node => (
           <TreeNodeRow key={node.fullPath} node={node} depth={0}
-            selectedPath={selectedPath} collapsed={collapsed}
+            selectedPath={selectedPath} collapsed={collapsed} loadingDirs={loadingDirs}
             onToggle={toggleDir} onSelect={selectFile} />
         ))}
       </div>
@@ -776,9 +807,9 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
             {selectedPath ?? '—'}
           </code>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {selectedFile && (
+            {selectedNode?.size !== undefined && (
               <span style={{ fontSize: 11, color: 'var(--text2)' }}>
-                {(selectedFile.size / 1024).toFixed(1)} KB
+                {(selectedNode.size / 1024).toFixed(1)} KB
               </span>
             )}
             {vsCodeHref && (
@@ -812,7 +843,11 @@ function FileBrowser({ ideaId, refreshKey, initialPath }: { ideaId: string; refr
 
         {/* Content area */}
         <div style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
-          {loadingFile ? (
+          {!selectedPath ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <p style={{ color: 'var(--text2)', fontSize: 13 }}>Select a file to view its contents</p>
+            </div>
+          ) : loadingFile ? (
             <p style={{ color: 'var(--text2)', padding: '16px', fontSize: 12 }}>Loading…</p>
           ) : (
             <>
@@ -1788,7 +1823,7 @@ export function Phase3Implementation() {
         {/* Files tab */}
         {mainTab === 'files' && (fileCount > 0 || session?.mode === 'prd_only') && (
           <div style={{ flex: 1, overflow: 'hidden', padding: '12px 20px' }}>
-            <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} initialPath={session?.mode === 'prd_only' ? 'PRD.md' : undefined} />
+            <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} />
           </div>
         )}
       </div>

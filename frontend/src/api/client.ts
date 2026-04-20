@@ -69,8 +69,8 @@ export const api = {
     request<{ cancelled: boolean }>(`/ideas/${id}/phase3/cancel`, { method: 'POST', body: '{}' }),
   getPhase3Activity: (id: string) =>
     request<import('../types').Phase3ActivityEvent[]>(`/ideas/${id}/phase3/activity`),
-  listPhase3Files: (id: string) =>
-    request<import('../types').Phase3FileList>(`/ideas/${id}/phase3/files`),
+  listPhase3Dir: (id: string, dir?: string) =>
+    request<import('../types').Phase3DirList>(`/ideas/${id}/phase3/files?dir=${encodeURIComponent(dir ?? '')}`),
   getPhase3File: (id: string, path: string) =>
     request<{ path: string; content: string; size: number; truncated: boolean }>(
       `/ideas/${id}/phase3/file?path=${encodeURIComponent(path)}`

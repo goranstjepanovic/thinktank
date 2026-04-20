@@ -154,13 +154,14 @@ export interface Phase3ChatMessage {
   created_at: string;
 }
 
-export interface Phase3FileEntry {
+export interface Phase3DirEntry {
   path: string;
   size: number;
+  type: 'file' | 'dir';
 }
 
-export interface Phase3FileList {
-  files: Phase3FileEntry[];
+export interface Phase3DirList {
+  entries: Phase3DirEntry[];
   output_dir: string | null;
 }
 

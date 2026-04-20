@@ -628,22 +628,28 @@ async def get_phase3_activity(idea_id: str, db: AsyncSession = Depends(get_sessi
 
 
 @router.get("/{idea_id}/phase3/files")
-async def list_phase3_files(idea_id: str, db: AsyncSession = Depends(get_session)):
-    """Return a recursive list of files in the Phase 3 output directory."""
+async def list_phase3_files(idea_id: str, dir: str = "", db: AsyncSession = Depends(get_session)):
+    """Return immediate children of a directory in the Phase 3 output directory."""
     session = await _get_phase3_or_404(idea_id, db)
     if not session.output_dir or not Path(session.output_dir).is_dir():
-        return {"files": [], "output_dir": session.output_dir}
+        return {"entries": [], "output_dir": session.output_dir}
 
-    base = Path(session.output_dir)
-    files = []
+    base = Path(session.output_dir).resolve()
+    target = (base / dir).resolve() if dir else base
+    if not str(target).startswith(str(base)) or not target.is_dir():
+        raise HTTPException(status_code=403, detail="Invalid directory")
+
+    entries = []
     try:
-        for p in sorted(base.rglob("*")):
-            if p.is_file():
-                rel = str(p.relative_to(base)).replace("\\", "/")
-                files.append({"path": rel, "size": p.stat().st_size})
+        for p in sorted(target.iterdir()):
+            rel = str(p.relative_to(base)).replace("\\", "/")
+            if p.is_dir():
+                entries.append({"path": rel, "size": 0, "type": "dir"})
+            elif p.is_file():
+                entries.append({"path": rel, "size": p.stat().st_size, "type": "file"})
     except Exception:
         pass
-    return {"files": files, "output_dir": str(base)}
+    return {"entries": entries, "output_dir": str(base)}
 
 
 @router.get("/{idea_id}/phase3/file")
