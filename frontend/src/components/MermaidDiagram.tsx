@@ -23,14 +23,16 @@ export function MermaidDiagram({ chart }: { chart: string }) {
 
   useEffect(() => {
     if (!ref.current) return;
+    let cancelled = false;
     ref.current.innerHTML = '';
     mermaid.render(`mermaid-${id}`, chart.trim()).then(({ svg }) => {
-      if (ref.current) ref.current.innerHTML = svg;
+      if (!cancelled && ref.current) ref.current.innerHTML = svg;
     }).catch((err) => {
-      if (ref.current) {
+      if (!cancelled && ref.current) {
         ref.current.innerHTML = `<pre style="color:var(--red);font-size:11px">${String(err)}</pre>`;
       }
     });
+    return () => { cancelled = true; };
   }, [chart, id]);
 
   return (
