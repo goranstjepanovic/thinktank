@@ -1459,7 +1459,9 @@ export function Phase3Implementation() {
     setError(null);
     try {
       await api.resetPhase2(id, depth, deleteOutputDir);
-      navigate(`/ideas/${id}/phase2`);
+      // phase3_only: Phase 2 stays READY, navigate back to Phase 3 start screen
+      // deeper resets: Phase 2 needs work, send there
+      navigate(depth === 'phase3_only' ? `/ideas/${id}/phase3` : `/ideas/${id}/phase2`);
     } catch (e: unknown) {
       setError(`Reset failed: ${(e as Error).message}`);
       setResetting(false);
