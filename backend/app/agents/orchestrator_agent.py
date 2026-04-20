@@ -103,6 +103,9 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Track which PRD sections have been implemented and ensure full coverage\n"
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
+        "- NEVER create sub-agent tasks for file listing, reading, or inspection — "
+        "use `list_files`, `inspect_files`, and `grep_files` directly yourself. "
+        "Sub-agent tasks are ONLY for writing files and running commands.\n"
     )
 
 

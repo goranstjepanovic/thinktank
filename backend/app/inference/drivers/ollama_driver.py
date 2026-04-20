@@ -51,8 +51,11 @@ class OllamaDriver(InferenceBackend):
                         f"Ollama request failed: {resp.status_code} — {body}"
                     )
                 response = resp
+        except httpx.TimeoutException as e:
+            raise InferenceBackendError(f"Ollama request timed out after {self._timeout}s (model={request.model})") from e
         except httpx.HTTPError as e:
-            raise InferenceBackendError(f"Ollama request failed: {e}") from e
+            detail = str(e) or type(e).__name__
+            raise InferenceBackendError(f"Ollama request failed: {detail} (model={request.model})") from e
 
         duration_ms = int((time.monotonic() - start) * 1000)
         data = response.json()
@@ -155,8 +158,11 @@ class OllamaDriver(InferenceBackend):
                             yield chunk
                         if data.get("done"):
                             break
+        except httpx.TimeoutException as e:
+            raise InferenceBackendError(f"Ollama streaming timed out after {self._timeout}s (model={request.model})") from e
         except httpx.HTTPError as e:
-            raise InferenceBackendError(f"Ollama streaming failed: {e}") from e
+            detail = str(e) or type(e).__name__
+            raise InferenceBackendError(f"Ollama streaming failed: {detail} (model={request.model})") from e
 
     # ------------------------------------------------------------------
 
