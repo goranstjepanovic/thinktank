@@ -23,3 +23,23 @@ def test_handles_slashes_dot_prefix_and_case() -> None:
         normalize_project_relative_path(base, "./Modern-Snake-Game/frontend/package.json")
         == "frontend/package.json"
     )
+
+
+def test_strips_human_name_with_spaces() -> None:
+    # idea.name = "Modern Snake Game" → project_root = "modern-snake-game"
+    # sub-agent uses the human-readable name as a prefix
+    base = r"C:\out\idea\modern-snake-game"
+
+    assert (
+        normalize_project_relative_path(base, "Modern Snake Game/src/App.tsx")
+        == "src/App.tsx"
+    )
+
+
+def test_strips_name_with_underscores() -> None:
+    base = r"C:\out\idea\my-project"
+
+    assert (
+        normalize_project_relative_path(base, "my_project/src/main.py")
+        == "src/main.py"
+    )

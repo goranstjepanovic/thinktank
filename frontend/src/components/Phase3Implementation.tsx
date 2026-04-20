@@ -25,7 +25,7 @@ import {
 } from 'react-icons/si';
 import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, BASE } from '../api/client';
 import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3DirEntry, Phase3Session, PipelineEvent } from '../types';
 import { PhaseNav } from './PhaseNav';
 
@@ -634,6 +634,13 @@ function HighlightedCode({ content, filename }: { content: string; filename: str
   );
 }
 
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
+
+function isImagePath(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
 function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: number }) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [outputDir, setOutputDir] = useState<string | null>(null);
@@ -641,6 +648,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingFile, setLoadingFile] = useState(false);
   const [truncated, setTruncated] = useState(false);
@@ -648,6 +656,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   const [fileCount, setFileCount] = useState(0);
   const [totalSize, setTotalSize] = useState(0);
   const [terminalOpening, setTerminalOpening] = useState(false);
+  const [explorerOpening, setExplorerOpening] = useState(false);
   const loadedDirsRef = useRef<Set<string>>(new Set());
 
   const loadDir = useCallback(async (dirPath: string) => {
@@ -687,6 +696,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   useEffect(() => {
     setSelectedPath(null);
     setFileContent('');
+    setImageUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
   }, [ideaId]);
 
   useEffect(() => {
@@ -712,7 +722,19 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   }, [ideaId, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!selectedPath) return;
+    setImageUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+    if (!selectedPath || !isImagePath(selectedPath)) return;
+    setLoadingFile(true);
+    fetch(`${BASE}/ideas/${ideaId}/phase3/file/raw?path=${encodeURIComponent(selectedPath)}`)
+      .then(r => r.blob())
+      .then(blob => setImageUrl(URL.createObjectURL(blob)))
+      .catch(() => setImageUrl(null))
+      .finally(() => setLoadingFile(false));
+    return () => setImageUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+  }, [selectedPath, ideaId]);
+
+  useEffect(() => {
+    if (!selectedPath || isImagePath(selectedPath)) return;
     setLoadingFile(true);
     setFileContent('');
     api.getPhase3File(ideaId, selectedPath)
@@ -768,6 +790,12 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
     finally { setTerminalOpening(false); }
   };
 
+  const handleOpenExplorer = async () => {
+    setExplorerOpening(true);
+    try { await api.openExplorer(ideaId); } catch {}
+    finally { setExplorerOpening(false); }
+  };
+
   if (loading) return <p style={{ color: 'var(--text2)', padding: '12px 0', fontSize: 13 }}>Loading files…</p>;
 
   if (tree.length === 0) {
@@ -794,19 +822,34 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
           <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 }}>
             {fileCount} file{fileCount !== 1 ? 's' : ''} · {totalSizeLabel}
           </p>
-          <button
-            onClick={handleOpenTerminal}
-            disabled={terminalOpening}
-            title="Open terminal in project folder"
-            style={{
-              fontSize: 11, color: 'var(--text2)', padding: '2px 6px',
-              borderRadius: 4, border: '1px solid var(--border)',
-              background: 'none', cursor: 'pointer', lineHeight: '18px',
-              opacity: terminalOpening ? 0.5 : 1,
-            }}
-          >
-            &gt;_
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              onClick={handleOpenExplorer}
+              disabled={explorerOpening}
+              title="Open folder in file explorer"
+              style={{
+                fontSize: 11, color: 'var(--text2)', padding: '2px 6px',
+                borderRadius: 4, border: '1px solid var(--border)',
+                background: 'none', cursor: 'pointer', lineHeight: '18px',
+                opacity: explorerOpening ? 0.5 : 1,
+              }}
+            >
+              📁
+            </button>
+            <button
+              onClick={handleOpenTerminal}
+              disabled={terminalOpening}
+              title="Open terminal in project folder"
+              style={{
+                fontSize: 11, color: 'var(--text2)', padding: '2px 6px',
+                borderRadius: 4, border: '1px solid var(--border)',
+                background: 'none', cursor: 'pointer', lineHeight: '18px',
+                opacity: terminalOpening ? 0.5 : 1,
+              }}
+            >
+              &gt;_
+            </button>
+          </div>
         </div>
         {tree.map(node => (
           <TreeNodeRow key={node.fullPath} node={node} depth={0}
@@ -847,19 +890,21 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
                 VS Code
               </a>
             )}
-            <button
-              onClick={handleCopy}
-              disabled={!fileContent || loadingFile}
-              title="Copy file content"
-              style={{
-                fontSize: 11, color: copied ? 'var(--green)' : 'var(--text2)',
-                padding: '2px 7px', borderRadius: 4,
-                border: '1px solid var(--border)', background: 'none',
-                cursor: fileContent ? 'pointer' : 'default', lineHeight: '18px',
-              }}
-            >
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
+            {!(selectedPath && isImagePath(selectedPath)) && (
+              <button
+                onClick={handleCopy}
+                disabled={!fileContent || loadingFile}
+                title="Copy file content"
+                style={{
+                  fontSize: 11, color: copied ? 'var(--green)' : 'var(--text2)',
+                  padding: '2px 7px', borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'none',
+                  cursor: fileContent ? 'pointer' : 'default', lineHeight: '18px',
+                }}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -878,7 +923,17 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
                   ⚠ File truncated at 256 KB for display
                 </div>
               )}
-              {(selectedPath ?? '').endsWith('.md') ? (
+              {selectedPath && isImagePath(selectedPath) ? (
+                <div style={{ padding: '24px', display: 'flex', justifyContent: 'center' }}>
+                  {imageUrl && (
+                    <img
+                      src={imageUrl}
+                      alt={selectedPath}
+                      style={{ maxWidth: '100%', maxHeight: 'calc(100vh - 320px)', objectFit: 'contain', borderRadius: 4 }}
+                    />
+                  )}
+                </div>
+              ) : (selectedPath ?? '').endsWith('.md') ? (
                 <div className="markdown" style={{ padding: '20px 24px', fontSize: 13, maxWidth: 860 }}>
                   <ReactMarkdown>{fileContent}</ReactMarkdown>
                 </div>

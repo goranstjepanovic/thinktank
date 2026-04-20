@@ -541,7 +541,7 @@ class InferenceClient:
         branch_id: str | None = None,
         stage_result_id: str | None = None,
         call_index: int = 0,
-        max_tool_rounds: int | None = 4,
+        max_tool_rounds: int | None = 8,
         allowed_file_dir: str | None = None,
         explore_only: bool = False,
         on_tool_result=None,  # Optional[Callable[[str, dict], Awaitable[None]]]

@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -681,6 +682,23 @@ async def get_phase3_file(idea_id: str, path: str, db: AsyncSession = Depends(ge
     return {"path": path, "content": content, "size": size, "truncated": size > max_bytes}
 
 
+@router.get("/{idea_id}/phase3/file/raw")
+async def get_phase3_file_raw(idea_id: str, path: str, db: AsyncSession = Depends(get_session)):
+    """Serve a file from the Phase 3 output directory as binary (for images etc.)."""
+    session = await _get_phase3_or_404(idea_id, db)
+    if not session.output_dir:
+        raise HTTPException(status_code=404, detail="No output directory")
+
+    base = Path(session.output_dir).resolve()
+    target = (base / path).resolve()
+    if not str(target).startswith(str(base)):
+        raise HTTPException(status_code=403, detail="Path outside project directory")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(target)
+
+
 @router.post("/{idea_id}/phase3/open-terminal")
 async def open_terminal(idea_id: str, db: AsyncSession = Depends(get_session)):
     """Open a terminal window in the project output directory."""
@@ -710,6 +728,30 @@ async def open_terminal(idea_id: str, db: AsyncSession = Depends(get_session)):
                 break
         else:
             raise HTTPException(status_code=501, detail="No supported terminal emulator found")
+
+    return {"opened": True}
+
+
+@router.post("/{idea_id}/phase3/open-explorer")
+async def open_explorer(idea_id: str, db: AsyncSession = Depends(get_session)):
+    """Open the system file explorer in the project output directory."""
+    session = await _get_phase3_or_404(idea_id, db)
+    if not session.output_dir or not Path(session.output_dir).is_dir():
+        raise HTTPException(status_code=404, detail="Output directory not found")
+
+    cwd = str(Path(session.output_dir).resolve())
+
+    if platform.system() == "Windows":
+        subprocess.Popen(["explorer", cwd])
+    elif platform.system() == "Darwin":
+        subprocess.Popen(["open", cwd])
+    else:
+        for fm in ["xdg-open", "nautilus", "thunar", "dolphin"]:
+            if shutil.which(fm):
+                subprocess.Popen([fm, cwd])
+                break
+        else:
+            raise HTTPException(status_code=501, detail="No supported file manager found")
 
     return {"opened": True}
 

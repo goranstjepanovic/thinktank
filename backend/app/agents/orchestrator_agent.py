@@ -191,6 +191,7 @@ def _sub_agent_system_prompt() -> str:
         "4. Return a JSON summary when done\n\n"
         "## File writing rules\n\n"
         "- Write complete file content — never truncate or use ellipsis placeholders\n"
+        "- All paths passed to `file_edit` must be relative to the OUTPUT DIRECTORY — never prefix them with the project name or any parent folder\n"
         "- Parent directories are created automatically; never use mkdir\n"
         "- For binary files, skip them and note it in your summary\n"
         "- Use `delete_path` to remove deprecated or unused files/directories — do not leave dead code\n\n"
