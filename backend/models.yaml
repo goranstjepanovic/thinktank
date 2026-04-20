@@ -160,5 +160,5 @@ stages:
 resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2
-  max_branches_per_idea: 6
+  max_branches_per_idea: 10
   vram_budget_gb: 20.0
