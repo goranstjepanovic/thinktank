@@ -154,9 +154,9 @@ stages:
     timeout_seconds: 300  # complex planning rounds with large context need more time
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "codestral:latest"
+    model: "qwen3-coder:30b"
     fallback_models:
-      - "qwen3-coder:30b"
+      - "codestral:latest"
       - "gemma4:latest"
       - "phi4:14b"
     backend: "ollama"
