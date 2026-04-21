@@ -143,7 +143,7 @@ stages:
     supports_tools: true
 
   phase3_orchestrator:  # Multi-agent mode — planner that reads PRD and delegates tasks
-    model: "phi4:14b"
+    model: "gemma4:latest"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 4096
@@ -152,9 +152,9 @@ stages:
     supports_tools: true
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "gemma4:latest"
+    model: "phi4:14b"
     fallback_models:
-      - "phi4:14b"
+      - "gemma4:latest"
       - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3

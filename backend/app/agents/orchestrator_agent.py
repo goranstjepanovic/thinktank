@@ -76,7 +76,8 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Fully self-contained: list every file by path with its purpose\n"
         "- Tech-stack specific: name libraries, exact versions, and patterns to use\n"
         "- Context-aware: tell the sub-agent which existing files to read for context first\n"
-        "- Command-aware: list any post-write commands (install, build, test) to run\n"
+        "- Command-aware: list any post-write commands (build, test) to run; if this task should run `npm install` "
+        "or equivalent, say so explicitly — sub-agents will NOT install packages unless told to\n"
         f"- Shell environment: {shell_environment_context()}\n\n"
         "## Project structure rules\n\n"
         "- There must be exactly ONE app structure with ONE build tool at the project root. "
@@ -100,6 +101,12 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Delegate 1–3 cohesive, independent tasks per response\n"
         "- Before choosing tasks, call `list_files` to see what is on disk, then `inspect_files` on relevant files\n"
         "- Tasks in the same batch must NOT overlap: each should own its own set of files\n"
+        "- **Package manager installs** (`npm install`, `pip install -r`, etc.) must appear in at most ONE task per batch. "
+        "If a batch has multiple tasks and one of them writes package.json / requirements.txt, assign the install "
+        "to that task only. All other tasks in the batch must NOT include install commands in their instructions. "
+        "If install is not needed yet, omit it entirely — do it in a later single-task batch.\n"
+        "- **Never assign `npm run dev`, `npm start`, or any long-running dev server** to any task. "
+        "Sub-agents must not start servers.\n"
         "- Track which PRD sections have been implemented and ensure full coverage\n"
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
@@ -238,7 +245,11 @@ def _sub_agent_system_prompt() -> str:
         "## Command rules\n\n"
         f"- Shell environment: {shell_environment_context()}\n"
         "- One command per `run_shell` call — never chain with && or ;\n"
-        "- Never run servers or long-running processes\n"
+        "- Never run servers or long-running processes (`npm run dev`, `npm start`, `python -m uvicorn`, etc.)\n"
+        "- **Never run `npm install`, `yarn install`, `pnpm install`, `pip install`, or any package manager install "
+        "command unless your task instruction EXPLICITLY tells you to.** When multiple sub-agents run in parallel, "
+        "concurrent installs collide and corrupt the node_modules / virtualenv. The orchestrator assigns install "
+        "responsibility to exactly one task — if yours does not mention it, skip it.\n"
         "- If a command fails, read the error and fix the root cause before retrying\n"
         "- If the same command fails twice with the same error, stop and report as a blocker\n\n"
         "## Output format\n\n"
@@ -251,11 +262,25 @@ def _sub_agent_system_prompt() -> str:
     )
 
 
-def _sub_agent_user_prompt(task_instruction: str, output_dir: str, idea_name: str) -> str:
+def _sub_agent_user_prompt(
+    task_instruction: str, output_dir: str, idea_name: str,
+    prior_failures: list[dict] | None = None,
+) -> str:
+    prior_block = ""
+    if prior_failures:
+        lines = []
+        for f in prior_failures:
+            lines.append(f"  Attempt {f['attempt']}: {f['blocker'] or f['summary']}")
+        prior_block = (
+            "\n\n## Previous attempts (all failed — do NOT repeat the same approach)\n\n"
+            + "\n".join(lines)
+            + "\n\nAnalyse what went wrong, take a different approach, and resolve the blocker."
+        )
     return (
         f"PROJECT: {idea_name}\n"
         f"OUTPUT DIRECTORY: {output_dir}\n\n"
-        f"TASK:\n{task_instruction}\n\n"
+        f"TASK:\n{task_instruction}"
+        f"{prior_block}\n\n"
         "Start by reading any files needed for context, then write all required files, "
         "run any specified commands, and return the JSON summary."
     )
@@ -413,6 +438,21 @@ class OrchestratorAgent:
             if not valid_tasks:
                 logger.warning("orchestrator: no valid tasks in round %d — stopping", round_idx + 1)
                 break
+
+            # Emit a chat message summarising the plan before launching the batch
+            analysis = str(orch_result.get("analysis") or "").strip()
+            task_lines = "\n".join(
+                f"- **{str(t.get('title') or 'Task')}**" for t in valid_tasks
+            )
+            n = len(valid_tasks)
+            plan_msg = (
+                f"{analysis}\n\n" if analysis else ""
+            ) + (
+                f"Launching {n} task{'s' if n > 1 else ''} in parallel:\n{task_lines}"
+                if n > 1
+                else f"Starting task:\n{task_lines}"
+            )
+            await on_orchestrator_event("orchestrator_message", {"content": plan_msg})
 
             # Emit started events for all tasks upfront
             for t in valid_tasks:
@@ -579,6 +619,7 @@ class OrchestratorAgent:
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
         models_to_try: list[str | None] = [None] + list(stage_cfg.fallback_models)
         last_result: dict = {}
+        prior_failures: list[dict] = []
 
         for attempt, model_override in enumerate(models_to_try):
             if model_override:
@@ -589,13 +630,17 @@ class OrchestratorAgent:
                     "attempt": attempt,
                 })
 
+            user_prompt = _sub_agent_user_prompt(
+                task_instruction, output_dir, idea.name, prior_failures=prior_failures
+            )
+
             try:
                 async with AsyncSessionLocal() as sub_db:
                     last_result = await self._client.call_with_tools(
                         stage_key="phase3_sub_agent",
                         messages=[
                             Message(role="system", content=_sub_agent_system_prompt()),
-                            Message(role="user", content=_sub_agent_user_prompt(task_instruction, output_dir, idea.name)),
+                            Message(role="user", content=user_prompt),
                         ],
                         session=sub_db,
                         idea_id=idea.id,
@@ -621,6 +666,11 @@ class OrchestratorAgent:
             if last_result.get("success", True):
                 return last_result
 
+            prior_failures.append({
+                "attempt": attempt + 1,
+                "blocker": last_result.get("blocker") or "",
+                "summary": last_result.get("summary") or "",
+            })
             logger.info("sub_agent: task '%s' attempt %d unsuccessful (success=false), %s",
                         task_title, attempt,
                         f"retrying with {models_to_try[attempt + 1]}" if attempt + 1 < len(models_to_try) else "no more fallbacks")

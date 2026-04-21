@@ -379,7 +379,7 @@ const UPDATE_ICONS: Record<string, string> = {
   web_search: '🌐',
 };
 
-function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates, onStop }: {
+function TaskBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates, onStop }: {
   taskId: string; title: string; status: 'running' | 'done' | 'blocked';
   summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
   onStop?: () => void;
@@ -466,6 +466,51 @@ function SubAgentBlock({ taskId: _taskId, title, status, summary, filesWritten, 
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+type SubAgentBlockEntry = Extract<ActivityEntry, { kind: 'sub_agent_block' }>;
+
+function CompletedGroup({ tasks, allSucceeded, allTotal, onStop }: {
+  tasks: SubAgentBlockEntry[];
+  allSucceeded: number;
+  allTotal: number;
+  onStop?: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ margin: '4px 0' }}>
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 12px', cursor: 'pointer', userSelect: 'none',
+          background: 'var(--bg2)', borderRadius: 8,
+          border: '1px solid var(--border)',
+        }}
+      >
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
+          Completed
+        </span>
+        <span style={{ fontSize: 11, color: allSucceeded < allTotal ? 'var(--yellow)' : 'var(--green)', fontWeight: 600, flexShrink: 0 }}>
+          {allSucceeded}/{allTotal}
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--text2)', flexShrink: 0 }}>{expanded ? '▲' : '▼'}</span>
+      </div>
+      {expanded && tasks.map(t => (
+        <TaskBlock
+          key={t.id}
+          taskId={t.taskId}
+          title={t.title}
+          status={t.status}
+          summary={t.summary}
+          filesWritten={t.filesWritten}
+          blocker={t.blocker}
+          updates={t.updates}
+          onStop={t.status === 'running' ? onStop : undefined}
+        />
+      ))}
     </div>
   );
 }
@@ -1777,31 +1822,63 @@ export function Phase3Implementation() {
               )}
             </div>
 
-            {/* Right: sub-agents panel */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', background: 'var(--bg)' }}>
-              <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
-                Sub-agents {log.filter(e => e.kind === 'sub_agent_block').length > 0 && `· ${log.filter(e => e.kind === 'sub_agent_block').length}`}
-              </p>
-              {log.filter(e => e.kind === 'sub_agent_block').length === 0 ? (
-                <p style={{ color: 'var(--text2)', fontSize: 12, lineHeight: 1.6 }}>
-                  Sub-agents will appear here as the orchestrator delegates tasks.
-                </p>
-              ) : (
-                log.map((entry) => entry.kind === 'sub_agent_block' ? (
-                  <SubAgentBlock
-                    key={entry.id}
-                    taskId={entry.taskId}
-                    title={entry.title}
-                    status={entry.status}
-                    summary={entry.summary}
-                    filesWritten={entry.filesWritten}
-                    blocker={entry.blocker}
-                    updates={entry.updates}
-                    onStop={entry.status === 'running' ? doCancel : undefined}
-                  />
-                ) : null)
-              )}
-            </div>
+            {/* Right: tasks panel */}
+            {(() => {
+              const allTasks = log.filter((e): e is SubAgentBlockEntry => e.kind === 'sub_agent_block');
+              const runningTasks = allTasks.filter(t => t.status === 'running');
+              const completedTasks = allTasks.filter(t => t.status !== 'running');
+              const recentCompleted = completedTasks.slice(-3);
+              const olderCompleted = completedTasks.slice(0, -3);
+              const succeededTotal = completedTasks.filter(t => t.status === 'done').length;
+              return (
+                <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', background: 'var(--bg)' }}>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+                    Tasks {allTasks.length > 0 && `· ${allTasks.length}`}
+                  </p>
+                  {allTasks.length === 0 ? (
+                    <p style={{ color: 'var(--text2)', fontSize: 12, lineHeight: 1.6 }}>
+                      Tasks will appear here as the orchestrator delegates work.
+                    </p>
+                  ) : (
+                    <>
+                      {olderCompleted.length > 0 && (
+                        <CompletedGroup
+                          tasks={olderCompleted}
+                          allSucceeded={succeededTotal}
+                          allTotal={completedTasks.length}
+                          onStop={doCancel}
+                        />
+                      )}
+                      {recentCompleted.map(t => (
+                        <TaskBlock
+                          key={t.id}
+                          taskId={t.taskId}
+                          title={t.title}
+                          status={t.status}
+                          summary={t.summary}
+                          filesWritten={t.filesWritten}
+                          blocker={t.blocker}
+                          updates={t.updates}
+                        />
+                      ))}
+                      {runningTasks.map(t => (
+                        <TaskBlock
+                          key={t.id}
+                          taskId={t.taskId}
+                          title={t.title}
+                          status={t.status}
+                          summary={t.summary}
+                          filesWritten={t.filesWritten}
+                          blocker={t.blocker}
+                          updates={t.updates}
+                          onStop={doCancel}
+                        />
+                      ))}
+                    </>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
         ) : mainTab === 'log' ? (

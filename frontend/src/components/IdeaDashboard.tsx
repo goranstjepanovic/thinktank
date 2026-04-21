@@ -29,6 +29,35 @@ const PHASE_BADGE_STYLE: Record<string, { color: string; background: string }> =
   'Phase 3 · Failed':     { color: 'var(--red)', background: 'rgba(239,68,68,0.12)' },
 };
 
+function buildForkTags(ideas: IdeaSummary[]): Map<string, string> {
+  const ideaIds = new Set(ideas.map(i => i.id));
+  const byParent = new Map<string, IdeaSummary[]>();
+  for (const idea of ideas) {
+    if (idea.parent_idea_id) {
+      if (!byParent.has(idea.parent_idea_id)) byParent.set(idea.parent_idea_id, []);
+      byParent.get(idea.parent_idea_id)!.push(idea);
+    }
+  }
+  for (const children of byParent.values()) {
+    children.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+  const tags = new Map<string, string>();
+  // Seed with real roots + deleted parents (orphaned forks treated as virtual roots)
+  const roots = ideas.filter(i => !i.parent_idea_id).map(i => i.id);
+  const deletedParents = [...byParent.keys()].filter(pid => !ideaIds.has(pid));
+  const queue = [...roots, ...deletedParents];
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    const children = byParent.get(parentId) ?? [];
+    children.forEach((child, i) => {
+      const parentTag = tags.get(parentId);
+      tags.set(child.id, parentTag ? `${parentTag}-${i + 1}` : `F-${i + 1}`);
+      queue.push(child.id);
+    });
+  }
+  return tags;
+}
+
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const diffMin = Math.floor(diffMs / 60000);
@@ -53,7 +82,7 @@ function PhaseBadge({ label }: { label: string }) {
   );
 }
 
-function IdeaCard({ idea }: { idea: IdeaSummary }) {
+function IdeaCard({ idea, forkTag }: { idea: IdeaSummary; forkTag?: string }) {
   const active = isActive(idea);
   const showPhaseBadge = idea.phase > 1 || idea.status === 'SELECTED';
   const borderColor = idea.phase === 3 && !TERMINAL_PHASE_LABELS.has(idea.phase_label)
@@ -82,7 +111,16 @@ function IdeaCard({ idea }: { idea: IdeaSummary }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ color: 'var(--text2)', fontSize: 12 }}>{timeAgo(idea.updated_at)}</span>
             {idea.parent_idea_name && (
-              <span style={{ color: 'var(--text2)', fontSize: 11 }}>
+              <span style={{ color: 'var(--text2)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
+                {forkTag && (
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                    background: 'rgba(167,139,250,0.15)', color: '#a78bfa',
+                    letterSpacing: '0.03em', flexShrink: 0,
+                  }}>
+                    {forkTag}
+                  </span>
+                )}
                 ↳ fork of <span style={{ fontStyle: 'italic' }}>{idea.parent_idea_name}</span>
               </span>
             )}
@@ -132,6 +170,8 @@ export function IdeaDashboard() {
     return () => clearInterval(t);
   }, [hasActive]);
 
+  const forkTags = buildForkTags(ideas);
+
   const sorted = [...ideas].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
   );
@@ -173,7 +213,7 @@ export function IdeaDashboard() {
             Active
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
-            {running.map((idea) => <IdeaCard key={idea.id} idea={idea} />)}
+            {running.map((idea) => <IdeaCard key={idea.id} idea={idea} forkTag={forkTags.get(idea.id)} />)}
           </div>
         </>
       )}
@@ -186,7 +226,7 @@ export function IdeaDashboard() {
             </p>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {done.map((idea) => <IdeaCard key={idea.id} idea={idea} />)}
+            {done.map((idea) => <IdeaCard key={idea.id} idea={idea} forkTag={forkTags.get(idea.id)} />)}
           </div>
         </>
       )}

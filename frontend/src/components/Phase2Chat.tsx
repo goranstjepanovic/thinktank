@@ -400,8 +400,10 @@ export function Phase2Chat() {
           {['READY', 'IMPLEMENTING', 'COMPLETE'].includes(session.status) && (
             <button className="btn-primary"
               style={{ fontSize: 12, background: '#1a3a1a', borderColor: 'var(--green)', color: 'var(--green)' }}
+              disabled={!session.resolution_summary}
+              title={!session.resolution_summary ? 'Waiting for resolution summary to finish generating…' : undefined}
               onClick={() => navigate(`/ideas/${id}/phase3`)}>
-              Phase 3: Build →
+              {session.resolution_summary ? 'Phase 3: Build →' : 'Generating summary…'}
             </button>
           )}
           <span className={`badge badge-${session.status.toLowerCase()}`} style={{ fontSize: 11 }}>
