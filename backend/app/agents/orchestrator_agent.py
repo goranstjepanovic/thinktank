@@ -76,6 +76,10 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Fully self-contained: list every file by path with its purpose\n"
         "- Tech-stack specific: name libraries, exact versions, and patterns to use\n"
         "- Context-aware: tell the sub-agent which existing files to read for context first\n"
+        "- Structure-consistent: before writing file paths in an instruction, check completed task results "
+        "to detect the established source root (e.g. `src/`). Every path in your instruction MUST use "
+        "that same root. If earlier tasks used `src/components/Foo.tsx`, new component paths must also "
+        "start with `src/` — never `components/Foo.tsx` at the project root.\n"
         "- Command-aware: list any post-write commands (build, test) to run; if this task should run `npm install` "
         "or equivalent, say so explicitly — sub-agents will NOT install packages unless told to\n"
         f"- Shell environment: {shell_environment_context()}\n\n"
@@ -119,6 +123,29 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
     )
+
+
+def _detect_project_structure(completed_tasks: list[dict]) -> dict:
+    """
+    Scan files_written from completed tasks to detect established structural conventions.
+    Returns {'source_root': 'src' | None, 'top_dirs': [...sorted top-level dirs...]}.
+    """
+    all_written: list[str] = []
+    for t in completed_tasks:
+        all_written.extend(t.get("files_written", []))
+
+    src_count = sum(1 for p in all_written if p.startswith("src/"))
+
+    top_dirs: set[str] = set()
+    for p in all_written:
+        parts = p.replace("\\", "/").split("/")
+        if len(parts) > 1:
+            top_dirs.add(parts[0])
+
+    return {
+        "source_root": "src" if src_count >= 2 else None,
+        "top_dirs": sorted(top_dirs),
+    }
 
 
 def _extract_prd_sections(prd_content: str) -> list[str]:
@@ -178,6 +205,30 @@ def _orchestrator_user_prompt(
         msgs = "\n".join(f"- {m}" for m in pending_user_messages)
         feedback_block = f"\n\n## User feedback (received while last batch was running)\n\n{msgs}\n\nIncorporate this feedback into your next task decisions."
 
+    structure_block = ""
+    if completed_tasks:
+        structure = _detect_project_structure(completed_tasks)
+        constraints: list[str] = []
+        if structure["source_root"]:
+            constraints.append(
+                f"- Source root is `{structure['source_root']}/` — ALL new source files (components, "
+                f"utilities, modules, hooks, styles, etc.) MUST go under `{structure['source_root']}/`. "
+                f"Never place source files at the project root or in a different top-level directory."
+            )
+        if structure["top_dirs"]:
+            dirs_str = ", ".join(f"`{d}/`" for d in structure["top_dirs"])
+            constraints.append(
+                f"- Established top-level directories: {dirs_str}. "
+                f"New files should extend this layout, not contradict it."
+            )
+        if constraints:
+            structure_block = (
+                "\n\n## Detected project structure — ENFORCE IN ALL TASK INSTRUCTIONS\n\n"
+                + "\n".join(constraints)
+                + "\n\nEvery file path you write in a task instruction MUST be consistent with the above. "
+                "If a file belongs under `src/`, say `src/components/Foo.tsx`, not `components/Foo.tsx`."
+            )
+
     verify_block = ""
     if verify_prd:
         if prd_sections:
@@ -216,6 +267,7 @@ def _orchestrator_user_prompt(
         f"DESCRIPTION: {idea.description}\n\n"
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
         f"{history_block}"
+        f"{structure_block}"
         f"{feedback_block}\n\n"
         f"{start_hint}"
         f"{verify_block}"
@@ -294,6 +346,7 @@ def _sub_agent_system_prompt() -> str:
 def _sub_agent_user_prompt(
     task_instruction: str, output_dir: str, idea_name: str,
     prior_failures: list[dict] | None = None,
+    source_root: str | None = None,
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -305,10 +358,21 @@ def _sub_agent_user_prompt(
             + "\n".join(lines)
             + "\n\nAnalyse what went wrong, take a different approach, and resolve the blocker."
         )
+    structure_hint = ""
+    if source_root:
+        structure_hint = (
+            f"\n\n## Project structure constraint\n\n"
+            f"This project uses `{source_root}/` as the source root. "
+            f"All source files (components, utilities, modules, hooks, styles, etc.) MUST live under "
+            f"`{source_root}/`. Do NOT create source files at the project root or in a different directory. "
+            f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
+            f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
+        )
     return (
         f"PROJECT: {idea_name}\n"
         f"OUTPUT DIRECTORY: {output_dir}\n\n"
         f"TASK:\n{task_instruction}"
+        f"{structure_hint}"
         f"{prior_block}\n\n"
         "Start by reading any files needed for context, then write all required files, "
         "run any specified commands, and return the JSON summary."
@@ -523,10 +587,14 @@ class OrchestratorAgent:
                 t["_title"] = task_title
                 await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title})
 
+            # Detect established source layout so sub-agents stay consistent
+            _structure = _detect_project_structure(completed_tasks)
+
             # Run all tasks in this batch concurrently
             batch_results = await self._run_task_batch(
                 idea, branch, output_dir, valid_tasks,
                 on_tool_result, on_orchestrator_event,
+                source_root=_structure["source_root"],
             )
 
             for t, sub_result in zip(valid_tasks, batch_results):
@@ -561,6 +629,7 @@ class OrchestratorAgent:
         tasks: list[dict],
         on_tool_result: OnToolResult,
         on_orchestrator_event: OnOrchestratorEvent,
+        source_root: str | None = None,
     ) -> list[dict]:
         """Run a batch of tasks concurrently. Each task gets its own DB session."""
 
@@ -573,6 +642,7 @@ class OrchestratorAgent:
                     idea, branch, output_dir,
                     task_id, task_title, instruction,
                     on_tool_result, on_orchestrator_event,
+                    source_root=source_root,
                 )
             except asyncio.CancelledError:
                 await on_orchestrator_event("sub_agent_complete", {
@@ -655,6 +725,7 @@ class OrchestratorAgent:
         task_instruction: str,
         on_tool_result: OnToolResult,
         on_orchestrator_event: OnOrchestratorEvent,
+        source_root: str | None = None,
     ) -> dict:
         logger.info("sub_agent: starting task '%s' (%s)", task_title, task_id)
 
@@ -692,7 +763,9 @@ class OrchestratorAgent:
                 })
 
             user_prompt = _sub_agent_user_prompt(
-                task_instruction, output_dir, idea.name, prior_failures=prior_failures
+                task_instruction, output_dir, idea.name,
+                prior_failures=prior_failures,
+                source_root=source_root,
             )
 
             try:
