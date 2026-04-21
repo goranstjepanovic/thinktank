@@ -31,7 +31,7 @@ from app.tools.shell_runner import shell_environment_context
 
 logger = logging.getLogger(__name__)
 
-_MAX_ORCHESTRATOR_ROUNDS = 20
+_MAX_ORCHESTRATOR_ROUNDS = 30
 _MAX_PRD_CHARS = 24_000
 
 
@@ -148,15 +148,28 @@ def _detect_project_structure(completed_tasks: list[dict]) -> dict:
     }
 
 
-def _extract_prd_sections(prd_content: str) -> list[str]:
-    """Return the text of every markdown heading in the PRD (## and ###)."""
-    sections = []
+def _extract_prd_sections(prd_content: str) -> list[dict]:
+    """
+    Return each ## / ### section with its heading and the bullet-point details beneath it.
+    Returns list of {"heading": str, "details": str}.
+    """
+    sections: list[dict] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+
     for line in prd_content.splitlines():
         stripped = line.strip()
         if stripped.startswith("## ") or stripped.startswith("### "):
-            heading = stripped.lstrip("#").strip()
-            if heading:
-                sections.append(heading)
+            if current_heading:
+                sections.append({"heading": current_heading, "details": "\n".join(current_lines).strip()})
+            current_heading = stripped.lstrip("#").strip()
+            current_lines = []
+        elif current_heading and stripped:
+            current_lines.append(stripped)
+
+    if current_heading:
+        sections.append({"heading": current_heading, "details": "\n".join(current_lines).strip()})
+
     return sections
 
 
@@ -232,34 +245,47 @@ def _orchestrator_user_prompt(
     verify_block = ""
     if verify_prd:
         if prd_sections:
-            checklist = "\n".join(f"   - [ ] {s}" for s in prd_sections)
+            section_checklist_lines = []
+            for s in prd_sections:
+                heading = s["heading"] if isinstance(s, dict) else s
+                details = (s.get("details") or "") if isinstance(s, dict) else ""
+                line = f"   ### {heading}"
+                if details:
+                    # Indent detail lines so they're clearly subordinate
+                    indented = "\n".join(f"   > {dl}" for dl in details.splitlines()[:6])
+                    line += f"\n{indented}"
+                line += f"\n   → Your classification: **IMPLEMENTED / PARTIAL / MISSING**"
+                section_checklist_lines.append(line)
             section_block = (
-                "\n\nPRD sections you must verify one by one (call `inspect_files` on the files "
-                "that implement each section, then tick it off in your analysis):\n"
-                f"{checklist}"
+                "\n\nFor EACH section below, call `inspect_files` on the files that implement it, "
+                "then classify it as IMPLEMENTED (fully working code, no stubs), "
+                "PARTIAL (some logic exists but incomplete/stubbed), or MISSING (not built at all):\n\n"
+                + "\n\n".join(section_checklist_lines)
             )
         else:
-            section_block = "\n\nVerify every section of the PRD is covered by what was built."
+            section_block = "\n\nVerify every section of the PRD is covered with working (non-stub) code."
         verify_block = (
             "\n\n## PRD Verification Required\n\n"
             "You indicated the implementation is complete. Before setting `done=true` again "
-            "you MUST complete ALL of the steps below — do not skip any:\n\n"
+            "you MUST complete ALL of the steps below — skipping any step is not allowed:\n\n"
             "1. Call `list_files` to get the full current project file tree\n"
-            "2. Call `inspect_files` on the key implementation files for each PRD section\n"
-            f"3. {section_block.strip()}\n"
+            "2. Call `inspect_files` on the key implementation files for EACH PRD section — "
+            "the inspector will flag stub patterns (empty bodies, TODO comments, placeholder returns). "
+            "Treat any file with `has_stubs: true` as NOT implemented.\n"
+            f"3. {section_block.strip()}\n\n"
             "4. Check for structural problems:\n"
-            "   - Only ONE build tool / package.json tree at the project root (no competing nested apps)\n"
-            "   - HTML entry points reference the correct build output for the chosen bundler\n"
+            "   - Only ONE build tool / package.json tree at the project root\n"
+            "   - HTML entry points match the actual bundler output\n"
             "   - package.json scripts use paths relative to their own directory\n"
-            "   - All packages are version-compatible (check framework + plugin peer deps)\n"
-            "5. Spawn a build verification task: run the project's build command "
+            "   - All packages are version-compatible\n"
+            "5. Spawn a build verification task: run the project build command "
             "(e.g. `npm run build`, `pip install -e .`, `cargo build`) and confirm it exits 0.\n"
             "   If it fails, add repair tasks and set `done=false`.\n"
-            "6. If ANY section above is unchecked, missing, or incomplete — add tasks to implement it "
-            "and set `done=false`.\n"
-            "7. Only set `done=true` once every section is confirmed covered AND the build succeeds.\n\n"
-            "Your `analysis` field must explicitly name each PRD section and state whether it is covered. "
-            "A vague 'implementation looks complete' is not acceptable."
+            "6. For every section classified PARTIAL or MISSING — you MUST add tasks to complete it "
+            "and set `done=false`. Only sections classified IMPLEMENTED count as done.\n"
+            "7. Only set `done=true` when ALL sections are IMPLEMENTED and the build succeeds.\n\n"
+            "Your `analysis` field MUST list every PRD section with its IMPLEMENTED / PARTIAL / MISSING "
+            "classification and a one-line justification. A generic 'looks complete' is not acceptable."
         )
 
     return (
@@ -278,12 +304,19 @@ def _inspector_system_prompt() -> str:
     return (
         "You are a code inspector sub-agent. Read the specified files and return concise structured summaries.\n\n"
         "For each file, report:\n"
-        "- What it implements (classes, functions, endpoints, schemas, etc.)\n"
-        "- What appears complete vs. stub/placeholder\n"
-        "- What is likely missing based on typical patterns for this file type\n\n"
+        "- What it FULLY implements (complete, working logic — not placeholders)\n"
+        "- What is a stub, placeholder, or skeleton — these count as NOT implemented:\n"
+        "  • Empty function/method bodies (just `pass`, `{}`, or a single comment)\n"
+        "  • `// TODO`, `# TODO`, `throw new Error('not implemented')`, `raise NotImplementedError`\n"
+        "  • Hardcoded dummy data returned instead of real logic\n"
+        "  • Placeholder strings like 'coming soon', 'implement me', 'insert logic here'\n"
+        "  • Functions that always return null/None/0/{} without real computation\n"
+        "- What is genuinely missing (functions/endpoints/schemas the file type requires but lacks entirely)\n\n"
+        "Be strict: a file that exists but contains only stubs is NOT implemented.\n\n"
         "Output JSON only — no prose, no fences:\n"
         '{"files": [{"path": "...", "language": "...", "summary": "one-sentence overview", '
-        '"implemented": ["item1", "item2"], "missing_or_incomplete": ["gap1", "gap2"]}]}'
+        '"implemented": ["fully working item1"], "stubs": ["stub or placeholder item1"], '
+        '"missing_or_incomplete": ["gap1", "gap2"], "has_stubs": true}]}'
     )
 
 
@@ -412,8 +445,9 @@ class OrchestratorAgent:
         completed_tasks: list[dict] = []
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
-        _verification_pending = False  # True after first done=true; forces one explicit PRD check round
-        _empty_task_rounds = 0         # consecutive rounds with done=false but no tasks produced
+        _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
+        _verification_attempts = 0    # counts how many verification rounds have run
+        _empty_task_rounds = 0        # consecutive rounds with done=false but no tasks produced
         _prd_sections = _extract_prd_sections(prd_content)
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
@@ -516,10 +550,42 @@ class OrchestratorAgent:
 
             if done or not next_tasks:
                 if done and not _verification_pending:
-                    # First time done=true: force an explicit PRD verification round
+                    # First time done=true: enter PRD verification mode
                     _verification_pending = True
-                    logger.info("orchestrator: done=true signalled — starting PRD verification round")
+                    logger.info("orchestrator: done=true signalled — entering PRD verification mode")
                     continue
+
+                if done and _verification_pending:
+                    # Verification round returned done=true — check if analysis still contains
+                    # signs of incomplete work before accepting
+                    _verification_attempts += 1
+                    analysis_text = str(orch_result.get("analysis") or "").lower()
+                    _INCOMPLETE_SIGNALS = ("partial", "missing", "not implemented", "stub", "todo",
+                                           "incomplete", "not built", "placeholder", "not done")
+                    incomplete_signals_found = [s for s in _INCOMPLETE_SIGNALS if s in analysis_text]
+                    if incomplete_signals_found and _verification_attempts <= 2:
+                        logger.warning(
+                            "orchestrator: verification round %d said done=true but analysis contains "
+                            "incomplete signals %s — forcing another pass",
+                            _verification_attempts, incomplete_signals_found,
+                        )
+                        completed_tasks.append({
+                            "id": f"_verify_pushback_{round_idx}",
+                            "title": "(verification rejected — incomplete sections found)",
+                            "summary": (
+                                f"Your analysis contained these signals of incomplete work: "
+                                f"{', '.join(incomplete_signals_found)}. "
+                                "Sections classified as PARTIAL or MISSING are NOT done. "
+                                "You MUST add tasks to complete them and set done=false until all "
+                                "sections are IMPLEMENTED with working (non-stub) code."
+                            ),
+                            "success": False,
+                            "files_written": [],
+                            "commands_run": [],
+                        })
+                        continue
+                    logger.info("orchestrator: verification complete after %d attempt(s)", _verification_attempts)
+
                 if not done and not next_tasks:
                     # Orchestrator returned done=false but produced no tasks — nudge it
                     _empty_task_rounds += 1
