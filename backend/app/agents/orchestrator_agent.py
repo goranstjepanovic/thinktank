@@ -31,7 +31,7 @@ from app.tools.shell_runner import shell_environment_context
 
 logger = logging.getLogger(__name__)
 
-_MAX_ORCHESTRATOR_ROUNDS = 30
+_MAX_ORCHESTRATOR_ROUNDS = 100  # safety ceiling — real stops are done=true or consecutive empty rounds
 _MAX_PRD_CHARS = 24_000
 
 
