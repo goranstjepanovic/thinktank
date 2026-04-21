@@ -97,6 +97,14 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "  • Vite projects → no Rollup config at root; Vite IS the bundler\n"
         "  • SvelteKit → use @sveltejs/kit, not bare vite-plugin-svelte directly\n"
         "- When writing a task instruction that involves package.json, explicitly state the exact compatible versions to use.\n\n"
+        "## Critical rule — what sub-agent tasks ARE and ARE NOT\n\n"
+        "Sub-agent tasks exist for ONE purpose only: **writing files and running commands**.\n"
+        "They cannot help you explore the project — exploration is YOUR job via your own tools.\n\n"
+        "FORBIDDEN task titles/purposes (these will be rejected automatically):\n"
+        "- 'List files', 'List all files', 'Explore project', 'Read existing files', 'Inspect structure'\n"
+        "- Any task whose sole purpose is to read, list, grep, or inspect — no file writing, no commands\n\n"
+        "If you need to see the project state, call `list_files` or `inspect_files` RIGHT NOW in this response "
+        "before deciding tasks. Do NOT create a sub-agent to do it for you.\n\n"
         "## Rules\n\n"
         "- Delegate 1–3 cohesive, independent tasks per response\n"
         "- Before choosing tasks, call `list_files` to see what is on disk, then `inspect_files` on relevant files\n"
@@ -110,10 +118,19 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "- Track which PRD sections have been implemented and ensure full coverage\n"
         "- Set `done=true` only when all PRD sections are covered by completed tasks\n"
         "- Output ONLY the JSON object — no markdown fences, no extra text\n"
-        "- NEVER create sub-agent tasks for file listing, reading, or inspection — "
-        "use `list_files`, `inspect_files`, and `grep_files` directly yourself. "
-        "Sub-agent tasks are ONLY for writing files and running commands.\n"
     )
+
+
+def _extract_prd_sections(prd_content: str) -> list[str]:
+    """Return the text of every markdown heading in the PRD (## and ###)."""
+    sections = []
+    for line in prd_content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            heading = stripped.lstrip("#").strip()
+            if heading:
+                sections.append(heading)
+    return sections
 
 
 def _orchestrator_user_prompt(
@@ -123,6 +140,7 @@ def _orchestrator_user_prompt(
     follow_up_message: str | None = None,
     pending_user_messages: list[str] | None = None,
     verify_prd: bool = False,
+    prd_sections: list[str] | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -162,24 +180,35 @@ def _orchestrator_user_prompt(
 
     verify_block = ""
     if verify_prd:
+        if prd_sections:
+            checklist = "\n".join(f"   - [ ] {s}" for s in prd_sections)
+            section_block = (
+                "\n\nPRD sections you must verify one by one (call `inspect_files` on the files "
+                "that implement each section, then tick it off in your analysis):\n"
+                f"{checklist}"
+            )
+        else:
+            section_block = "\n\nVerify every section of the PRD is covered by what was built."
         verify_block = (
             "\n\n## PRD Verification Required\n\n"
-            "You indicated the implementation is complete. Before setting `done=true` again, "
-            "you MUST run through ALL of the following checks:\n\n"
-            "1. Call `list_files` to get the current project file tree\n"
-            "2. Call `inspect_files` on key implementation files\n"
-            "3. For each PRD section, confirm it is covered by what was built\n"
+            "You indicated the implementation is complete. Before setting `done=true` again "
+            "you MUST complete ALL of the steps below — do not skip any:\n\n"
+            "1. Call `list_files` to get the full current project file tree\n"
+            "2. Call `inspect_files` on the key implementation files for each PRD section\n"
+            f"3. {section_block.strip()}\n"
             "4. Check for structural problems:\n"
             "   - Only ONE build tool / package.json tree at the project root (no competing nested apps)\n"
             "   - HTML entry points reference the correct build output for the chosen bundler\n"
             "   - package.json scripts use paths relative to their own directory\n"
             "   - All packages are version-compatible (check framework + plugin peer deps)\n"
             "5. Spawn a build verification task: run the project's build command "
-            "(e.g. `npm run build`, `pip install -e .`, `cargo build`) and confirm it exits 0 with no errors. "
-            "If it fails, add repair tasks and set `done=false`.\n"
-            "6. If any PRD section is missing, incomplete, or the build fails, add tasks to fix it.\n"
-            "7. Only set `done=true` once ALL sections are covered AND the build succeeds.\n\n"
-            "Do not skip this check — an implementation that does not build is not done."
+            "(e.g. `npm run build`, `pip install -e .`, `cargo build`) and confirm it exits 0.\n"
+            "   If it fails, add repair tasks and set `done=false`.\n"
+            "6. If ANY section above is unchecked, missing, or incomplete — add tasks to implement it "
+            "and set `done=false`.\n"
+            "7. Only set `done=true` once every section is confirmed covered AND the build succeeds.\n\n"
+            "Your `analysis` field must explicitly name each PRD section and state whether it is covered. "
+            "A vague 'implementation looks complete' is not acceptable."
         )
 
     return (
@@ -320,6 +349,8 @@ class OrchestratorAgent:
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
         _verification_pending = False  # True after first done=true; forces one explicit PRD check round
+        _empty_task_rounds = 0         # consecutive rounds with done=false but no tasks produced
+        _prd_sections = _extract_prd_sections(prd_content)
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
             logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
@@ -345,6 +376,7 @@ class OrchestratorAgent:
                     idea, branch, completed_tasks, _initial_follow_up,
                     pending_user_messages=pending_messages or None,
                     verify_prd=_verification_pending,
+                    prd_sections=_prd_sections if _verification_pending else None,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
@@ -424,20 +456,49 @@ class OrchestratorAgent:
                     _verification_pending = True
                     logger.info("orchestrator: done=true signalled — starting PRD verification round")
                     continue
+                if not done and not next_tasks:
+                    # Orchestrator returned done=false but produced no tasks — nudge it
+                    _empty_task_rounds += 1
+                    if _empty_task_rounds <= 3:
+                        logger.warning("orchestrator: round %d produced done=false with no tasks (empty #%d) — nudging",
+                                       round_idx + 1, _empty_task_rounds)
+                        completed_tasks.append({
+                            "id": f"_nudge_{round_idx}",
+                            "title": "(no tasks produced)",
+                            "summary": "You returned done=false but gave no next_tasks. Call list_files/inspect_files now, then output concrete implementation tasks.",
+                            "success": False,
+                            "files_written": [],
+                            "commands_run": [],
+                        })
+                        continue
+                    logger.warning("orchestrator: %d consecutive empty-task rounds — stopping", _empty_task_rounds)
                 logger.info("orchestrator: signalled done after %d round(s)", round_idx + 1)
                 break
 
-            # Validate tasks
+            # Validate tasks — reject empty instructions and exploration-only tasks
+            _EXPLORE_PREFIXES = ('list', 'read', 'inspect', 'explore', 'check', 'view', 'show', 'get', 'find')
+            _IMPL_KEYWORDS = ('write', 'creat', 'implement', 'install', 'build', 'edit', 'modif', 'generat', 'add', 'setup', 'configure', 'scaffold')
             valid_tasks = []
             for t in next_tasks[:3]:  # cap at 3 concurrent sub-agents
                 instruction = str(t.get("instruction") or "").strip()
-                if instruction:
-                    valid_tasks.append(t)
-                else:
+                if not instruction:
                     logger.warning("orchestrator: task %r has empty instruction — skipping", t.get("id"))
+                    continue
+                title_lower = str(t.get("title") or "").lower().strip()
+                instruction_lower = instruction.lower()
+                is_explore_only = (
+                    any(title_lower.startswith(p) for p in _EXPLORE_PREFIXES)
+                    and not any(kw in instruction_lower for kw in _IMPL_KEYWORDS)
+                )
+                if is_explore_only:
+                    logger.warning("orchestrator: task %r looks like exploration-only — skipping (use list_files/inspect_files directly)", t.get("title"))
+                    continue
+                valid_tasks.append(t)
             if not valid_tasks:
-                logger.warning("orchestrator: no valid tasks in round %d — stopping", round_idx + 1)
-                break
+                logger.warning("orchestrator: no valid tasks in round %d — continuing to next round", round_idx + 1)
+                continue  # let the orchestrator try again rather than stopping dead
+
+            _empty_task_rounds = 0  # reset — real tasks are being dispatched
 
             # Emit a chat message summarising the plan before launching the batch
             analysis = str(orch_result.get("analysis") or "").strip()

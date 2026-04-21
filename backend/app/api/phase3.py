@@ -211,11 +211,8 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 if content:
                     await event_bus.publish(ev.phase3_orchestrator_message(idea_id, session_id, content))
                     async with AsyncSessionLocal() as adb:
-                        msg = Phase3Message(session_id=session_id, role="assistant", content=content)
-                        adb.add(msg)
+                        adb.add(Phase3Message(session_id=session_id, role="assistant", content=content))
                         await adb.commit()
-                        await adb.refresh(msg)
-                    await event_bus.publish(ev.phase3_message(idea_id, session_id, msg.id, "assistant", content))
 
             elif event_type == "waiting":
                 async with AsyncSessionLocal() as adb:
