@@ -113,10 +113,11 @@ stages:
     supports_tools: false
 
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
-    model: "gemma4:latest"
+    model: "codestral:latest"
     fallback_models:
-      - "phi4:14b"
       - "qwen3-coder:30b"
+      - "gemma4:latest"
+      - "phi4:14b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: 8192
@@ -153,8 +154,9 @@ stages:
     timeout_seconds: 300  # complex planning rounds with large context need more time
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "qwen3-coder:30b"
+    model: "codestral:latest"
     fallback_models:
+      - "qwen3-coder:30b"
       - "gemma4:latest"
       - "phi4:14b"
     backend: "ollama"
@@ -169,4 +171,4 @@ resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2
   max_branches_per_idea: 10
-  vram_budget_gb: 20.0
+  vram_budget_gb: 40.0
