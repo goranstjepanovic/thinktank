@@ -72,7 +72,11 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         '{"analysis": "...", "next_tasks": [], "done": false, '
         '"user_message": "the specific question or decision you need from the user"}\n\n'
         "## Task instruction guidelines\n\n"
-        "The sub-agent receives only the `instruction` field and the output directory path. Make it:\n"
+        "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
+        "- PRD-grounded: explicitly quote or reference the specific PRD requirements this task implements. "
+        "State the expected behavior, game rules, UI elements, or algorithms as described in the PRD — "
+        "not a generic version of them. The sub-agent will also receive the full PRD, but your instruction "
+        "must make clear which section applies and what 'done' looks like for this task.\n"
         "- Fully self-contained: list every file by path with its purpose\n"
         "- Tech-stack specific: name libraries, exact versions, and patterns to use\n"
         "- Context-aware: tell the sub-agent which existing files to read for context first\n"
@@ -376,10 +380,14 @@ def _sub_agent_system_prompt() -> str:
     )
 
 
+_MAX_SUB_AGENT_PRD_CHARS = 16_000
+
+
 def _sub_agent_user_prompt(
     task_instruction: str, output_dir: str, idea_name: str,
     prior_failures: list[dict] | None = None,
     source_root: str | None = None,
+    prd_content: str | None = None,
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -401,10 +409,24 @@ def _sub_agent_user_prompt(
             f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
             f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
         )
+    prd_block = ""
+    if prd_content:
+        excerpt = prd_content[:_MAX_SUB_AGENT_PRD_CHARS]
+        if len(prd_content) > _MAX_SUB_AGENT_PRD_CHARS:
+            excerpt += "\n… (PRD truncated)"
+        prd_block = (
+            f"\n\n## Product Requirements Document\n\n"
+            f"{excerpt}\n\n"
+            "Your implementation MUST match these requirements exactly. "
+            "Do not invent features, omit specified features, or replace described mechanics "
+            "with generic alternatives. If the PRD specifies a particular game rule, UI element, "
+            "algorithm, or behavior — implement it precisely as described."
+        )
     return (
         f"PROJECT: {idea_name}\n"
-        f"OUTPUT DIRECTORY: {output_dir}\n\n"
-        f"TASK:\n{task_instruction}"
+        f"OUTPUT DIRECTORY: {output_dir}\n"
+        f"{prd_block}"
+        f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
         "Start by reading any files needed for context, then write all required files, "
@@ -676,6 +698,7 @@ class OrchestratorAgent:
                 idea, branch, output_dir, valid_tasks,
                 on_tool_result, on_orchestrator_event,
                 source_root=_structure["source_root"],
+                prd_content=prd_content,
             )
 
             for t, sub_result in zip(valid_tasks, batch_results):
@@ -711,6 +734,7 @@ class OrchestratorAgent:
         on_tool_result: OnToolResult,
         on_orchestrator_event: OnOrchestratorEvent,
         source_root: str | None = None,
+        prd_content: str | None = None,
     ) -> list[dict]:
         """Run a batch of tasks concurrently. Each task gets its own DB session."""
 
@@ -724,6 +748,7 @@ class OrchestratorAgent:
                     task_id, task_title, instruction,
                     on_tool_result, on_orchestrator_event,
                     source_root=source_root,
+                    prd_content=prd_content,
                 )
             except asyncio.CancelledError:
                 await on_orchestrator_event("sub_agent_complete", {
@@ -807,6 +832,7 @@ class OrchestratorAgent:
         on_tool_result: OnToolResult,
         on_orchestrator_event: OnOrchestratorEvent,
         source_root: str | None = None,
+        prd_content: str | None = None,
     ) -> dict:
         logger.info("sub_agent: starting task '%s' (%s)", task_title, task_id)
 
@@ -847,6 +873,7 @@ class OrchestratorAgent:
                 task_instruction, output_dir, idea.name,
                 prior_failures=prior_failures,
                 source_root=source_root,
+                prd_content=prd_content,
             )
 
             try:
