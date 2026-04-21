@@ -1011,7 +1011,19 @@ async def send_phase3_message(
         _session_user_queues[session.id].put_nowait(msg.content)
         return {"id": msg.id, "role": msg.role, "content": msg.content, "created_at": msg.created_at.isoformat()}
 
-    if session.status in ("RUNNING", "PLANNING", "WAITING"):
+    # WAITING with no live queue means the server restarted (or the background task crashed)
+    # while the orchestrator was paused. Recover by treating the message as a follow-up that
+    # restarts the orchestrator — same path as sending a message to a completed session.
+    if session.status == "WAITING" and session.id not in _session_user_queues:
+        logger.warning(
+            "phase3: session %s is WAITING but has no live queue — stale state from restart/crash, recovering",
+            session.id,
+        )
+        session.status = "DONE"
+        await db.commit()
+        # Fall through to the normal follow-up / iteration path below
+
+    if session.status in ("RUNNING", "PLANNING"):
         raise HTTPException(status_code=409, detail="Generation already in progress")
 
     msg = Phase3Message(session_id=session.id, role="user", content=body.content.strip())

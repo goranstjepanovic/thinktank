@@ -22,7 +22,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 from app.api.router import api_router
 from app.api.ws import router as ws_router
 from app.config import settings
-from app.db.engine import init_db
+from app.db.engine import init_db, AsyncSessionLocal
 from app.inference.drivers.llamacpp_driver import LlamaCppDriver
 from app.inference.drivers.ollama_driver import OllamaDriver
 from app.inference.drivers.openvino_driver import OpenVinoDriver
@@ -38,6 +38,20 @@ async def lifespan(app: FastAPI):
 
     # Init DB tables
     await init_db()
+
+    # Reset any sessions that were left in an active state from a previous run.
+    # Background tasks are not preserved across restarts, so PLANNING/RUNNING/WAITING
+    # sessions have dead background tasks and must be reset to DONE so users can interact.
+    from sqlalchemy import update
+    from app.db.models import Phase3Session
+    async with AsyncSessionLocal() as _db:
+        await _db.execute(
+            update(Phase3Session)
+            .where(Phase3Session.status.in_(["PLANNING", "RUNNING", "WAITING"]))
+            .values(status="DONE")
+        )
+        await _db.commit()
+    logging.getLogger(__name__).info("startup: reset stale PLANNING/RUNNING/WAITING sessions to DONE")
 
     # Load model registry
     registry = ModelRegistry(settings.models_yaml_path)
