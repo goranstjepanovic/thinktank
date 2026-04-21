@@ -406,6 +406,7 @@ class InferenceClient:
             temperature=temperature,
             max_tokens=max_tokens,
             num_ctx=stage_cfg.num_ctx,
+            timeout_seconds=stage_cfg.timeout_seconds,
         )
 
         response: InferenceResponse | None = None
@@ -612,6 +613,7 @@ class InferenceClient:
                 max_tokens=stage_cfg.max_tokens,
                 num_ctx=stage_cfg.num_ctx,
                 tools=available_tools,
+                timeout_seconds=stage_cfg.timeout_seconds,
             )
 
             response: InferenceResponse | None = None

@@ -448,6 +448,7 @@ class OrchestratorAgent:
         _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
         _verification_attempts = 0    # counts how many verification rounds have run
         _empty_task_rounds = 0        # consecutive rounds with done=false but no tasks produced
+        _consecutive_failures = 0     # consecutive rounds that raised an exception
         _prd_sections = _extract_prd_sections(prd_content)
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
@@ -509,11 +510,25 @@ class OrchestratorAgent:
                 )
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)
+                _consecutive_failures += 1
+                # Clear the thinking spinner so the UI doesn't get stuck
+                await on_orchestrator_event("orchestrator_message", {
+                    "content": f"⚠ Orchestrator round failed: {e}. Retrying…"
+                })
+                if _consecutive_failures <= 2:
+                    logger.warning("orchestrator: transient failure #%d — retrying round", _consecutive_failures)
+                    continue
+                logger.error("orchestrator: %d consecutive failures — stopping", _consecutive_failures)
                 break
+            else:
+                _consecutive_failures = 0  # reset on success
 
             if not isinstance(orch_result, dict):
                 logger.warning("orchestrator: non-dict result in round %d", round_idx + 1)
-                break
+                await on_orchestrator_event("orchestrator_message", {
+                    "content": "⚠ Orchestrator returned an unexpected response — retrying."
+                })
+                continue
 
             user_message = orch_result.get("user_message")
             done = bool(orch_result.get("done", False))

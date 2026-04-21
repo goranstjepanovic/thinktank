@@ -36,6 +36,7 @@ class InferenceRequest:
     num_ctx: int = 8192          # Ollama context window; default 8k (Ollama's own default is 2048)
     tools: list[ToolDefinition] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: int | None = None  # overrides backend default when set
 
 
 @dataclass

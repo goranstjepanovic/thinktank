@@ -41,9 +41,10 @@ class OllamaDriver(InferenceBackend):
         if request.extra:
             payload.update(request.extra)
 
+        effective_timeout = request.timeout_seconds if request.timeout_seconds is not None else self._timeout
         start = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=effective_timeout) as client:
                 resp = await client.post(f"{self._base_url}/api/chat", json=payload)
                 if not resp.is_success:
                     body = resp.text[:500]
@@ -52,7 +53,7 @@ class OllamaDriver(InferenceBackend):
                     )
                 response = resp
         except httpx.TimeoutException as e:
-            raise InferenceBackendError(f"Ollama request timed out after {self._timeout}s (model={request.model})") from e
+            raise InferenceBackendError(f"Ollama request timed out after {effective_timeout}s (model={request.model})") from e
         except httpx.HTTPError as e:
             detail = str(e) or type(e).__name__
             raise InferenceBackendError(f"Ollama request failed: {detail} (model={request.model})") from e
@@ -138,8 +139,9 @@ class OllamaDriver(InferenceBackend):
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
 
+        effective_timeout = request.timeout_seconds if request.timeout_seconds is not None else self._timeout
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=effective_timeout) as client:
                 async with client.stream("POST", f"{self._base_url}/api/chat", json=payload) as resp:
                     if not resp.is_success:
                         body = await resp.aread()
@@ -159,7 +161,7 @@ class OllamaDriver(InferenceBackend):
                         if data.get("done"):
                             break
         except httpx.TimeoutException as e:
-            raise InferenceBackendError(f"Ollama streaming timed out after {self._timeout}s (model={request.model})") from e
+            raise InferenceBackendError(f"Ollama streaming timed out after {effective_timeout}s (model={request.model})") from e
         except httpx.HTTPError as e:
             detail = str(e) or type(e).__name__
             raise InferenceBackendError(f"Ollama streaming failed: {detail} (model={request.model})") from e

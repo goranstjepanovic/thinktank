@@ -14,6 +14,7 @@ class StageConfig:
     num_ctx: int = 8192
     supports_tools: bool = False
     fallback_models: list[str] = field(default_factory=list)
+    timeout_seconds: int | None = None  # overrides backend default when set
 
 
 @dataclass
@@ -56,6 +57,7 @@ class ModelRegistry:
                 num_ctx=cfg.get("num_ctx", self._defaults.get("num_ctx", 8192)),
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
                 fallback_models=list(cfg.get("fallback_models") or []),
+                timeout_seconds=cfg.get("timeout_seconds"),
             )
 
         res = data.get("resources", {})
