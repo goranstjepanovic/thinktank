@@ -71,12 +71,19 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "When you need the user to make a decision before you can proceed:\n"
         '{"analysis": "...", "next_tasks": [], "done": false, '
         '"user_message": "the specific question or decision you need from the user"}\n\n'
+        "## Implementation order — logic before UI\n\n"
+        "If the PRD contains a `Logic Specification` section, you MUST implement it before any UI.\n"
+        "The first task batch must produce logic-only files: pure functions or classes with no DOM, "
+        "no framework imports, no rendering. These files take state as input and return new state.\n"
+        "Only after the logic layer is complete may you assign tasks that touch UI, components, or rendering.\n"
+        "A task that mixes logic and UI in the same file is a bug — split it.\n\n"
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
-        "- PRD-grounded: explicitly quote or reference the specific PRD requirements this task implements. "
-        "State the expected behavior, game rules, UI elements, or algorithms as described in the PRD — "
-        "not a generic version of them. The sub-agent will also receive the full PRD, but your instruction "
-        "must make clear which section applies and what 'done' looks like for this task.\n"
+        "- PRD-grounded: quote the exact rules, conditions, or state definitions from the PRD's "
+        "`Logic Specification` section that this task implements. Do not paraphrase — copy the "
+        "if/when→then rules verbatim so the sub-agent cannot substitute a simpler version.\n"
+        "- Logic-first for logic tasks: instruct the sub-agent to implement logic as pure functions "
+        "with no UI imports. State must be plain data structures. No DOM, no event listeners.\n"
         "- Fully self-contained: list every file by path with its purpose\n"
         "- Tech-stack specific: name libraries, exact versions, and patterns to use\n"
         "- Context-aware: tell the sub-agent which existing files to read for context first\n"
@@ -258,38 +265,52 @@ def _orchestrator_user_prompt(
                     # Indent detail lines so they're clearly subordinate
                     indented = "\n".join(f"   > {dl}" for dl in details.splitlines()[:6])
                     line += f"\n{indented}"
-                line += f"\n   → Your classification: **IMPLEMENTED / PARTIAL / MISSING**"
+                line += (
+                    f"\n   → Default: **MISSING**. Call `inspect_files` on the file(s) that implement this. "
+                    f"Upgrade to PARTIAL only if you see partial logic; upgrade to IMPLEMENTED only if you "
+                    f"can quote a specific function or code block that fully satisfies this requirement."
+                )
                 section_checklist_lines.append(line)
             section_block = (
-                "\n\nFor EACH section below, call `inspect_files` on the files that implement it, "
-                "then classify it as IMPLEMENTED (fully working code, no stubs), "
-                "PARTIAL (some logic exists but incomplete/stubbed), or MISSING (not built at all):\n\n"
+                "\n\nEach PRD section below starts as MISSING. You MUST call `inspect_files` "
+                "on the relevant file(s) before you may classify a section as PARTIAL or IMPLEMENTED. "
+                "Classification rules:\n"
+                "- MISSING: no relevant file exists, or inspect_files returns has_stubs=true with no real logic\n"
+                "- PARTIAL: some logic exists but key parts are stubbed, hardcoded, or incomplete\n"
+                "- IMPLEMENTED: inspect_files shows complete, working code with no stubs — "
+                "you must be able to cite the specific function or lines that prove it\n\n"
+                "Do NOT classify based on filenames or assumptions. Read the actual code.\n\n"
                 + "\n\n".join(section_checklist_lines)
             )
         else:
-            section_block = "\n\nVerify every section of the PRD is covered with working (non-stub) code."
+            section_block = (
+                "\n\nVerify every PRD section is covered with working (non-stub) code. "
+                "Each section starts as MISSING — call `inspect_files` on the relevant files "
+                "and only upgrade to IMPLEMENTED after reading actual code that proves it."
+            )
         verify_block = (
             "\n\n## PRD Verification Required\n\n"
-            "You indicated the implementation is complete. Before setting `done=true` again "
-            "you MUST complete ALL of the steps below — skipping any step is not allowed:\n\n"
+            "You indicated the implementation is complete. Treat this as a skeptical audit — "
+            "assume nothing is done until you have read the actual code that proves it.\n\n"
+            "Complete ALL steps below in order. Skipping any step is not allowed.\n\n"
             "1. Call `list_files` to get the full current project file tree\n"
-            "2. Call `inspect_files` on the key implementation files for EACH PRD section — "
-            "the inspector will flag stub patterns (empty bodies, TODO comments, placeholder returns). "
-            "Treat any file with `has_stubs: true` as NOT implemented.\n"
+            "2. For EACH PRD section, call `inspect_files` on the file(s) that should implement it. "
+            "Any file with `has_stubs: true` is NOT implemented — stubs do not count.\n"
             f"3. {section_block.strip()}\n\n"
-            "4. Check for structural problems:\n"
+            "4. In your `analysis` field, for every PRD section write:\n"
+            "   `SECTION NAME: STATUS — evidence: <quote the specific function name or code you saw>`\n"
+            "   A classification with no quoted evidence is rejected.\n\n"
+            "5. Check for structural problems:\n"
             "   - Only ONE build tool / package.json tree at the project root\n"
             "   - HTML entry points match the actual bundler output\n"
             "   - package.json scripts use paths relative to their own directory\n"
             "   - All packages are version-compatible\n"
-            "5. Spawn a build verification task: run the project build command "
+            "6. Spawn a build verification task: run the project build command "
             "(e.g. `npm run build`, `pip install -e .`, `cargo build`) and confirm it exits 0.\n"
             "   If it fails, add repair tasks and set `done=false`.\n"
-            "6. For every section classified PARTIAL or MISSING — you MUST add tasks to complete it "
-            "and set `done=false`. Only sections classified IMPLEMENTED count as done.\n"
-            "7. Only set `done=true` when ALL sections are IMPLEMENTED and the build succeeds.\n\n"
-            "Your `analysis` field MUST list every PRD section with its IMPLEMENTED / PARTIAL / MISSING "
-            "classification and a one-line justification. A generic 'looks complete' is not acceptable."
+            "7. For every section classified PARTIAL or MISSING — add tasks to complete it "
+            "and set `done=false`. Only sections with quoted evidence count as IMPLEMENTED.\n"
+            "8. Only set `done=true` when ALL sections are IMPLEMENTED with evidence and the build succeeds."
         )
 
     return (
@@ -516,14 +537,14 @@ class OrchestratorAgent:
 
             try:
                 orch_result = await self._client.call_with_tools(
-                    stage_key="phase3_orchestrator",
+                    stage_key="phase3_verification" if _verification_pending else "phase3_orchestrator",
                     messages=orch_messages,
                     session=db,
                     idea_id=idea.id,
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    max_tool_rounds=12,
+                    max_tool_rounds=30,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
@@ -600,6 +621,11 @@ class OrchestratorAgent:
                     _INCOMPLETE_SIGNALS = ("partial", "missing", "not implemented", "stub", "todo",
                                            "incomplete", "not built", "placeholder", "not done")
                     incomplete_signals_found = [s for s in _INCOMPLETE_SIGNALS if s in analysis_text]
+                    # Also reject if the analysis has no evidence quotes at all — the model
+                    # classified sections without actually reading the code.
+                    has_evidence = "evidence:" in analysis_text
+                    if not has_evidence and _prd_sections:
+                        incomplete_signals_found = incomplete_signals_found or ["no evidence quotes found"]
                     if incomplete_signals_found and _verification_attempts <= 2:
                         logger.warning(
                             "orchestrator: verification round %d said done=true but analysis contains "
@@ -610,11 +636,12 @@ class OrchestratorAgent:
                             "id": f"_verify_pushback_{round_idx}",
                             "title": "(verification rejected — incomplete sections found)",
                             "summary": (
-                                f"Your analysis contained these signals of incomplete work: "
+                                f"Your analysis contained these problems: "
                                 f"{', '.join(incomplete_signals_found)}. "
-                                "Sections classified as PARTIAL or MISSING are NOT done. "
-                                "You MUST add tasks to complete them and set done=false until all "
-                                "sections are IMPLEMENTED with working (non-stub) code."
+                                "You MUST call `inspect_files` on the actual implementation files "
+                                "and quote specific function names or code as evidence for each section. "
+                                "Sections with no quoted evidence are treated as MISSING. "
+                                "Add tasks for every PARTIAL or MISSING section and set done=false."
                             ),
                             "success": False,
                             "files_written": [],

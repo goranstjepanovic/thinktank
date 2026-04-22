@@ -172,6 +172,18 @@ class Orchestrator:
         self._active.pop(idea_id, None)
         await event_bus.publish(ev.idea_abandoned(idea_id))
 
+    async def cancel_remaining_branches(self, idea_id: str) -> None:
+        """Cancel any still-running branches without changing the idea status.
+
+        Called when the user selects a branch while the idea is still RUNNING
+        or PAUSED — we stop the orphaned branches but leave status management
+        to the selection endpoint.
+        """
+        for branch_id, (task, ctx) in list(self._active.get(idea_id, {}).items()):
+            ctx.cancel_event.set()
+            task.cancel()
+        self._active.pop(idea_id, None)
+
     async def _spawn_branch(self, idea_id: str, parent_branch_id: str, suggested_direction: str | None) -> None:
         async with AsyncSessionLocal() as session:
             result = await session.execute(

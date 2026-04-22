@@ -15,6 +15,7 @@ class StageConfig:
     supports_tools: bool = False
     fallback_models: list[str] = field(default_factory=list)
     timeout_seconds: int | None = None  # overrides backend default when set
+    extra: dict = field(default_factory=dict)  # passed verbatim to the backend payload
 
 
 @dataclass
@@ -28,7 +29,6 @@ class BackendConfig:
 class ResourceConfig:
     max_concurrent_branches: int
     initial_branches_per_idea: int
-    vram_budget_gb: float
 
 
 class ModelRegistry:
@@ -47,6 +47,8 @@ class ModelRegistry:
                 extra={k: v for k, v in cfg.items() if k not in ("base_url", "timeout_seconds")},
             )
 
+        _KNOWN = {"model", "backend", "temperature", "max_tokens", "format",
+                  "num_ctx", "supports_tools", "fallback_models", "timeout_seconds"}
         for stage_key, cfg in data.get("stages", {}).items():
             self._stages[stage_key] = StageConfig(
                 model=cfg["model"],
@@ -58,13 +60,13 @@ class ModelRegistry:
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
                 fallback_models=list(cfg.get("fallback_models") or []),
                 timeout_seconds=cfg.get("timeout_seconds"),
+                extra={k: v for k, v in cfg.items() if k not in _KNOWN},
             )
 
         res = data.get("resources", {})
         self.resources = ResourceConfig(
             max_concurrent_branches=res.get("max_concurrent_branches", 4),
             initial_branches_per_idea=res.get("initial_branches_per_idea", 2),
-            vram_budget_gb=res.get("vram_budget_gb", 20.0),
         )
 
     def get_stage(self, stage_key: str) -> StageConfig:

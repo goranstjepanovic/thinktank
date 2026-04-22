@@ -41,17 +41,17 @@ async def lifespan(app: FastAPI):
 
     # Reset any sessions that were left in an active state from a previous run.
     # Background tasks are not preserved across restarts, so PLANNING/RUNNING/WAITING
-    # sessions have dead background tasks and must be reset to DONE so users can interact.
+    # sessions have dead background tasks and must be reset to FAILED so users can restart.
     from sqlalchemy import update
     from app.db.models import Phase3Session
     async with AsyncSessionLocal() as _db:
         await _db.execute(
             update(Phase3Session)
             .where(Phase3Session.status.in_(["PLANNING", "RUNNING", "WAITING"]))
-            .values(status="DONE")
+            .values(status="FAILED")
         )
         await _db.commit()
-    logging.getLogger(__name__).info("startup: reset stale PLANNING/RUNNING/WAITING sessions to DONE")
+    logging.getLogger(__name__).info("startup: reset stale PLANNING/RUNNING/WAITING sessions to FAILED")
 
     # Load model registry
     registry = ModelRegistry(settings.models_yaml_path)

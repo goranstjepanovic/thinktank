@@ -18,11 +18,14 @@ except Exception:
 
 def _strip_markdown_json(text: str) -> str:
     """
-    Strip markdown code fences from a model response so the content can be
-    parsed as JSON.  Handles ```json ... ```, ``` ... ```, and leading/trailing
-    whitespace.  Falls back to the original string if no fence is found.
+    Strip <think> blocks and markdown code fences from a model response so
+    the content can be parsed as JSON.  Handles ```json ... ```, ``` ... ```,
+    and leading/trailing whitespace.  Falls back to the original string if no
+    fence is found.
     """
     stripped = text.strip()
+    # Strip <think>...</think> blocks produced by reasoning models (e.g. qwen3.5)
+    stripped = re.sub(r"<think>.*?</think>", "", stripped, flags=re.DOTALL).strip()
     # If the response already looks like JSON, do not scan for code fences.
     # JSON string values may legitimately mention ``` markers.
     if stripped.startswith("{") or stripped.startswith("["):
@@ -407,6 +410,7 @@ class InferenceClient:
             max_tokens=max_tokens,
             num_ctx=stage_cfg.num_ctx,
             timeout_seconds=stage_cfg.timeout_seconds,
+            extra=stage_cfg.extra,
         )
 
         response: InferenceResponse | None = None
@@ -472,6 +476,7 @@ class InferenceClient:
             temperature=stage_cfg.temperature,
             max_tokens=stage_cfg.max_tokens,
             num_ctx=stage_cfg.num_ctx,
+            extra=stage_cfg.extra,
         )
 
         logger.info("stream_text  stage=%-20s model=%s", stage_key, stage_cfg.model)

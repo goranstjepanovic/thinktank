@@ -60,6 +60,20 @@ _SECTIONS: list[tuple[str, str, tuple[str, ...]]] = [
         ("resolution_summary", "architecture_doc"),
     ),
     (
+        "Logic Specification",
+        "The complete, unambiguous definition of the system's core logic — written so that an "
+        "implementer can write it as pure functions with no UI knowledge. Include:\n"
+        "- Entities: every object the system tracks, with its exact state fields and types\n"
+        "- Rules: every rule as an explicit condition → outcome statement "
+        "(e.g. 'if switch A is ON and switch B is OFF then bulb X is ON'). No vague language.\n"
+        "- Evaluation: the exact sequence in which rules are applied each tick/event\n"
+        "- Win / terminal conditions: the precise predicate that ends or completes a session\n"
+        "- Edge cases: what happens on invalid input, ties, boundary values\n"
+        "Do NOT mention buttons, DOM, CSS, rendering, or any UI concept in this section. "
+        "Logic must be expressible as pure functions that take state and return new state.",
+        ("resolution_summary", "component_specs"),
+    ),
+    (
         "Component Specifications",
         "Each component or service in detail: its single responsibility, "
         "inputs and outputs, public interfaces or API contracts, and internal dependencies.",

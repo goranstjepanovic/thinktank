@@ -106,9 +106,11 @@ async def select_solution(
     body: SelectionBody = SelectionBody(),
     session: AsyncSession = Depends(get_session),
 ):
+    from app.pipeline.orchestrator import orchestrator
+
     idea = await _get_or_404(idea_id, session)
-    if idea.status not in ("CONVERGED", "SELECTED"):
-        raise HTTPException(status_code=409, detail=f"Idea is {idea.status}; can only select from CONVERGED ideas")
+    if idea.status not in ("CONVERGED", "SELECTED", "RUNNING", "PAUSED"):
+        raise HTTPException(status_code=409, detail=f"Idea is {idea.status}; cannot select a branch")
 
     # Verify the branch exists, belongs to this idea, and is VIABLE
     result = await session.execute(
@@ -119,6 +121,10 @@ async def select_solution(
         raise HTTPException(status_code=404, detail="Branch not found")
     if branch.status != "VIABLE":
         raise HTTPException(status_code=409, detail=f"Branch is {branch.status}, not VIABLE")
+
+    # Cancel any still-running branches — user has made their choice.
+    if idea.status in ("RUNNING", "PAUSED"):
+        await orchestrator.cancel_remaining_branches(idea_id)
 
     # If switching to a different branch, delete stale Phase 2 and Phase 3 sessions.
     if idea.selected_branch_id and idea.selected_branch_id != branch_id:

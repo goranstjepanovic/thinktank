@@ -47,6 +47,7 @@ function BranchTreeNode({
   allBranches,
   isConverged,
   isIdeaSelected,
+  isActive,
   depth = 0,
   setSelectingBranchId,
   setSelectionNotes,
@@ -62,6 +63,7 @@ function BranchTreeNode({
   allBranches: BranchSummary[];
   isConverged: boolean;
   isIdeaSelected: boolean;
+  isActive: boolean;
   depth?: number;
   setSelectingBranchId: (id: string | null) => void;
   setSelectionNotes: (notes: string) => void;
@@ -70,7 +72,7 @@ function BranchTreeNode({
   const navigate = useNavigate();
   const isSelected = node.id === selectedBranchId;
   const isSelectingThis = selectingBranchId === node.id;
-  const canSelect = (isConverged || isIdeaSelected) && node.status === 'VIABLE' && !isSelected;
+  const canSelect = (isConverged || isIdeaSelected || isActive) && node.status === 'VIABLE' && !isSelected;
   const phase2WillReset = canSelect && phase2BranchId != null && phase2BranchId !== node.id;
   const phase2BranchIndex = phase2WillReset
     ? allBranches.find((x) => x.id === phase2BranchId)?.branch_index
@@ -181,6 +183,19 @@ function BranchTreeNode({
                   <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
                     Confirm: Select Branch {node.branch_index}
                   </p>
+                  {isActive && (
+                    <div style={{
+                      background: '#1a1a2a', border: '1px solid #4a4a7a',
+                      borderRadius: 4, padding: '8px 10px', marginBottom: 10,
+                    }}>
+                      <p style={{ fontSize: 12, color: '#a0a0f0', fontWeight: 600, marginBottom: 2 }}>
+                        Other branches are still running
+                      </p>
+                      <p style={{ fontSize: 12, color: 'var(--text2)' }}>
+                        Selecting now will cancel all remaining branches.
+                      </p>
+                    </div>
+                  )}
                   {phase2WillReset && (
                     <div style={{
                       background: '#2a1500', border: '1px solid #7a4500',
@@ -252,6 +267,7 @@ function BranchTreeNode({
           allBranches={allBranches}
           isConverged={isConverged}
           isIdeaSelected={isIdeaSelected}
+          isActive={isActive}
           depth={depth + 1}
           setSelectingBranchId={setSelectingBranchId}
           setSelectionNotes={setSelectionNotes}
@@ -493,13 +509,17 @@ export function IdeaDetail() {
       {tab === 'branches' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* Selection prompt banner */}
-          {isConverged && viableBranches.length > 0 && (
+          {(isConverged || isActive) && viableBranches.length > 0 && (
             <div className="card" style={{ background: '#1a2a1a', borderColor: 'var(--green)', padding: '12px 16px' }}>
               <p style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600, marginBottom: 4 }}>
-                Analysis complete — {viableBranches.length} viable solution{viableBranches.length > 1 ? 's' : ''} found
+                {isConverged
+                  ? `Analysis complete — ${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} found`
+                  : `${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} ready — other branches still running`}
               </p>
               <p style={{ fontSize: 12, color: 'var(--text2)' }}>
-                Review the viable branches below and select one to proceed with.
+                {isConverged
+                  ? 'Review the viable branches below and select one to proceed with.'
+                  : 'You can select now to proceed — remaining branches will be cancelled.'}
               </p>
             </div>
           )}
@@ -541,6 +561,7 @@ export function IdeaDetail() {
               allBranches={idea.branches}
               isConverged={isConverged}
               isIdeaSelected={isSelected}
+              isActive={isActive}
               setSelectingBranchId={setSelectingBranchId}
               setSelectionNotes={setSelectionNotes}
               doSelect={doSelect}

@@ -1240,6 +1240,15 @@ export function Phase3Implementation() {
         const event: PipelineEvent = JSON.parse(ev.data);
         if (!event.event_type.startsWith('phase3.')) return;
 
+        // If we receive any phase3 activity while the session shows as failed/done,
+        // the orchestrator resumed after a restart — re-fetch to get the live status.
+        setSession(current => {
+          if (current && current.status === 'FAILED') {
+            api.getPhase3(id!).then(setSession).catch(() => {});
+          }
+          return current;
+        });
+
         switch (event.event_type) {
           case 'phase3.started':
           case 'phase3.running':
