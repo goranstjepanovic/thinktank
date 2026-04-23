@@ -1,4 +1,4 @@
-export const BASE = 'http://localhost:8000/api/v1';
+export const BASE = 'http://localhost:7700/api/v1';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

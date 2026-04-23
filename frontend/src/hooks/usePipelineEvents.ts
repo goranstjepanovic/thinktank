@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { PipelineEvent } from '../types';
 import { useIdeaStore } from '../store/ideaStore';
 
-const WS_BASE = 'ws://localhost:8000';
+const WS_BASE = 'ws://localhost:7700';
 
 export function usePipelineEvents(ideaId: string | undefined) {
   const applyEvent = useIdeaStore((s) => s.applyEvent);

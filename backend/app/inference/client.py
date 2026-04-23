@@ -762,7 +762,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "file_edit":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"success": False, "error": "file_edit tool not available in this context"}
                         else:
                             from app.tools.file_editor import edit_file
@@ -814,7 +814,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "delete_path":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"success": False, "error": "delete_path tool not available in this context"}
                         else:
                             from app.tools.file_editor import delete_path
@@ -844,7 +844,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "run_shell":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"success": False, "error": "run_shell tool not available in this context"}
                         else:
                             from app.tools.shell_runner import run_shell_command
@@ -882,7 +882,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "run_shell_background":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"error": "run_shell_background not available in this context"}
                         else:
                             from app.tools.shell_runner import background_process_manager
@@ -906,7 +906,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "get_shell_output":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"error": "get_shell_output not available in this context"}
                         else:
                             from app.tools.shell_runner import background_process_manager
@@ -918,7 +918,7 @@ class InferenceClient:
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "stop_shell_process":
-                        if not allowed_file_dir:
+                        if not allowed_file_dir or explore_only:
                             result_dict = {"error": "stop_shell_process not available in this context"}
                         else:
                             from app.tools.shell_runner import background_process_manager

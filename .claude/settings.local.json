@@ -7,8 +7,8 @@
       "Bash(python -m venv .venv)",
       "Bash(.venv/Scripts/pip install *)",
       "Bash(.venv/Scripts/python -c \"from app.main import app; print\\('Import OK'\\)\")",
-      "Bash(.venv/Scripts/uvicorn app.main:app --host 127.0.0.1 --port 8000)",
-      "Bash(curl -s http://127.0.0.1:8000/api/v1/health)",
+      "Bash(.venv/Scripts/uvicorn app.main:app --host 127.0.0.1 --port 7700)",
+      "Bash(curl -s http://127.0.0.1:7700/api/v1/health)",
       "Bash(taskkill /F /IM uvicorn.exe)",
       "Bash(curl *)",
       "Bash(npx tsc *)"

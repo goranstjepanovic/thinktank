@@ -294,7 +294,9 @@ def _orchestrator_user_prompt(
             "assume nothing is done until you have read the actual code that proves it.\n\n"
             "Complete ALL steps below in order. Skipping any step is not allowed.\n\n"
             "1. Call `list_files` to get the full current project file tree\n"
-            "2. For EACH PRD section, call `inspect_files` on the file(s) that should implement it. "
+            "2. Identify which files implement each PRD section, then batch them: pass up to 10 paths "
+            "per `inspect_files` call so you cover multiple sections in one round. "
+            "Do NOT call `inspect_files` once per section — group sections whose files overlap. "
             "Any file with `has_stubs: true` is NOT implemented — stubs do not count.\n"
             f"3. {section_block.strip()}\n\n"
             "4. In your `analysis` field, for every PRD section write:\n"
@@ -544,7 +546,10 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    max_tool_rounds=30,
+                    # Verification must inspect every implementation file to quote evidence;
+                    # large projects can have 100+ files so let the timeout be the safety
+                    # net rather than a round cap (phase3_verification has timeout_seconds=600).
+                    max_tool_rounds=None if _verification_pending else 50,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,

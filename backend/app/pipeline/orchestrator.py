@@ -161,7 +161,7 @@ class Orchestrator:
     async def abandon_idea(self, idea_id: str) -> None:
         async with AsyncSessionLocal() as session:
             idea = await self._get_idea(session, idea_id)
-            if idea:
+            if idea and idea.status not in ("SELECTED", "CONVERGED", "ABANDONED"):
                 idea.status = "ABANDONED"
                 await session.commit()
 
