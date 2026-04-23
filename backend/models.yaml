@@ -151,7 +151,7 @@ stages:
     format: "json"
     num_ctx: 32768
     supports_tools: true
-    timeout_seconds: 300
+    timeout_seconds: 900
     think: false
 
   phase3_verification:  # PRD compliance verification pass — needs deeper reasoning
@@ -162,7 +162,7 @@ stages:
     format: "json"
     num_ctx: 16384
     supports_tools: true
-    timeout_seconds: 600
+    timeout_seconds: 900
     think: false
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
