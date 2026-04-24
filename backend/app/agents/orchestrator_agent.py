@@ -331,7 +331,15 @@ def _orchestrator_user_prompt(
     feedback_block = ""
     if pending_user_messages:
         msgs = "\n".join(f"- {m}" for m in pending_user_messages)
-        feedback_block = f"\n\n## User feedback (received while last batch was running)\n\n{msgs}\n\nIncorporate this feedback into your next task decisions."
+        feedback_block = (
+            f"\n\n## ⚠ USER INSTRUCTION — HIGHEST PRIORITY\n\n"
+            f"{msgs}\n\n"
+            "This instruction OVERRIDES your own assessment. "
+            "Your next tasks MUST directly address what the user asked for. "
+            "Do NOT continue with your own plan or fix other issues first — "
+            "address the user's request in this batch, even if you think something else is more important. "
+            "Only after the user's request is fulfilled may you resume other work."
+        )
 
     structure_block = ""
     if completed_tasks:
