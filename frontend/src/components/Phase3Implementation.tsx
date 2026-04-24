@@ -25,7 +25,8 @@ import {
 } from 'react-icons/si';
 import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, BASE } from '../api/client';
+import { api, BASE, WS_BASE } from '../api/client';
+import { useWebSocket } from '../hooks/useWebSocket';
 import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3DirEntry, Phase3Session, PipelineEvent } from '../types';
 import { PhaseNav } from './PhaseNav';
 
@@ -62,8 +63,6 @@ function hljsLanguage(filename: string): string | undefined {
   };
   return map[ext];
 }
-
-const WS_BASE = 'ws://localhost:8000';
 
 // ---------------------------------------------------------------------------
 // Activity log entry types
@@ -998,39 +997,49 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
 // ---------------------------------------------------------------------------
 
 function useWakeLock(active: boolean) {
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; }, [active]);
+
   const lockRef = useRef<WakeLockSentinel | null>(null);
 
   const acquire = useCallback(async () => {
-    if (!('wakeLock' in navigator)) return;
+    if (!('wakeLock' in navigator) || !activeRef.current) return;
+    // Already holding a live lock — nothing to do
+    if (lockRef.current && !lockRef.current.released) return;
     try {
-      lockRef.current = await navigator.wakeLock.request('screen');
+      const sentinel = await navigator.wakeLock.request('screen');
+      lockRef.current = sentinel;
+      // Re-acquire whenever the browser forcibly releases the lock (tab hidden,
+      // device idle policy, etc.) — without this the screen sleeps after the
+      // first release even though we still want it on.
+      sentinel.addEventListener('release', () => {
+        lockRef.current = null;
+        if (activeRef.current) setTimeout(acquire, 500);
+      }, { once: true });
     } catch { /* permission denied or unsupported — silently ignore */ }
-  }, []);
-
-  const release = useCallback(async () => {
-    if (lockRef.current) {
-      await lockRef.current.release().catch(() => {});
-      lockRef.current = null;
-    }
-  }, []);
+  }, []); // stable — only accesses refs internally
 
   useEffect(() => {
     if (active) {
       acquire();
     } else {
-      release();
+      lockRef.current?.release().catch(() => {});
+      lockRef.current = null;
     }
-    return () => { release(); };
-  }, [active, acquire, release]);
+    return () => {
+      lockRef.current?.release().catch(() => {});
+      lockRef.current = null;
+    };
+  }, [active, acquire]);
 
-  // Re-acquire if the page becomes visible again (e.g. user switched tabs)
+  // Also re-acquire when the tab becomes visible again (e.g. user switched tabs)
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && active) acquire();
+      if (document.visibilityState === 'visible') acquire();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-  }, [active, acquire]);
+  }, [acquire]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,215 +1239,208 @@ export function Phase3Implementation() {
       .catch(() => {});
   }, [id]);
 
-  // WebSocket — real-time activity
-  useEffect(() => {
-    if (!id) return;
-    const ws = new WebSocket(`${WS_BASE}/ws/ideas/${id}`);
+  // WebSocket — real-time activity with auto-reconnect
+  useWebSocket(id ? `${WS_BASE}/ws/ideas/${id}` : null, (data: string) => {
+    try {
+      const event: PipelineEvent = JSON.parse(data);
+      if (!event.event_type.startsWith('phase3.')) return;
 
-    ws.onmessage = (ev) => {
-      try {
-        const event: PipelineEvent = JSON.parse(ev.data);
-        if (!event.event_type.startsWith('phase3.')) return;
-
-        // If we receive any phase3 activity while the session shows as failed/done,
-        // the orchestrator resumed after a restart — re-fetch to get the live status.
-        setSession(current => {
-          if (current && current.status === 'FAILED') {
-            api.getPhase3(id!).then(setSession).catch(() => {});
-          }
-          return current;
-        });
-
-        switch (event.event_type) {
-          case 'phase3.started':
-          case 'phase3.running':
-            api.getPhase3(id!).then(setSession).catch(() => {});
-            break;
-
-          case 'phase3.thinking':
-            addEntry({ kind: 'thinking', id: nextId() });
-            break;
-
-          case 'phase3.tool_use':
-            addEntry({
-              kind: 'tool_use', id: nextId(),
-              tool: event.payload.tool as string,
-              detail: event.payload.detail as string,
-            });
-            break;
-
-          case 'phase3.verifying':
-            addEntry({ kind: 'verifying', id: nextId(), fileCount: event.payload.file_count as number });
-            break;
-
-          case 'phase3.plan_ready':
-            addEntry({
-              kind: 'plan_ready', id: nextId(),
-              fileCount: event.payload.artifact_count as number,
-              message: (event.payload.message as string) || '',
-            });
-            break;
-
-          case 'phase3.pass_started':
-            addEntry({
-              kind: 'writing', id: nextId(),
-              filePath: event.payload.file_path as string,
-              fileIndex: event.payload.file_index as number,
-              totalFiles: event.payload.total_files as number,
-            });
-            break;
-
-          case 'phase3.file_written':
-            addEntry({
-              kind: 'file', id: nextId(),
-              path: event.payload.path as string,
-              sizeBytes: event.payload.size_bytes as number,
-              success: true,
-            });
-            // Debounce file list refresh — at most once every 4 s during active generation
-            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
-            fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
-            break;
-
-          case 'phase3.file_failed':
-            addEntry({
-              kind: 'file_failed', id: nextId(),
-              path: event.payload.path as string,
-              detail: event.payload.detail as string,
-            });
-            break;
-
-          case 'phase3.command_executed':
-            addEntry({
-              kind: 'shell', id: nextId(),
-              command: event.payload.command as string,
-              exitCode: event.payload.exit_code as number,
-              stdout: event.payload.stdout as string,
-              stderr: event.payload.stderr as string,
-              timedOut: event.payload.timed_out as boolean,
-              durationMs: event.payload.duration_ms as number,
-            });
-            break;
-
-          case 'phase3.shell_stop':
-            addEntry({
-              kind: 'shell_stop', id: nextId(),
-              handle: event.payload.handle as string,
-              pid: event.payload.pid as number | null,
-              stopped: event.payload.stopped as boolean,
-              message: event.payload.message as string,
-            });
-            break;
-
-          case 'phase3.error':
-            setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
-            addEntry({ kind: 'error', id: nextId(), message: event.payload.error as string });
-            api.getPhase3(id!).then(setSession).catch(() => {});
-            break;
-
-          case 'phase3.complete':
-            setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
-            api.getPhase3(id!).then((s) => {
-              setSession(s);
-              if (s.summary && !event.payload.is_iteration) {
-                addEntry({ kind: 'complete', id: nextId(), summary: s.summary, outputDir: s.output_dir ?? '' });
-              }
-              // Auto-switch to PRD/files tab when prd_only finishes
-              if (s.mode === 'prd_only') {
-                setMainTab('files');
-              }
-            }).catch(() => {});
-            // Final refresh of file list when generation finishes
-            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
-            setFileRefreshKey(k => k + 1);
-            break;
-
-          case 'phase3.message': {
-            const role = event.payload.role as string;
-            const content = event.payload.content as string;
-            const messageId = event.payload.message_id as string;
-            // Skip user-role echo — we add user messages optimistically in doSend
-            if (role === 'assistant') {
-              setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
-              addEntry({ kind: 'assistant_msg', id: nextId(), messageId, content });
-            }
-            break;
-          }
-
-          // ── Multi-agent events ────────────────────────────────────────────
-          case 'phase3.waiting':
-            api.getPhase3(id!).then(setSession).catch(() => {});
-            break;
-
-          case 'phase3.orchestrator_thinking':
-            addEntry({ kind: 'orchestrator_thinking', id: nextId() });
-            break;
-
-          case 'phase3.orchestrator_message':
-            addEntry({
-              kind: 'orchestrator_message', id: nextId(),
-              content: event.payload.content as string,
-            });
-            break;
-
-          case 'phase3.sub_agent_started':
-            addEntry({
-              kind: 'sub_agent_block', id: nextId(),
-              taskId: event.payload.task_id as string,
-              title: event.payload.title as string,
-              status: 'running',
-              summary: '',
-              filesWritten: [],
-              blocker: null,
-              updates: [],
-            });
-            break;
-
-          case 'phase3.sub_agent_model_fallback': {
-            const taskId = event.payload.task_id as string;
-            const model = event.payload.model as string;
-            updateSubAgentBlock(taskId, e => ({
-              ...e,
-              updates: [...e.updates, { updateType: 'model_fallback', detail: `retrying with ${model}` }],
-            }));
-            break;
-          }
-
-          case 'phase3.sub_agent_update': {
-            const taskId = event.payload.task_id as string;
-            const updateType = event.payload.update_type as string;
-            const detail = event.payload.detail as string;
-            updateSubAgentBlock(taskId, e => ({
-              ...e,
-              updates: [...e.updates, { updateType, detail }],
-            }));
-            break;
-          }
-
-          case 'phase3.sub_agent_complete': {
-            const taskId = event.payload.task_id as string;
-            const summary = event.payload.summary as string;
-            const filesWritten = (event.payload.files_written as string[]) ?? [];
-            const success = event.payload.success as boolean;
-            const blocker = event.payload.blocker as string | null;
-            updateSubAgentBlock(taskId, e => ({
-              ...e,
-              status: success && !blocker ? 'done' : 'blocked',
-              summary,
-              filesWritten,
-              blocker,
-            }));
-            // Debounce file list refresh on sub-agent completion
-            if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
-            fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
-            break;
-          }
+      // If we receive any phase3 activity while the session shows as failed/done,
+      // the orchestrator resumed after a restart — re-fetch to get the live status.
+      setSession(current => {
+        if (current && current.status === 'FAILED') {
+          api.getPhase3(id!).then(setSession).catch(() => {});
         }
-      } catch { /* ignore */ }
-    };
+        return current;
+      });
 
-    return () => ws.close();
-  }, [id]);
+      switch (event.event_type) {
+        case 'phase3.started':
+        case 'phase3.running':
+          api.getPhase3(id!).then(setSession).catch(() => {});
+          break;
+
+        case 'phase3.thinking':
+          addEntry({ kind: 'thinking', id: nextId() });
+          break;
+
+        case 'phase3.tool_use':
+          addEntry({
+            kind: 'tool_use', id: nextId(),
+            tool: event.payload.tool as string,
+            detail: event.payload.detail as string,
+          });
+          break;
+
+        case 'phase3.verifying':
+          addEntry({ kind: 'verifying', id: nextId(), fileCount: event.payload.file_count as number });
+          break;
+
+        case 'phase3.plan_ready':
+          addEntry({
+            kind: 'plan_ready', id: nextId(),
+            fileCount: event.payload.artifact_count as number,
+            message: (event.payload.message as string) || '',
+          });
+          break;
+
+        case 'phase3.pass_started':
+          addEntry({
+            kind: 'writing', id: nextId(),
+            filePath: event.payload.file_path as string,
+            fileIndex: event.payload.file_index as number,
+            totalFiles: event.payload.total_files as number,
+          });
+          break;
+
+        case 'phase3.file_written':
+          addEntry({
+            kind: 'file', id: nextId(),
+            path: event.payload.path as string,
+            sizeBytes: event.payload.size_bytes as number,
+            success: true,
+          });
+          // Debounce file list refresh — at most once every 4 s during active generation
+          if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+          fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
+          break;
+
+        case 'phase3.file_failed':
+          addEntry({
+            kind: 'file_failed', id: nextId(),
+            path: event.payload.path as string,
+            detail: event.payload.detail as string,
+          });
+          break;
+
+        case 'phase3.command_executed':
+          addEntry({
+            kind: 'shell', id: nextId(),
+            command: event.payload.command as string,
+            exitCode: event.payload.exit_code as number,
+            stdout: event.payload.stdout as string,
+            stderr: event.payload.stderr as string,
+            timedOut: event.payload.timed_out as boolean,
+            durationMs: event.payload.duration_ms as number,
+          });
+          break;
+
+        case 'phase3.shell_stop':
+          addEntry({
+            kind: 'shell_stop', id: nextId(),
+            handle: event.payload.handle as string,
+            pid: event.payload.pid as number | null,
+            stopped: event.payload.stopped as boolean,
+            message: event.payload.message as string,
+          });
+          break;
+
+        case 'phase3.error':
+          setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
+          addEntry({ kind: 'error', id: nextId(), message: event.payload.error as string });
+          api.getPhase3(id!).then(setSession).catch(() => {});
+          break;
+
+        case 'phase3.complete':
+          setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
+          api.getPhase3(id!).then((s) => {
+            setSession(s);
+            if (s.summary && !event.payload.is_iteration) {
+              addEntry({ kind: 'complete', id: nextId(), summary: s.summary, outputDir: s.output_dir ?? '' });
+            }
+            // Auto-switch to PRD/files tab when prd_only finishes
+            if (s.mode === 'prd_only') {
+              setMainTab('files');
+            }
+          }).catch(() => {});
+          // Final refresh of file list when generation finishes
+          if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+          setFileRefreshKey(k => k + 1);
+          break;
+
+        case 'phase3.message': {
+          const role = event.payload.role as string;
+          const content = event.payload.content as string;
+          const messageId = event.payload.message_id as string;
+          // Skip user-role echo — we add user messages optimistically in doSend
+          if (role === 'assistant') {
+            setLog(prev => prev.filter(e => e.kind !== 'thinking' && e.kind !== 'writing'));
+            addEntry({ kind: 'assistant_msg', id: nextId(), messageId, content });
+          }
+          break;
+        }
+
+        // ── Multi-agent events ────────────────────────────────────────────
+        case 'phase3.waiting':
+          api.getPhase3(id!).then(setSession).catch(() => {});
+          break;
+
+        case 'phase3.orchestrator_thinking':
+          addEntry({ kind: 'orchestrator_thinking', id: nextId() });
+          break;
+
+        case 'phase3.orchestrator_message':
+          addEntry({
+            kind: 'orchestrator_message', id: nextId(),
+            content: event.payload.content as string,
+          });
+          break;
+
+        case 'phase3.sub_agent_started':
+          addEntry({
+            kind: 'sub_agent_block', id: nextId(),
+            taskId: event.payload.task_id as string,
+            title: event.payload.title as string,
+            status: 'running',
+            summary: '',
+            filesWritten: [],
+            blocker: null,
+            updates: [],
+          });
+          break;
+
+        case 'phase3.sub_agent_model_fallback': {
+          const taskId = event.payload.task_id as string;
+          const model = event.payload.model as string;
+          updateSubAgentBlock(taskId, e => ({
+            ...e,
+            updates: [...e.updates, { updateType: 'model_fallback', detail: `retrying with ${model}` }],
+          }));
+          break;
+        }
+
+        case 'phase3.sub_agent_update': {
+          const taskId = event.payload.task_id as string;
+          const updateType = event.payload.update_type as string;
+          const detail = event.payload.detail as string;
+          updateSubAgentBlock(taskId, e => ({
+            ...e,
+            updates: [...e.updates, { updateType, detail }],
+          }));
+          break;
+        }
+
+        case 'phase3.sub_agent_complete': {
+          const taskId = event.payload.task_id as string;
+          const summary = event.payload.summary as string;
+          const filesWritten = (event.payload.files_written as string[]) ?? [];
+          const success = event.payload.success as boolean;
+          const blocker = event.payload.blocker as string | null;
+          updateSubAgentBlock(taskId, e => ({
+            ...e,
+            status: success && !blocker ? 'done' : 'blocked',
+            summary,
+            filesWritten,
+            blocker,
+          }));
+          // Debounce file list refresh on sub-agent completion
+          if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
+          fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+  });
 
   const doStart = async () => {
     if (!id) return;
@@ -1734,6 +1736,16 @@ export function Phase3Implementation() {
               title="Re-generate docs/PRD.md from Phase 2 documents"
             >
               {regenPrd ? 'Regenerating…' : 'Regenerate PRD'}
+            </button>
+          )}
+          {isRunning && (
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 11, padding: '3px 10px', color: 'var(--red)', flexShrink: 0 }}
+              disabled={cancelling}
+              onClick={doCancel}
+            >
+              {cancelling ? 'Stopping…' : '■ Stop'}
             </button>
           )}
           {(isComplete || isFailed) && !isRunning && (

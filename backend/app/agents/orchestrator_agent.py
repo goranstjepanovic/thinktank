@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import AsyncSessionLocal
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
-from app.inference.client import InferenceClient, INSPECT_FILES_TOOL
+from app.inference.client import InferenceClient, INSPECT_FILES_TOOL, READ_PRD_TOOL
 from app.tools.shell_runner import shell_environment_context
 
 logger = logging.getLogger(__name__)
@@ -48,11 +48,11 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "## Available tools\n\n"
         "You may call `list_files`, `inspect_files`, and `grep_files` to inspect the project. "
         "- `list_files`: list directory contents to understand project layout\n"
-        "- `inspect_files`: delegate reading to a sub-agent that returns compact summaries of each file "
-        "(what is implemented, what is complete, what is missing). Use this instead of reading files yourself. "
-        "Pass up to 10 file paths at a time.\n"
+        "- `inspect_files`: read up to 10 files at once and return their content (truncated) plus "
+        "stub-detection markers. Use this to inspect multiple files in ONE round — far more efficient "
+        "than individual file reads. Pass up to 10 file paths at a time.\n"
         "- `grep_files`: search across files for a pattern\n"
-        "Do NOT call `file_edit` or `run_shell` — those are reserved for the sub-agent.\n\n"
+        "Do NOT call `file_edit`, `read_file`, or `run_shell` — those are reserved for sub-agents.\n\n"
         "## Product Requirements Document\n\n"
         f"{prd_excerpt}\n\n"
         "## Output format\n\n"
@@ -184,6 +184,86 @@ def _extract_prd_sections(prd_content: str) -> list[dict]:
     return sections
 
 
+def _parse_orchestrator_result(orch_result: dict) -> tuple[str | None, bool, list[dict]]:
+    """
+    Parse the orchestrator JSON payload and resolve contradictory states.
+
+    If the model returns both done=true and actionable next_tasks, treat the
+    response as not done yet and execute the tasks first. This prevents the
+    orchestration loop from jumping into verification prematurely.
+    """
+    user_message = orch_result.get("user_message")
+    done = bool(orch_result.get("done", False))
+
+    # Accept both next_tasks (new) and next_task (legacy single-task format)
+    raw_tasks = orch_result.get("next_tasks")
+    if not raw_tasks and orch_result.get("next_task"):
+        raw_tasks = [orch_result["next_task"]]
+    next_tasks: list[dict] = [t for t in (raw_tasks or []) if isinstance(t, dict)]
+
+    if done and next_tasks:
+        logger.warning(
+            "orchestrator: received contradictory response (done=true with %d task(s)); dispatching tasks before verification",
+            len(next_tasks),
+        )
+        done = False
+
+    return user_message, done, next_tasks
+
+
+def _expand_inspection_paths(output_dir: str, paths: list[str], max_files: int = 10) -> list[str]:
+    """
+    Convert inspect_files inputs into concrete file paths.
+
+    The planner sometimes passes directories like `src` or `backend` even though
+    the inspector is file-oriented. Expand those directories into real files so
+    the inspector can summarize code directly instead of running another broad
+    exploration loop.
+    """
+    if not output_dir:
+        return [p.replace("\\", "/") for p in paths[:max_files]]
+
+    base = Path(output_dir).resolve()
+    skip_dirs = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add_file(path_obj: Path) -> None:
+        rel = str(path_obj.relative_to(base)).replace("\\", "/")
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+
+    for raw_path in paths:
+        if len(out) >= max_files:
+            break
+        rel_path = (raw_path or "").strip()
+        if not rel_path:
+            continue
+        try:
+            target = (base / rel_path).resolve()
+        except Exception:
+            continue
+        if not str(target).startswith(str(base)) or not target.exists():
+            continue
+        if target.is_file():
+            _add_file(target)
+            continue
+        if not target.is_dir():
+            continue
+
+        for child in sorted(target.rglob("*")):
+            if len(out) >= max_files:
+                break
+            if any(part in skip_dirs for part in child.parts):
+                continue
+            if not child.is_file():
+                continue
+            _add_file(child)
+
+    return out
+
+
 def _orchestrator_user_prompt(
     idea: Idea,
     branch: SolutionBranch,
@@ -217,9 +297,13 @@ def _orchestrator_user_prompt(
         )
     elif not completed_tasks:
         start_hint = (
-            "No tasks have been started yet. "
-            "Begin with the project scaffold: root files (README.md, .gitignore, .env.example, pyproject.toml / package.json), "
-            "then proceed layer by layer."
+            "## Project is empty — start building immediately\n\n"
+            "The output directory is empty (or contains only docs/). "
+            "Do NOT call `list_files` or `inspect_files` — there is nothing to explore yet.\n\n"
+            "Read the PRD in your system prompt and return a JSON object with 1–2 scaffold tasks right now. "
+            "Start with the root config files (package.json / pyproject.toml / Cargo.toml, README.md, "
+            ".gitignore, .env.example) and the entry point. "
+            "Dispatch tasks immediately — no exploration first."
         )
     else:
         start_hint = "Call `list_files` to check what is on disk, then decide the next task."
@@ -292,11 +376,14 @@ def _orchestrator_user_prompt(
             "\n\n## PRD Verification Required\n\n"
             "You indicated the implementation is complete. Treat this as a skeptical audit — "
             "assume nothing is done until you have read the actual code that proves it.\n\n"
+            "**EFFICIENCY RULE**: `inspect_files` returns full file content immediately — no LLM involved. "
+            "Call it with up to 10 paths at once. Aim to read ALL project files in 2–3 `inspect_files` "
+            "calls (one round each), then classify in the following round. "
+            "Do NOT read one file per round — that is catastrophically slow.\n\n"
             "Complete ALL steps below in order. Skipping any step is not allowed.\n\n"
             "1. Call `list_files` to get the full current project file tree\n"
-            "2. Identify which files implement each PRD section, then batch them: pass up to 10 paths "
-            "per `inspect_files` call so you cover multiple sections in one round. "
-            "Do NOT call `inspect_files` once per section — group sections whose files overlap. "
+            "2. Call `inspect_files` with batches of up to 10 file paths. Group unrelated files "
+            "together — the goal is to cover all implementation files in as few calls as possible. "
             "Any file with `has_stubs: true` is NOT implemented — stubs do not count.\n"
             f"3. {section_block.strip()}\n\n"
             "4. In your `analysis` field, for every PRD section write:\n"
@@ -327,45 +414,19 @@ def _orchestrator_user_prompt(
     )
 
 
-def _inspector_system_prompt() -> str:
-    return (
-        "You are a code inspector sub-agent. Read the specified files and return concise structured summaries.\n\n"
-        "For each file, report:\n"
-        "- What it FULLY implements (complete, working logic — not placeholders)\n"
-        "- What is a stub, placeholder, or skeleton — these count as NOT implemented:\n"
-        "  • Empty function/method bodies (just `pass`, `{}`, or a single comment)\n"
-        "  • `// TODO`, `# TODO`, `throw new Error('not implemented')`, `raise NotImplementedError`\n"
-        "  • Hardcoded dummy data returned instead of real logic\n"
-        "  • Placeholder strings like 'coming soon', 'implement me', 'insert logic here'\n"
-        "  • Functions that always return null/None/0/{} without real computation\n"
-        "- What is genuinely missing (functions/endpoints/schemas the file type requires but lacks entirely)\n\n"
-        "Be strict: a file that exists but contains only stubs is NOT implemented.\n\n"
-        "Output JSON only — no prose, no fences:\n"
-        '{"files": [{"path": "...", "language": "...", "summary": "one-sentence overview", '
-        '"implemented": ["fully working item1"], "stubs": ["stub or placeholder item1"], '
-        '"missing_or_incomplete": ["gap1", "gap2"], "has_stubs": true}]}'
-    )
-
-
-def _inspector_user_prompt(paths: list[str], focus: str, output_dir: str) -> str:
-    paths_list = "\n".join(f"- {p}" for p in paths)
-    focus_line = f"\nFocus on: {focus}" if focus else ""
-    return (
-        f"OUTPUT DIRECTORY: {output_dir}\n\n"
-        f"Inspect these files:{focus_line}\n{paths_list}\n\n"
-        "For each file: call read_file, then include it in the JSON summary. "
-        "Keep each summary concise — 1 sentence overview, key items only."
-    )
-
 
 def _sub_agent_system_prompt() -> str:
     return (
         "You are a sub-agent implementing a specific task in a software project.\n\n"
-        "## Workflow\n\n"
-        "1. Read any existing files you need for context (`list_files`, `read_file`, `grep_files`)\n"
-        "2. Write all files required for your task using `file_edit`\n"
-        "3. Run any required commands (install dependencies, build, test) using `run_shell`\n"
-        "4. Return a JSON summary when done\n\n"
+        "## Workflow — follow this order every time\n\n"
+        "1. Call `read_prd` to read the Product Requirements Document\n"
+        "2. Read any existing files you need for context (`list_files`, `read_file`, `grep_files`)\n"
+        "3. Write all files required for your task using `file_edit`\n"
+        "4. Run any required commands (install dependencies, build, test) using `run_shell`\n"
+        "5. Call `read_prd` again and verify your implementation against the PRD — "
+        "check that every requirement relevant to your task is satisfied with no stubs or placeholders. "
+        "If anything is missing or incomplete, fix it before returning.\n"
+        "6. Return a JSON summary when done\n\n"
         "## File writing rules\n\n"
         "- Write complete file content — never truncate or use ellipsis placeholders\n"
         "- All paths passed to `file_edit` must be relative to the OUTPUT DIRECTORY — never prefix them with the project name or any parent folder\n"
@@ -403,14 +464,10 @@ def _sub_agent_system_prompt() -> str:
     )
 
 
-_MAX_SUB_AGENT_PRD_CHARS = 16_000
-
-
 def _sub_agent_user_prompt(
     task_instruction: str, output_dir: str, idea_name: str,
     prior_failures: list[dict] | None = None,
     source_root: str | None = None,
-    prd_content: str | None = None,
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -432,23 +489,11 @@ def _sub_agent_user_prompt(
             f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
             f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
         )
-    prd_block = ""
-    if prd_content:
-        excerpt = prd_content[:_MAX_SUB_AGENT_PRD_CHARS]
-        if len(prd_content) > _MAX_SUB_AGENT_PRD_CHARS:
-            excerpt += "\n… (PRD truncated)"
-        prd_block = (
-            f"\n\n## Product Requirements Document\n\n"
-            f"{excerpt}\n\n"
-            "Your implementation MUST match these requirements exactly. "
-            "Do not invent features, omit specified features, or replace described mechanics "
-            "with generic alternatives. If the PRD specifies a particular game rule, UI element, "
-            "algorithm, or behavior — implement it precisely as described."
-        )
     return (
         f"PROJECT: {idea_name}\n"
         f"OUTPUT DIRECTORY: {output_dir}\n"
-        f"{prd_block}"
+        f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document — "
+        f"do this before implementing and again after to verify compliance.\n"
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
@@ -529,12 +574,13 @@ class OrchestratorAgent:
                 await on_orchestrator_event("orchestrator_tool", {"tool": tool, "result": result})
 
             async def _handle_inspect_files(args: dict) -> dict:
-                paths = [str(p) for p in (args.get("paths") or []) if p][:10]
+                raw_paths = [str(p) for p in (args.get("paths") or []) if p][:10]
                 focus = str(args.get("focus") or "")
+                paths = _expand_inspection_paths(output_dir, raw_paths, max_files=10)
                 if not paths:
                     return {"files": [], "error": "no paths provided"}
                 return await self._run_inspector_agent(
-                    db, idea, branch, output_dir, paths, focus, on_orchestrator_event, round_idx
+                    output_dir, paths, focus, on_orchestrator_event
                 )
 
             try:
@@ -546,10 +592,10 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    # Verification must inspect every implementation file to quote evidence;
-                    # large projects can have 100+ files so let the timeout be the safety
-                    # net rather than a round cap (phase3_verification has timeout_seconds=600).
-                    max_tool_rounds=None if _verification_pending else 50,
+                    # Orchestrator: 12 rounds — list_files (1) + inspect_files batches (up to
+                    # 5) + dispatch (1), with a few spare. Forces task commitment.
+                    # Verification: 15 rounds — needs to inspect all files then classify.
+                    max_tool_rounds=15 if _verification_pending else 12,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
@@ -565,6 +611,23 @@ class OrchestratorAgent:
                 })
                 if _consecutive_failures <= 2:
                     logger.warning("orchestrator: transient failure #%d — retrying round", _consecutive_failures)
+                    if "exceeded max tool rounds" in str(e):
+                        completed_tasks.append({
+                            "id": f"_round_limit_{round_idx}",
+                            "title": "(round limit hit — stop exploring, dispatch tasks now)",
+                            "summary": (
+                                "You spent all available rounds calling list_files/inspect_files "
+                                "without returning any tasks. "
+                                "On your NEXT response you MUST return a JSON object with 1–2 concrete "
+                                "implementation tasks immediately — no tool calls first. "
+                                "If the project is empty, dispatch scaffold tasks. "
+                                "If files exist, dispatch the next implementation tasks. "
+                                "Do NOT call list_files or inspect_files again."
+                            ),
+                            "success": False,
+                            "files_written": [],
+                            "commands_run": [],
+                        })
                     continue
                 logger.error("orchestrator: %d consecutive failures — stopping", _consecutive_failures)
                 break
@@ -578,14 +641,7 @@ class OrchestratorAgent:
                 })
                 continue
 
-            user_message = orch_result.get("user_message")
-            done = bool(orch_result.get("done", False))
-
-            # Accept both next_tasks (new) and next_task (legacy single-task format)
-            raw_tasks = orch_result.get("next_tasks")
-            if not raw_tasks and orch_result.get("next_task"):
-                raw_tasks = [orch_result["next_task"]]
-            next_tasks: list[dict] = [t for t in (raw_tasks or []) if isinstance(t, dict)]
+            user_message, done, next_tasks = _parse_orchestrator_result(orch_result)
 
             logger.info("orchestrator: done=%s tasks=%d question=%s",
                         done, len(next_tasks), bool(user_message))
@@ -817,41 +873,67 @@ class OrchestratorAgent:
 
     async def _run_inspector_agent(
         self,
-        db: AsyncSession,
-        idea: Idea,
-        branch: SolutionBranch,
         output_dir: str,
         paths: list[str],
         focus: str,
         on_orchestrator_event: OnOrchestratorEvent,
-        round_idx: int,
     ) -> dict:
-        logger.info("inspector: reading %d file(s): %s", len(paths), paths)
+        """Read files directly from disk — no LLM call needed. Returns content + stub heuristics."""
+        logger.info("inspector: reading %d file(s) directly: %s", len(paths), paths)
         await on_orchestrator_event("orchestrator_tool", {"tool": "inspect_files", "result": {"paths": paths, "focus": focus}})
 
-        try:
-            result = await self._client.call_with_tools(
-                stage_key="phase3_orchestrator",
-                messages=[
-                    Message(role="system", content=_inspector_system_prompt()),
-                    Message(role="user", content=_inspector_user_prompt(paths, focus, output_dir)),
-                ],
-                session=db,
-                idea_id=idea.id,
-                branch_id=branch.id,
-                allowed_file_dir=output_dir,
-                explore_only=True,
-                max_tool_rounds=len(paths) + 2,
-                return_json=True,
-                call_index=round_idx * 100 + 50,
-            )
-        except Exception as e:
-            logger.error("inspector: failed: %s", e)
-            return {"files": [{"path": p, "summary": f"failed to inspect: {e}", "implemented": [], "missing_or_incomplete": []} for p in paths]}
+        _MAX_FILE_CHARS = 1500
+        _LANG_MAP = {
+            ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
+            ".jsx": "javascript", ".css": "css", ".html": "html", ".json": "json",
+            ".md": "markdown", ".svelte": "svelte", ".vue": "vue", ".go": "go",
+            ".rs": "rust", ".rb": "ruby", ".java": "java", ".cs": "csharp",
+            ".cpp": "cpp", ".c": "c", ".sh": "bash", ".yaml": "yaml", ".yml": "yaml",
+            ".toml": "toml", ".sql": "sql",
+        }
+        _STUB_MARKERS = (
+            "TODO", "FIXME", "raise NotImplementedError", "throw new Error(",
+            "# stub", "// stub", "not implemented", "placeholder",
+        )
 
-        if isinstance(result, dict) and "files" in result:
-            return result
-        return {"files": [{"path": p, "summary": "inspection returned unexpected format", "implemented": [], "missing_or_incomplete": []} for p in paths]}
+        base = Path(output_dir).resolve() if output_dir else None
+        files: list[dict] = []
+
+        for rel_path in paths:
+            try:
+                if base:
+                    full_path = (base / rel_path).resolve()
+                    if not str(full_path).startswith(str(base)):
+                        files.append({"path": rel_path, "error": "access denied"})
+                        continue
+                else:
+                    full_path = Path(rel_path).resolve()
+
+                raw = full_path.read_bytes()
+                if b"\x00" in raw[:512]:
+                    files.append({"path": rel_path, "summary": "binary file (skipped)", "has_stubs": False})
+                    continue
+
+                text = raw[:_MAX_FILE_CHARS].decode("utf-8", errors="replace")
+                truncated = len(raw) > _MAX_FILE_CHARS
+                suffix = full_path.suffix.lower()
+                language = _LANG_MAP.get(suffix, suffix.lstrip(".") or "text")
+                has_stubs = any(m.lower() in text.lower() for m in _STUB_MARKERS)
+
+                files.append({
+                    "path": rel_path,
+                    "language": language,
+                    "size_bytes": len(raw),
+                    "content": text + ("\n...(truncated)" if truncated else ""),
+                    "has_stubs": has_stubs,
+                    "summary": f"{language}, {len(raw)} bytes" + (" [has TODOs/stubs]" if has_stubs else ""),
+                })
+            except FileNotFoundError:
+                files.append({"path": rel_path, "error": "file not found"})
+            except Exception as e:
+                files.append({"path": rel_path, "error": str(e)})
+
+        return {"files": files}
 
     async def _run_sub_agent(
         self,
@@ -887,6 +969,9 @@ class OrchestratorAgent:
                 "result": result,
             })
 
+        async def _handle_read_prd(_args: dict) -> dict:
+            return {"prd": prd_content or "", "length": len(prd_content or "")}
+
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
         models_to_try: list[str | None] = [None] + list(stage_cfg.fallback_models)
         last_result: dict = {}
@@ -905,7 +990,6 @@ class OrchestratorAgent:
                 task_instruction, output_dir, idea.name,
                 prior_failures=prior_failures,
                 source_root=source_root,
-                prd_content=prd_content,
             )
 
             try:
@@ -926,6 +1010,8 @@ class OrchestratorAgent:
                         call_index=0,
                         on_tool_result=_wrapped_on_tool,
                         model_override=model_override,
+                        extra_tools=[READ_PRD_TOOL],
+                        custom_tool_handlers={"read_prd": _handle_read_prd},
                     )
             except Exception as e:
                 logger.error("sub_agent: task '%s' attempt %d failed: %s", task_title, attempt, e)

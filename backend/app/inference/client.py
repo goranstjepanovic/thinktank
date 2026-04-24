@@ -296,13 +296,29 @@ WEB_FETCH_TOOL = ToolDefinition(
     },
 )
 
+READ_PRD_TOOL = ToolDefinition(
+    name="read_prd",
+    description=(
+        "Read the full Product Requirements Document (PRD) for this project. "
+        "Call this BEFORE implementing to understand the exact requirements, rules, and constraints. "
+        "Call it AGAIN after writing all files to verify your implementation is complete and correct — "
+        "if anything is missing or wrong, fix it before returning your summary."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+
 INSPECT_FILES_TOOL = ToolDefinition(
     name="inspect_files",
     description=(
-        "Delegate file inspection to a specialized sub-agent that reads each file and returns "
-        "concise summaries: what is implemented, what is complete, and what appears missing. "
-        "Use this instead of read_file to understand multiple files without loading raw content "
-        "into your context. Pass up to 10 file paths at a time."
+        "Read up to 10 files and return their content (truncated to 1 500 chars each) plus a "
+        "`has_stubs` flag that detects TODO/FIXME/NotImplementedError markers. "
+        "Use this instead of calling read_file repeatedly — all files are returned in a single "
+        "tool response so you can inspect many files without burning extra rounds. "
+        "Pass up to 10 file paths at a time."
     ),
     parameters={
         "type": "object",
@@ -603,6 +619,11 @@ class InferenceClient:
                 available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
         if extra_tools:
             available_tools += extra_tools
+            # If inspect_files is provided, remove read_file so the model is forced
+            # to batch file reads via inspect_files (returns content in one round)
+            # instead of calling read_file one file per round.
+            if any(t.name == "inspect_files" for t in extra_tools):
+                available_tools = [t for t in available_tools if t.name != "read_file"]
 
         effective_model = model_override or stage_cfg.model
         logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s",

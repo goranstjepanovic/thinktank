@@ -252,6 +252,7 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
 
             elif event_type == "sub_agent_complete":
                 task_id = str(data.get("task_id", ""))
+                title = str(data.get("title", ""))
                 summary = str(data.get("summary", ""))
                 files_written = list(data.get("files_written") or [])
                 commands_run = list(data.get("commands_run") or [])
@@ -259,7 +260,7 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 blocker = data.get("blocker")
                 await event_bus.publish(ev.phase3_sub_agent_complete(idea_id, session_id, task_id, summary, files_written, success, blocker))
                 async with AsyncSessionLocal() as adb:
-                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_complete", payload_json=json.dumps({"task_id": task_id, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_complete", payload_json=json.dumps({"task_id": task_id, "title": title, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
                     await adb.commit()
 
         # ── Step 1: Generate PRD (skip on follow-up iterations) ──────────────

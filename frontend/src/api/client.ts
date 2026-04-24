@@ -1,4 +1,6 @@
-export const BASE = 'http://localhost:7700/api/v1';
+const BACKEND = 'localhost:7700';
+export const BASE = `http://${BACKEND}/api/v1`;
+export const WS_BASE = `ws://${BACKEND}`;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

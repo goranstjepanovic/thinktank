@@ -155,7 +155,7 @@ stages:
     think: false
 
   phase3_verification:  # PRD compliance verification pass — needs deeper reasoning
-    model: "qwen3.5:27b"
+    model: "qwen3.5:9b"
     backend: "ollama"
     temperature: 0.6
     max_tokens: 4096

@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, BASE, WS_BASE } from '../api/client';
 import type { IdeaDetail, Phase2Message, Phase2Session, PipelineEvent } from '../types';
 import { PhaseNav } from './PhaseNav';
-
-const BASE = 'http://localhost:8000/api/v1';
-const WS_BASE = 'ws://localhost:8000';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 // ---------------------------------------------------------------------------
 // Message bubble
@@ -161,48 +159,41 @@ export function Phase2Chat() {
   }, [id]);
 
   // WebSocket — handles opening message (non-streaming) and other clients' messages
-  useEffect(() => {
-    if (!id) return;
-    const ws = new WebSocket(`${WS_BASE}/ws/ideas/${id}`);
+  useWebSocket(id ? `${WS_BASE}/ws/ideas/${id}` : null, (data: string) => {
+    try {
+      const event: PipelineEvent = JSON.parse(data);
+      if (!event.event_type.startsWith('phase2.')) return;
 
-    ws.onmessage = (ev) => {
-      try {
-        const event: PipelineEvent = JSON.parse(ev.data);
-        if (!event.event_type.startsWith('phase2.')) return;
-
-        if (event.event_type === 'phase2.thinking') {
-          // Only show the message-stream typing indicator for opening message generation.
-          // Resolution summary generation (post-RESOLVING) is indicated by SummaryGeneratingBanner,
-          // derived from session.status + resolution_summary being null.
-          const currentSession = sessionRef.current;
-          if (!currentSession || currentSession.status === 'RESOLVING') {
-            setThinking(true);
-          }
-        } else if (event.event_type === 'phase2.message') {
-          setThinking(false);
-          // Only append messages we didn't already receive via our own stream
-          const incoming: Phase2Message = {
-            id: event.payload.message_id as string,
-            session_id: event.payload.session_id as string,
-            role: event.payload.role as 'user' | 'assistant',
-            content: event.payload.content as string,
-            created_at: event.timestamp,
-          };
-          setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming]);
-        } else if (event.event_type === 'phase2.error') {
-          setThinking(false);
-          setError(`Generation failed: ${event.payload.error}`);
-        } else if (event.event_type === 'phase2.status_changed') {
-          // Re-fetch session to get resolution_summary if it was just generated
-          api.getPhase2(id!).then((s) => setSession(s)).catch(() => {});
-        } else if (event.event_type === 'phase2.started') {
-          api.getPhase2(id!).then((s) => { setSession(s); setMessages(s.messages); }).catch(() => {});
+      if (event.event_type === 'phase2.thinking') {
+        // Only show the message-stream typing indicator for opening message generation.
+        // Resolution summary generation (post-RESOLVING) is indicated by SummaryGeneratingBanner,
+        // derived from session.status + resolution_summary being null.
+        const currentSession = sessionRef.current;
+        if (!currentSession || currentSession.status === 'RESOLVING') {
+          setThinking(true);
         }
-      } catch { /* ignore */ }
-    };
-
-    return () => ws.close();
-  }, [id]);
+      } else if (event.event_type === 'phase2.message') {
+        setThinking(false);
+        // Only append messages we didn't already receive via our own stream
+        const incoming: Phase2Message = {
+          id: event.payload.message_id as string,
+          session_id: event.payload.session_id as string,
+          role: event.payload.role as 'user' | 'assistant',
+          content: event.payload.content as string,
+          created_at: event.timestamp,
+        };
+        setMessages((prev) => prev.some((m) => m.id === incoming.id) ? prev : [...prev, incoming]);
+      } else if (event.event_type === 'phase2.error') {
+        setThinking(false);
+        setError(`Generation failed: ${event.payload.error}`);
+      } else if (event.event_type === 'phase2.status_changed') {
+        // Re-fetch session to get resolution_summary if it was just generated
+        api.getPhase2(id!).then((s) => setSession(s)).catch(() => {});
+      } else if (event.event_type === 'phase2.started') {
+        api.getPhase2(id!).then((s) => { setSession(s); setMessages(s.messages); }).catch(() => {});
+      }
+    } catch { /* ignore */ }
+  });
 
   // Scroll to bottom when content changes
   useEffect(() => {
