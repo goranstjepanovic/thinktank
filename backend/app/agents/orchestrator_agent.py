@@ -122,7 +122,11 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "before deciding tasks. Do NOT create a sub-agent to do it for you.\n\n"
         "## Rules\n\n"
         "- Delegate 1–3 cohesive, independent tasks per response\n"
-        "- Before choosing tasks, call `list_files` to see what is on disk, then `inspect_files` on relevant files\n"
+        "- **Exploration budget: maximum 2 rounds** (one `list_files` + one `inspect_files` batch). "
+        "Dispatch tasks by round 3 at the latest — do not keep reading files. "
+        "For bug-fix or startup requests, you do NOT need to identify the root cause yourself: "
+        "write a task instruction that tells the sub-agent to investigate and fix, "
+        "naming the specific files most likely to be relevant.\n"
         "- Tasks in the same batch must NOT overlap: each should own its own set of files\n"
         "- **Package manager installs** (`npm install`, `pip install -r`, etc.) must appear in at most ONE task per batch. "
         "If a batch has multiple tasks and one of them writes package.json / requirements.txt, assign the install "
@@ -292,8 +296,12 @@ def _orchestrator_user_prompt(
         start_hint = (
             f"## User follow-up request\n\n"
             f"{follow_up_message}\n\n"
-            "Call `list_files` to inspect the current project state, then plan and delegate tasks "
-            "that address the user's request. Set `done=true` only when the request is fully implemented."
+            "Dispatch tasks that address this request. You have a 2-round exploration budget — "
+            "call `list_files '.'` and `inspect_files` on the 3–5 files most likely relevant to the request, "
+            "then dispatch immediately. Do NOT read the entire project. "
+            "For bug-fix or startup issues, your task instruction should tell the sub-agent to "
+            "investigate (name the suspect files) and fix — you do not need to diagnose the root cause yourself. "
+            "Set `done=true` only when the request is fully implemented."
         )
     elif not completed_tasks:
         start_hint = (
