@@ -307,8 +307,10 @@ def _orchestrator_user_prompt(
         )
     else:
         start_hint = (
-            "Call `list_files` to check what is on disk, then `inspect_files` on any files you suspect "
-            "are incomplete, then decide the next task.\n\n"
+            "Call `list_files '.'` ONCE to see the top-level project layout. "
+            "Do NOT drill into subdirectories with repeated `list_files` calls — "
+            "use `inspect_files` on the specific files that are relevant to the task instead. "
+            "Then dispatch tasks immediately — do not spend more than 2 rounds on exploration.\n\n"
             "**If you find files with `has_stubs: true`, TODOs, truncated content, or placeholder code**, "
             "create a repair task for each affected file. Your task instruction MUST include:\n"
             "- The exact file path\n"
@@ -615,7 +617,7 @@ class OrchestratorAgent:
                     # Orchestrator: 12 rounds — list_files (1) + inspect_files batches (up to
                     # 5) + dispatch (1), with a few spare. Forces task commitment.
                     # Verification: 15 rounds — needs to inspect all files then classify.
-                    max_tool_rounds=15 if _verification_pending else 12,
+                    max_tool_rounds=15 if _verification_pending else 20,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
