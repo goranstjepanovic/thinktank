@@ -306,7 +306,17 @@ def _orchestrator_user_prompt(
             "Dispatch tasks immediately — no exploration first."
         )
     else:
-        start_hint = "Call `list_files` to check what is on disk, then decide the next task."
+        start_hint = (
+            "Call `list_files` to check what is on disk, then `inspect_files` on any files you suspect "
+            "are incomplete, then decide the next task.\n\n"
+            "**If you find files with `has_stubs: true`, TODOs, truncated content, or placeholder code**, "
+            "create a repair task for each affected file. Your task instruction MUST include:\n"
+            "- The exact file path\n"
+            "- The specific function, section, or line that is incomplete (quote it)\n"
+            "- What the complete implementation should do (from the PRD)\n"
+            "Vague instructions like 'fix incomplete files' are not acceptable — the sub-agent needs "
+            "precise targets to fix the right thing."
+        )
 
     feedback_block = ""
     if pending_user_messages:
@@ -423,12 +433,18 @@ def _sub_agent_system_prompt() -> str:
         "2. Read any existing files you need for context (`list_files`, `read_file`, `grep_files`)\n"
         "3. Write all files required for your task using `file_edit`\n"
         "4. Run any required commands (install dependencies, build, test) using `run_shell`\n"
-        "5. Call `read_prd` again and verify your implementation against the PRD — "
-        "check that every requirement relevant to your task is satisfied with no stubs or placeholders. "
-        "If anything is missing or incomplete, fix it before returning.\n"
+        "5. **Self-verify every file you wrote — MANDATORY, do not skip:**\n"
+        "   a. Call `inspect_files` with ALL paths you wrote (up to 10 at once).\n"
+        "   b. Any file with `has_stubs: true` is INCOMPLETE — rewrite it now with full real implementation.\n"
+        "   c. Any file where `inspect_files` returns truncated content: call `read_file` to read the full "
+        "file and check the rest for stubs, TODOs, or placeholder text. Rewrite if found.\n"
+        "   d. Call `read_prd` and confirm every PRD requirement in your task scope is satisfied.\n"
+        "   e. Only return `success: true` after every file passes the above checks.\n"
         "6. Return a JSON summary when done\n\n"
         "## File writing rules\n\n"
-        "- Write complete file content — never truncate or use ellipsis placeholders\n"
+        "- Write complete file content — never truncate, use ellipsis, or leave TODO/FIXME/placeholder text\n"
+        "- Returning `success: true` with any stub, TODO, FIXME, `raise NotImplementedError`, "
+        "placeholder comment, or truncated section is a hard failure — the orchestrator will reject it\n"
         "- All paths passed to `file_edit` must be relative to the OUTPUT DIRECTORY — never prefix them with the project name or any parent folder\n"
         "- Parent directories are created automatically; never use mkdir\n"
         "- For binary files, skip them and note it in your summary\n"
@@ -498,7 +514,9 @@ def _sub_agent_user_prompt(
         f"{structure_hint}"
         f"{prior_block}\n\n"
         "Start by reading any files needed for context, then write all required files, "
-        "run any specified commands, and return the JSON summary."
+        "run any specified commands. Before returning, call `inspect_files` on everything you wrote "
+        "and fix any file that shows `has_stubs: true` or contains TODO/placeholder text. "
+        "Return the JSON summary only after all files pass self-verification."
     )
 
 
