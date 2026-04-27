@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import AsyncSessionLocal
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
+from app.inference.base import ToolDefinition
 from app.inference.client import InferenceClient, INSPECT_FILES_TOOL, READ_PRD_TOOL
 from app.tools.shell_runner import shell_environment_context, run_shell_command
 from app.tools.interface_extractor import write_interface_manifest, format_manifest_summary, extract_interface
@@ -35,15 +36,15 @@ logger = logging.getLogger(__name__)
 _MAX_ORCHESTRATOR_ROUNDS = 100  # safety ceiling — real stops are done=true or consecutive empty rounds
 _BUILD_CHECK_INTERVAL = 10  # run a build check every N implementation rounds
 
-_RUN_BUILD_TOOL = {
-    "name": "run_build",
-    "description": (
+_RUN_BUILD_TOOL = ToolDefinition(
+    name="run_build",
+    description=(
         "Run the project build command in the output directory and return compiler/bundler output. "
         "Auto-detects the build tool from package.json, pyproject.toml, or Cargo.toml. "
         "Use this to catch import errors, missing exports, type mismatches, and syntax errors "
         "before declaring the implementation complete."
     ),
-    "parameters": {
+    parameters={
         "type": "object",
         "properties": {
             "command": {
@@ -57,7 +58,7 @@ _RUN_BUILD_TOOL = {
         },
         "required": [],
     },
-}
+)
 
 
 async def _run_build(output_dir: str, command: str | None = None) -> dict:
