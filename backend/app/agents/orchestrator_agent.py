@@ -419,6 +419,28 @@ def _expand_inspection_paths(output_dir: str, paths: list[str], max_files: int =
     return out
 
 
+def _build_file_tree(output_dir: str, max_files: int = 120) -> str | None:
+    """
+    Return a flat sorted list of all source files in output_dir, skipping noise dirs.
+    Injected into the orchestrator prompt so it never needs to call list_files.
+    """
+    root = Path(output_dir)
+    if not root.exists():
+        return None
+    _skip = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".nuxt", "coverage"}
+    lines: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part in _skip for part in path.relative_to(root).parts):
+            continue
+        lines.append(path.relative_to(root).as_posix())
+        if len(lines) >= max_files:
+            lines.append("… (truncated)")
+            break
+    return "\n".join(lines) if lines else None
+
+
 def _orchestrator_user_prompt(
     idea: Idea,
     branch: SolutionBranch,
@@ -428,6 +450,7 @@ def _orchestrator_user_prompt(
     verify_prd: bool = False,
     prd_sections: list[str] | None = None,
     interface_summary: str | None = None,
+    file_tree: str | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -467,10 +490,9 @@ def _orchestrator_user_prompt(
         )
     else:
         start_hint = (
-            "Call `list_files '.'` ONCE to see the top-level project layout. "
-            "Do NOT drill into subdirectories with repeated `list_files` calls — "
-            "use `inspect_files` on the specific files that are relevant to the task instead. "
-            "Then dispatch tasks immediately — do not spend more than 2 rounds on exploration.\n\n"
+            "The full project file tree is shown above — do NOT call `list_files`. "
+            "Call `inspect_files` directly on the 3–8 files most relevant to your next task, "
+            "then dispatch immediately. One `inspect_files` call is your entire exploration budget.\n\n"
             "**If you find files with `has_stubs: true`, TODOs, truncated content, or placeholder code**, "
             "create a repair task for each affected file. Your task instruction MUST include:\n"
             "- The exact file path\n"
@@ -594,12 +616,17 @@ def _orchestrator_user_prompt(
             "Assign wiring/repair tasks for any mismatch you see before continuing with new features."
         )
 
+    tree_block = ""
+    if file_tree and completed_tasks:
+        tree_block = f"\n\n## Current project files\n\n```\n{file_tree}\n```"
+
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
         f"{history_block}"
         f"{structure_block}"
+        f"{tree_block}"
         f"{interface_block}"
         f"{feedback_block}\n\n"
         f"{start_hint}"
@@ -778,6 +805,7 @@ class OrchestratorAgent:
                     await on_orchestrator_event("orchestrator_message", {"content": f"[User]: {m}"})
 
             # Build orchestrator messages with accumulated context
+            _file_tree = _build_file_tree(output_dir) if output_dir else None
             orch_messages = [
                 Message(role="system", content=_orchestrator_system_prompt(prd_content)),
                 Message(role="user", content=_orchestrator_user_prompt(
@@ -786,6 +814,7 @@ class OrchestratorAgent:
                     verify_prd=_verification_pending,
                     prd_sections=_prd_sections if _verification_pending else None,
                     interface_summary=_interface_summary,
+                    file_tree=_file_tree,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
