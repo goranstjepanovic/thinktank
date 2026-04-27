@@ -167,10 +167,10 @@ stages:
     think: false
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "phi4:14b"
+    model: "qwen2.5-coder:14b"
     fallback_models:
+      - "phi4:14b"
       - "qwen3.6:27b"
-      - "qwen3-coder:30b"
       - "gemma4:latest"
     backend: "ollama"
     temperature: 0.3
