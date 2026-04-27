@@ -404,6 +404,7 @@ class InferenceClient:
         call_type: str = "STAGE",
         call_index: int = 0,
         overrides: dict | None = None,
+        model_override: str | None = None,
     ) -> dict:
         """
         Single-turn model call: send messages, get JSON back.
@@ -411,6 +412,7 @@ class InferenceClient:
         """
         stage_cfg = self._registry.get_stage(stage_key)
         driver = self._get_driver(stage_cfg.backend)
+        effective_model = model_override or stage_cfg.model
 
         temperature = stage_cfg.temperature
         max_tokens = stage_cfg.max_tokens
@@ -419,7 +421,7 @@ class InferenceClient:
             max_tokens = overrides.get("max_tokens", max_tokens)
 
         request = InferenceRequest(
-            model=stage_cfg.model,
+            model=effective_model,
             messages=messages,
             format=stage_cfg.format,
             temperature=temperature,
@@ -432,7 +434,7 @@ class InferenceClient:
         response: InferenceResponse | None = None
         error_str: str | None = None
 
-        logger.info("call  stage=%-20s model=%s", stage_key, stage_cfg.model)
+        logger.info("call  stage=%-20s model=%s", stage_key, effective_model)
         try:
             response = await driver.complete(request)
         except InferenceBackendError as e:
@@ -449,7 +451,7 @@ class InferenceClient:
                 stage_result_id=stage_result_id,
                 call_type=call_type,
                 call_index=call_index,
-                model_name=stage_cfg.model,
+                model_name=effective_model,
                 backend=stage_cfg.backend,
                 request=request,
                 response=response,
@@ -681,6 +683,7 @@ class InferenceClient:
                         branch_id=branch_id,
                         stage_result_id=stage_result_id,
                         call_index=current_call_index,
+                        model_override=effective_model,
                     )
                 raise InferenceClientError(
                     f"Backend '{stage_cfg.backend}' failed for stage '{stage_key}': {e}"

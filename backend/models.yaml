@@ -113,8 +113,9 @@ stages:
     supports_tools: false
 
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
-    model: "qwen3.6:27b"
+    model: "qwen2.5-coder:14b"
     fallback_models:
+      - "qwen3.6:27b"
       - "codestral:22b"
       - "qwen3-coder:30b"
       - "gemma4:latest"
@@ -169,8 +170,8 @@ stages:
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
     model: "qwen2.5-coder:14b"
     fallback_models:
-      - "phi4:14b"
       - "qwen3.6:27b"
+      - "qwen3-coder:30b"
       - "gemma4:latest"
     backend: "ollama"
     temperature: 0.3
@@ -178,7 +179,7 @@ stages:
     format: "json"
     num_ctx: 16384
     supports_tools: true
-    timeout_seconds: 600  # file writing with large outputs needs more time
+    timeout_seconds: 1200  # larger tool-capable models may need more time on local hardware
 
 resources:
   max_concurrent_branches: 4

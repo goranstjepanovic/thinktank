@@ -366,6 +366,73 @@ def _parse_orchestrator_result(orch_result: dict) -> tuple[str | None, bool, lis
     return user_message, done, next_tasks
 
 
+def _normalize_sub_agent_result(raw_result: object, task_title: str) -> dict:
+    """
+    Normalize a sub-agent result into the execution schema the orchestrator expects.
+
+    Treat missing or wrong-shaped payloads as failures so the orchestrator does not
+    silently accept empty planning-style responses as successful implementation work.
+    """
+    if not isinstance(raw_result, dict):
+        return {
+            "summary": f"Task '{task_title}' returned a non-JSON result.",
+            "files_written": [],
+            "commands_run": [],
+            "success": False,
+            "blocker": "Sub-agent returned a non-dict result",
+        }
+
+    if "summary" not in raw_result and any(k in raw_result for k in ("message", "files", "commands")):
+        message = str(raw_result.get("message") or "").strip()
+        return {
+            "summary": message or f"Task '{task_title}' returned a planning payload instead of an execution result.",
+            "files_written": [],
+            "commands_run": [],
+            "success": False,
+            "blocker": "Sub-agent returned planning JSON instead of execution summary",
+        }
+
+    summary = str(raw_result.get("summary") or "").strip()
+    files_written = [str(p) for p in (raw_result.get("files_written") or []) if isinstance(p, str) and p.strip()]
+    commands_run = [str(c) for c in (raw_result.get("commands_run") or []) if isinstance(c, str) and c.strip()]
+    blocker_raw = raw_result.get("blocker")
+    blocker = str(blocker_raw).strip() if blocker_raw not in (None, "") else None
+    success_raw = raw_result.get("success")
+
+    if isinstance(success_raw, bool):
+        success = success_raw
+    else:
+        success = False
+        if not blocker:
+            blocker = "Sub-agent result missing required boolean 'success' field"
+
+    if success and blocker:
+        success = False
+
+    if success and not summary:
+        summary = f"Completed task '{task_title}'."
+
+    if success and not files_written and not commands_run:
+        success = False
+        blocker = blocker or "Sub-agent reported success but produced no files or commands"
+        if not summary:
+            summary = f"Task '{task_title}' produced no observable work."
+
+    if not success and not summary:
+        summary = f"Task '{task_title}' failed."
+
+    if not success and not blocker:
+        blocker = "Sub-agent returned an unsuccessful result without a blocker"
+
+    return {
+        "summary": summary,
+        "files_written": files_written,
+        "commands_run": commands_run,
+        "success": success,
+        "blocker": blocker,
+    }
+
+
 def _expand_inspection_paths(output_dir: str, paths: list[str], max_files: int = 10) -> list[str]:
     """
     Convert inspect_files inputs into concrete file paths.
@@ -869,6 +936,41 @@ class OrchestratorAgent:
                 cmd = str(args.get("command") or "").strip() or None
                 return await _run_build(output_dir, cmd)
 
+            async def _handle_list_files(args: dict) -> dict:
+                # Serve list_files from the pre-built tree — no filesystem round-trips,
+                # no subdirectory drilling. The model gets exactly what it asked for
+                # (files under a given path) without burning extra tool rounds.
+                req_path = str(args.get("path") or ".").strip().rstrip("/")
+                if not _file_tree:
+                    return {"path": req_path, "entries": [], "count": 0}
+                prefix = "" if req_path == "." else req_path + "/"
+                entries = []
+                seen_dirs: set[str] = set()
+                for line in _file_tree.splitlines():
+                    if not line or line.startswith("…"):
+                        continue
+                    if req_path == ".":
+                        # top-level: return immediate children only
+                        top = line.split("/")[0]
+                        if "/" in line:
+                            if top not in seen_dirs:
+                                seen_dirs.add(top)
+                                entries.append(top + "/")
+                        else:
+                            entries.append(line)
+                    else:
+                        if not line.startswith(prefix):
+                            continue
+                        rest = line[len(prefix):]
+                        if "/" in rest:
+                            d = rest.split("/")[0]
+                            if d not in seen_dirs:
+                                seen_dirs.add(d)
+                                entries.append(d + "/")
+                        else:
+                            entries.append(rest)
+                return {"path": req_path, "entries": sorted(set(entries)), "count": len(entries)}
+
             try:
                 orch_result = await self._client.call_with_tools(
                     stage_key="phase3_verification" if _verification_pending else "phase3_orchestrator",
@@ -878,10 +980,10 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    # Orchestrator: 6 rounds max — list_files (1) + inspect_files (1-2) +
-                    # dispatch JSON (1). Hard cap forces the model to stop exploring and commit.
+                    # 10 rounds: list_files (1-2, served from cached tree) +
+                    # inspect_files (1-2 batches) + dispatch JSON (1) + spare.
                     # Verification: 15 rounds — needs to inspect all files then classify.
-                    max_tool_rounds=15 if _verification_pending else 6,
+                    max_tool_rounds=15 if _verification_pending else 10,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
@@ -1312,6 +1414,7 @@ class OrchestratorAgent:
                         extra_tools=[READ_PRD_TOOL],
                         custom_tool_handlers={"read_prd": _handle_read_prd},
                     )
+                    last_result = _normalize_sub_agent_result(last_result, task_title)
             except Exception as e:
                 logger.error("sub_agent: task '%s' attempt %d failed: %s", task_title, attempt, e)
                 last_result = {

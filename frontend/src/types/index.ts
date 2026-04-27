@@ -131,7 +131,7 @@ export interface PipelineEvent {
 
 export interface Phase3ActivityEvent {
   id: string;
-  event_type: 'plan_ready' | 'pass_started' | 'file_written' | 'file_failed' | 'command_executed' | 'error';
+  event_type: 'plan_ready' | 'pass_started' | 'file_written' | 'file_failed' | 'command_executed' | 'sub_agent_started' | 'sub_agent_complete' | 'error';
   payload: Record<string, unknown>;
   created_at: string;
 }
