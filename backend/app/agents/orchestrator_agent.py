@@ -27,11 +27,144 @@ from app.db.engine import AsyncSessionLocal
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
 from app.inference.client import InferenceClient, INSPECT_FILES_TOOL, READ_PRD_TOOL
-from app.tools.shell_runner import shell_environment_context
+from app.tools.shell_runner import shell_environment_context, run_shell_command
+from app.tools.interface_extractor import write_interface_manifest, format_manifest_summary, extract_interface
 
 logger = logging.getLogger(__name__)
 
 _MAX_ORCHESTRATOR_ROUNDS = 100  # safety ceiling — real stops are done=true or consecutive empty rounds
+_BUILD_CHECK_INTERVAL = 10  # run a build check every N implementation rounds
+
+_RUN_BUILD_TOOL = {
+    "name": "run_build",
+    "description": (
+        "Run the project build command in the output directory and return compiler/bundler output. "
+        "Auto-detects the build tool from package.json, pyproject.toml, or Cargo.toml. "
+        "Use this to catch import errors, missing exports, type mismatches, and syntax errors "
+        "before declaring the implementation complete."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Override the auto-detected build command "
+                    "(e.g. 'npm run build', 'npm run typecheck', 'cargo check'). "
+                    "Omit to auto-detect from the project root."
+                ),
+            }
+        },
+        "required": [],
+    },
+}
+
+
+async def _run_build(output_dir: str, command: str | None = None) -> dict:
+    """Run the project build in output_dir and return structured results."""
+    import json as _json
+
+    if not command:
+        pkg_path = Path(output_dir) / "package.json"
+        pyproject_path = Path(output_dir) / "pyproject.toml"
+        cargo_path = Path(output_dir) / "Cargo.toml"
+
+        if pkg_path.exists():
+            try:
+                pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+                scripts = pkg.get("scripts", {})
+                command = "npm run build" if "build" in scripts else "npm run build"
+            except Exception:
+                command = "npm run build"
+        elif pyproject_path.exists():
+            command = "python -m pytest --tb=short -q"
+        elif cargo_path.exists():
+            command = "cargo build"
+        else:
+            return {
+                "success": None,
+                "output": "No recognized build system found (package.json / pyproject.toml / Cargo.toml)",
+            }
+
+    result = await run_shell_command(command, output_dir, timeout_seconds=180)
+    combined = (result.stdout + "\n" + result.stderr).strip()
+    if len(combined) > 5000:
+        combined = "…(truncated — showing last 5000 chars)\n" + combined[-5000:]
+    return {
+        "success": result.exit_code == 0,
+        "exit_code": result.exit_code,
+        "command": command,
+        "output": combined,
+        "timed_out": result.timed_out,
+    }
+def _write_progress_md(
+    output_dir: str,
+    prd_sections: list[dict],
+    completed_tasks: list[dict],
+    idea_name: str,
+    round_idx: int,
+) -> None:
+    """Write docs/PROGRESS.md — a compact live-state file agents can read instead of re-scanning everything."""
+    try:
+        from datetime import UTC, datetime as _dt
+        now = _dt.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        impl_tasks = [t for t in completed_tasks if not t.get("id", "").startswith("_")]
+        all_written: list[str] = []
+        for t in impl_tasks:
+            all_written.extend(t.get("files_written", []))
+        unique_files = sorted(set(all_written))
+
+        lines: list[str] = [
+            f"# PROGRESS: {idea_name}",
+            "",
+            f"Updated: {now} | Round {round_idx + 1} | "
+            f"{len(impl_tasks)} task(s) complete | {len(unique_files)} file(s) written",
+            "",
+        ]
+
+        if prd_sections:
+            lines += ["## PRD Sections (for reference)", ""]
+            for s in prd_sections:
+                heading = s["heading"] if isinstance(s, dict) else str(s)
+                lines.append(f"- {heading}")
+            lines.append("")
+
+        lines += ["## Completed Tasks", ""]
+        if impl_tasks:
+            for t in impl_tasks:
+                icon = "✓" if t.get("success") else "✗"
+                fw = t.get("files_written", [])
+                if fw:
+                    sample = ", ".join(fw[:3])
+                    extra = f"…+{len(fw) - 3}" if len(fw) > 3 else ""
+                    files_note = f" ({len(fw)} files: {sample}{extra})"
+                else:
+                    files_note = ""
+                lines.append(f"- {icon} **{t['title']}**{files_note}")
+                if t.get("blocker"):
+                    lines.append(f"  - Blocker: {t['blocker']}")
+        else:
+            lines.append("_No tasks completed yet._")
+
+        if unique_files:
+            lines += ["", "## All Files Written", ""]
+            for f in unique_files[:80]:
+                lines.append(f"- {f}")
+            if len(unique_files) > 80:
+                lines.append(f"… ({len(unique_files) - 80} more)")
+
+        out_path = Path(output_dir) / "docs" / "PROGRESS.md"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info(
+            "progress_md: wrote PROGRESS.md (round %d, %d tasks, %d files)",
+            round_idx + 1, len(impl_tasks), len(unique_files),
+        )
+    except Exception as exc:
+        logger.warning("progress_md: failed to write: %s", exc)
+
+
 _MAX_PRD_CHARS = 24_000
 
 
@@ -77,6 +210,23 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "no framework imports, no rendering. These files take state as input and return new state.\n"
         "Only after the logic layer is complete may you assign tasks that touch UI, components, or rendering.\n"
         "A task that mixes logic and UI in the same file is a bug — split it.\n\n"
+        "## Integration wiring — mandatory checkpoints\n\n"
+        "After every 5 implementation batches, you MUST dispatch one 'Integration Wiring' task before "
+        "assigning new features. This task must:\n"
+        "1. Read the app entry point (App.jsx, main.py, index.js, etc.) and every file it imports directly\n"
+        "2. For every `import { X } from './module'` — read that module and verify X is actually exported. "
+        "If X is not exported, add the missing export or fix the import name.\n"
+        "3. For React: for every `<Component prop={val} />` usage, read Component and verify it accepts "
+        "`prop` with that exact name. Fix mismatches in the caller or the component.\n"
+        "4. For function/method calls: verify the argument count and order match the called function's signature.\n"
+        "This task WRITES real fixes — it is not exploration. Dispatch it as a real sub-agent task.\n"
+        "Common wiring failures to catch: a hook file that exports plain functions instead of a React hook "
+        "(missing useState/useEffect); a parent passing `config={{...}}` when a child expects `cards` and "
+        "`onCardClick` as separate props; a service called with one argument when it requires two.\n\n"
+        "## Build verification — use run_build\n\n"
+        "You have a `run_build` tool that runs the project build command and returns compiler errors. "
+        "Call it whenever you want to confirm the project compiles — especially before dispatching more "
+        "feature tasks. Build error messages tell you exactly which file and line is broken and why.\n\n"
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
         "- PRD-grounded: quote the exact rules, conditions, or state definitions from the PRD's "
@@ -276,6 +426,7 @@ def _orchestrator_user_prompt(
     pending_user_messages: list[str] | None = None,
     verify_prd: bool = False,
     prd_sections: list[str] | None = None,
+    interface_summary: str | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -422,12 +573,24 @@ def _orchestrator_user_prompt(
             "   - HTML entry points match the actual bundler output\n"
             "   - package.json scripts use paths relative to their own directory\n"
             "   - All packages are version-compatible\n"
-            "6. Spawn a build verification task: run the project build command "
-            "(e.g. `npm run build`, `pip install -e .`, `cargo build`) and confirm it exits 0.\n"
-            "   If it fails, add repair tasks and set `done=false`.\n"
+            "6. Call `run_build` RIGHT NOW — do NOT spawn a sub-agent for this. "
+            "The tool runs the build command and returns compiler errors immediately. "
+            "If it exits non-zero, every error in the output is a concrete bug to fix — "
+            "add a task for each class of error (e.g. 'Fix missing export X in module Y', "
+            "'Fix prop name mismatch in Component Z') and set `done=false`.\n"
             "7. For every section classified PARTIAL or MISSING — add tasks to complete it "
             "and set `done=false`. Only sections with quoted evidence count as IMPLEMENTED.\n"
-            "8. Only set `done=true` when ALL sections are IMPLEMENTED with evidence and the build succeeds."
+            "8. Only set `done=true` when ALL sections are IMPLEMENTED with evidence "
+            "AND `run_build` exits 0."
+        )
+
+    interface_block = ""
+    if interface_summary:
+        interface_block = (
+            f"\n\n{interface_summary}\n\n"
+            "Use this to spot files with **⚠ NO EXPORTS** (likely stubs), prop name mismatches "
+            "between callers and receivers, or imports that reference symbols not listed here. "
+            "Assign wiring/repair tasks for any mismatch you see before continuing with new features."
         )
 
     return (
@@ -436,6 +599,7 @@ def _orchestrator_user_prompt(
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
         f"{history_block}"
         f"{structure_block}"
+        f"{interface_block}"
         f"{feedback_block}\n\n"
         f"{start_hint}"
         f"{verify_block}"
@@ -458,7 +622,16 @@ def _sub_agent_system_prompt() -> str:
         "placeholder comments, `raise NotImplementedError`, ellipsis (`...`), or any stub markers.\n"
         "   b. If any are found — rewrite that file now with the complete real implementation.\n"
         "   c. Call `read_prd` and confirm every PRD requirement in your task scope is satisfied.\n"
-        "   d. Only return `success: true` after every file is verified stub-free.\n"
+        "   d. **Import verification — check every import resolves:** For every "
+        "`import { X, Y } from './module'` (or `from module import X`) in files you wrote, "
+        "call `read_file` on that module and confirm X and Y are actually exported/defined there. "
+        "If a symbol is missing — add the missing export to that module OR fix the import name. "
+        "Do not skip this step; mismatched symbol names are the #1 cause of apps that fail to run.\n"
+        "   e. **Prop/interface verification (React/typed code):** If you wrote a component that is "
+        "rendered by another component (e.g. `<Board cards={cards} onCardClick={fn} />`), read the "
+        "Board component definition and confirm it accepts `cards` and `onCardClick` with those exact "
+        "names. If there is a mismatch, fix the prop names in the caller or receiver — not both.\n"
+        "   f. Only return `success: true` after every file is verified stub-free and all imports resolve.\n"
         "6. Return a JSON summary when done\n\n"
         "## File writing rules\n\n"
         "- Write complete file content — never truncate, use ellipsis, or leave TODO/FIXME/placeholder text\n"
@@ -532,12 +705,16 @@ def _sub_agent_user_prompt(
         f"OUTPUT DIRECTORY: {output_dir}\n"
         f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document — "
         f"do this before implementing and again after to verify compliance.\n"
+        f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
+        f"exports, prop names, and function signatures every module must implement. "
+        f"Your files MUST match the contract — do not rename exports or change prop names.\n"
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
-        "Start by reading any files needed for context, then write all required files, "
-        "run any specified commands. Before returning, call `read_file` on everything you wrote "
-        "and fix any file that contains TODO/FIXME/placeholder text or stub implementations. "
+        "Start by reading the PRD (including the Module Interface Contract section) and any files "
+        "needed for context, then write all required files, run any specified commands. "
+        "Before returning, call `read_file` on everything you wrote and fix any file that contains "
+        "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
         "Return the JSON summary only after all files pass self-verification."
     )
 
@@ -573,6 +750,7 @@ class OrchestratorAgent:
     ) -> str:
         output_dir = session.output_dir or ""
         completed_tasks: list[dict] = []
+        _interface_summary: str | None = None  # updated after every batch
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
         _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
@@ -606,9 +784,43 @@ class OrchestratorAgent:
                     pending_user_messages=pending_messages or None,
                     verify_prd=_verification_pending,
                     prd_sections=_prd_sections if _verification_pending else None,
+                    interface_summary=_interface_summary,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
+
+            # Periodic build check — runs every N rounds after tasks have been written
+            _impl_rounds = sum(1 for t in completed_tasks if not t["id"].startswith("_"))
+            if (
+                not _verification_pending
+                and _impl_rounds > 0
+                and round_idx > 0
+                and round_idx % _BUILD_CHECK_INTERVAL == 0
+            ):
+                logger.info("orchestrator: running periodic build check at round %d", round_idx + 1)
+                build_result = await _run_build(output_dir)
+                if build_result.get("success") is False:
+                    build_out = build_result.get("output", "")[:2000]
+                    await on_orchestrator_event("orchestrator_message", {
+                        "content": f"🔨 Build check (round {round_idx + 1}): **BUILD FAILED**\n```\n{build_out}\n```"
+                    })
+                    completed_tasks.append({
+                        "id": f"_build_check_{round_idx}",
+                        "title": "(periodic build check failed)",
+                        "summary": (
+                            f"Build command '{build_result.get('command', 'unknown')}' failed "
+                            f"(exit {build_result.get('exit_code', -1)}):\n\n{build_out}\n\n"
+                            "Fix all build errors before continuing with new features. "
+                            "Each error message shows the exact file and line that is broken."
+                        ),
+                        "success": False,
+                        "files_written": [],
+                        "commands_run": [],
+                    })
+                elif build_result.get("success") is True:
+                    await on_orchestrator_event("orchestrator_message", {
+                        "content": f"✅ Build check (round {round_idx + 1}): build passes"
+                    })
 
             async def _orch_tool_cb(tool: str, result: dict) -> None:
                 await on_orchestrator_event("orchestrator_tool", {"tool": tool, "result": result})
@@ -622,6 +834,10 @@ class OrchestratorAgent:
                 return await self._run_inspector_agent(
                     output_dir, paths, focus, on_orchestrator_event
                 )
+
+            async def _handle_run_build(args: dict) -> dict:
+                cmd = str(args.get("command") or "").strip() or None
+                return await _run_build(output_dir, cmd)
 
             try:
                 orch_result = await self._client.call_with_tools(
@@ -639,8 +855,11 @@ class OrchestratorAgent:
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
-                    extra_tools=[INSPECT_FILES_TOOL],
-                    custom_tool_handlers={"inspect_files": _handle_inspect_files},
+                    extra_tools=[INSPECT_FILES_TOOL, _RUN_BUILD_TOOL],
+                    custom_tool_handlers={
+                        "inspect_files": _handle_inspect_files,
+                        "run_build": _handle_run_build,
+                    },
                 )
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)
@@ -842,6 +1061,16 @@ class OrchestratorAgent:
                     "blocker": sub_result.get("blocker"),
                 })
                 completed_tasks.append({"id": task_id, "title": task_title, **sub_result})
+
+            # Update living interface manifest and PROGRESS.md after every batch
+            _manifest_path = write_interface_manifest(output_dir)
+            if _manifest_path:
+                try:
+                    _fresh_manifest = extract_interface(output_dir)
+                    _interface_summary = format_manifest_summary(_fresh_manifest)
+                except Exception as _exc:
+                    logger.warning("orchestrator: interface summary rebuild failed: %s", _exc)
+            _write_progress_md(output_dir, _prd_sections, completed_tasks, idea.name, round_idx)
 
         # Build completion summary
         task_summaries = [t for t in completed_tasks if not t["id"].startswith("user_input_")]
