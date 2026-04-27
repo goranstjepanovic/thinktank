@@ -849,10 +849,10 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    # Orchestrator: 12 rounds — list_files (1) + inspect_files batches (up to
-                    # 5) + dispatch (1), with a few spare. Forces task commitment.
+                    # Orchestrator: 6 rounds max — list_files (1) + inspect_files (1-2) +
+                    # dispatch JSON (1). Hard cap forces the model to stop exploring and commit.
                     # Verification: 15 rounds — needs to inspect all files then classify.
-                    max_tool_rounds=15 if _verification_pending else 20,
+                    max_tool_rounds=15 if _verification_pending else 6,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
