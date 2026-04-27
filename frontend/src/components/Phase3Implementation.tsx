@@ -1127,6 +1127,7 @@ export function Phase3Implementation() {
   const [idea, setIdea] = useState<IdeaDetail | null>(null);
   const [session, setSession] = useState<Phase3Session | null>(null);
   const [log, setLog] = useState<ActivityEntry[]>([]);
+  const [activityVisible, setActivityVisible] = useState(15);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -1772,19 +1773,37 @@ export function Phase3Implementation() {
                     <span>Generating PRD…</span>
                   </div>
                 )}
-                {log.map((entry) => {
-                  switch (entry.kind) {
-                    case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
-                    case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
-                    case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
-                    case 'thinking': return <ThinkingEntry key={entry.id} />;
-                    case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
-                    case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
-                    case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
-                    case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} isPrdOnly={session?.mode === 'prd_only'} />;
-                    default: return null;
-                  }
-                })}
+                {(() => {
+                  const _visibleKinds = new Set(['orchestrator_thinking', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete']);
+                  const _leftEntries = log.filter(e => _visibleKinds.has(e.kind));
+                  const _hidden = Math.max(0, _leftEntries.length - activityVisible);
+                  const _visible = _leftEntries.slice(-activityVisible);
+                  return (
+                    <>
+                      {_hidden > 0 && (
+                        <button
+                          onClick={() => setActivityVisible(v => v + 15)}
+                          style={{ display: 'block', width: '100%', padding: '6px 0', marginBottom: 8, fontSize: 12, color: 'var(--text2)', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }}
+                        >
+                          ↑ Load {Math.min(15, _hidden)} older messages ({_hidden} hidden)
+                        </button>
+                      )}
+                      {_visible.map((entry) => {
+                        switch (entry.kind) {
+                          case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
+                          case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
+                          case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
+                          case 'thinking': return <ThinkingEntry key={entry.id} />;
+                          case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
+                          case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
+                          case 'error': return <ErrorEntry key={entry.id} message={entry.message} />;
+                          case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} isPrdOnly={session?.mode === 'prd_only'} />;
+                          default: return null;
+                        }
+                      })}
+                    </>
+                  );
+                })()}
                 <div ref={logEndRef} />
               </div>
 
