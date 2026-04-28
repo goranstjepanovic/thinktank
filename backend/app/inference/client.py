@@ -831,6 +831,27 @@ class InferenceClient:
                     elif tc.name == "file_edit":
                         if not allowed_file_dir or explore_only:
                             result_dict = {"success": False, "error": "file_edit tool not available in this context"}
+                        elif (
+                            tc.arguments.get("operation") == "write_file"
+                            and Path(tc.arguments.get("path", "")).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+                            and settings.comfyui_base_url
+                        ):
+                            # Agent is trying to write text content to a binary image path.
+                            # Redirect to generate_image instead of silently writing garbage.
+                            _img_path = tc.arguments.get("path", "")
+                            result_dict = {
+                                "success": False,
+                                "error": (
+                                    f"Cannot write text content to image file '{_img_path}' via file_edit. "
+                                    "Use the generate_image tool instead: "
+                                    f"generate_image(prompt='...', output_path='{_img_path}'). "
+                                    "generate_image calls the local ComfyUI service and saves a real PNG."
+                                ),
+                            }
+                            logger.info(
+                                "tools stage=%-20s file_edit blocked image write path=%r — redirected to generate_image",
+                                stage_key, _img_path,
+                            )
                         else:
                             from app.tools.file_editor import edit_file
                             import time as _time
@@ -1155,35 +1176,53 @@ class InferenceClient:
                             result_dict = {"success": False, "error": "ComfyUI is not configured (set COMFYUI_BASE_URL in .env)"}
                         else:
                             from app.tools.image_generator import generate_image as _generate_image
-                            import time as _time
-                            _t0 = _time.monotonic()
-                            _img_result = await _generate_image(
-                                prompt=tc.arguments.get("prompt", ""),
-                                output_path=tc.arguments.get("output_path", ""),
-                                allowed_base_dir=allowed_file_dir,
-                                base_url=settings.comfyui_base_url,
-                                model_name=settings.comfyui_model,
-                                negative_prompt=tc.arguments.get("negative_prompt", ""),
-                                width=int(tc.arguments.get("width") or 512),
-                                height=int(tc.arguments.get("height") or 512),
-                                steps=int(tc.arguments.get("steps") or 20),
-                            )
-                            result_dict = {
-                                "success": _img_result.error is None,
-                                "path": _img_result.path,
-                                "backend": _img_result.backend,
-                                "width": _img_result.width,
-                                "height": _img_result.height,
-                                "duration_ms": _img_result.duration_ms,
-                            }
-                            if _img_result.error:
-                                result_dict["error"] = _img_result.error
+                            # Accept both 'output_path' and 'path' — local models often use the shorter name
+                            _out_path = (
+                                tc.arguments.get("output_path")
+                                or tc.arguments.get("path")
+                                or ""
+                            ).strip()
                             logger.info(
-                                "tools stage=%-20s generate_image path=%r ok=%s duration_ms=%d",
-                                stage_key, _img_result.path, _img_result.error is None, _img_result.duration_ms,
+                                "tools stage=%-20s generate_image input_path=%r prompt=%r",
+                                stage_key, _out_path, (tc.arguments.get("prompt") or "")[:80],
                             )
-                            if on_tool_result:
-                                await on_tool_result("generate_image", result_dict)
+                            if not _out_path:
+                                result_dict = {
+                                    "success": False,
+                                    "error": (
+                                        "Missing required parameter 'output_path'. "
+                                        "Call generate_image with output_path set to a relative file path, "
+                                        "e.g. output_path='public/images/hero.png'."
+                                    ),
+                                }
+                            else:
+                                _img_result = await _generate_image(
+                                    prompt=tc.arguments.get("prompt", ""),
+                                    output_path=_out_path,
+                                    allowed_base_dir=allowed_file_dir,
+                                    base_url=settings.comfyui_base_url,
+                                    model_name=settings.comfyui_model,
+                                    negative_prompt=tc.arguments.get("negative_prompt", ""),
+                                    width=int(tc.arguments.get("width") or 512),
+                                    height=int(tc.arguments.get("height") or 512),
+                                    steps=int(tc.arguments.get("steps") or 20),
+                                )
+                                result_dict = {
+                                    "success": _img_result.error is None,
+                                    "path": _img_result.path,
+                                    "backend": _img_result.backend,
+                                    "width": _img_result.width,
+                                    "height": _img_result.height,
+                                    "duration_ms": _img_result.duration_ms,
+                                }
+                                if _img_result.error:
+                                    result_dict["error"] = _img_result.error
+                                logger.info(
+                                    "tools stage=%-20s generate_image saved=%r ok=%s duration_ms=%d",
+                                    stage_key, _img_result.path, _img_result.error is None, _img_result.duration_ms,
+                                )
+                                if on_tool_result:
+                                    await on_tool_result("generate_image", result_dict)
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif custom_tool_handlers and tc.name in custom_tool_handlers:
