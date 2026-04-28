@@ -702,6 +702,16 @@ def _orchestrator_user_prompt(
 
 
 
+def _sub_agent_extra_tools() -> list:
+    """Return the extra tools list for sub-agents. generate_image is included only when ComfyUI is configured."""
+    from app.config import settings
+    from app.inference.client import READ_PRD_TOOL, GENERATE_IMAGE_TOOL
+    tools = [READ_PRD_TOOL]
+    if settings.comfyui_base_url:
+        tools.append(GENERATE_IMAGE_TOOL)
+    return tools
+
+
 def _sub_agent_system_prompt() -> str:
     return (
         "You are a sub-agent implementing a specific task in a software project.\n\n"
@@ -1415,7 +1425,7 @@ class OrchestratorAgent:
                         call_index=0,
                         on_tool_result=_wrapped_on_tool,
                         model_override=model_override,
-                        extra_tools=[READ_PRD_TOOL],
+                        extra_tools=_sub_agent_extra_tools(),
                         custom_tool_handlers={"read_prd": _handle_read_prd},
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title)
@@ -1437,8 +1447,10 @@ class OrchestratorAgent:
                 "blocker": last_result.get("blocker") or "",
                 "summary": last_result.get("summary") or "",
             })
-            logger.info("sub_agent: task '%s' attempt %d unsuccessful (success=false), %s",
+            logger.info("sub_agent: task '%s' attempt %d unsuccessful — blocker=%r summary=%r — %s",
                         task_title, attempt,
+                        last_result.get("blocker") or "",
+                        (last_result.get("summary") or "")[:120],
                         f"retrying with {models_to_try[attempt + 1]}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
 
         return last_result

@@ -660,8 +660,6 @@ class InferenceClient:
             available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
             if not explore_only:
                 available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
-                if settings.comfyui_base_url:
-                    available_tools.append(GENERATE_IMAGE_TOOL)
         if extra_tools:
             available_tools += extra_tools
             # If inspect_files is provided, remove read_file so the model is forced
