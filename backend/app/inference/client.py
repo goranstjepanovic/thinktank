@@ -18,16 +18,16 @@ except Exception:
 
 def _strip_markdown_json(text: str) -> str:
     """
-    Strip <think> blocks and markdown code fences from a model response so
-    the content can be parsed as JSON.  Handles ```json ... ```, ``` ... ```,
-    and leading/trailing whitespace.  Falls back to the original string if no
-    fence is found.
+    Strip <think> blocks, chat tokens, and markdown code fences from a model
+    response so the content can be parsed as JSON.
     """
     stripped = text.strip()
     # Strip <think>...</think> blocks produced by reasoning models (e.g. qwen3.5)
     stripped = re.sub(r"<think>.*?</think>", "", stripped, flags=re.DOTALL).strip()
+    # Strip Qwen/Yi chat special tokens that sometimes leak into content
+    stripped = re.sub(r"<\|im_start\|>.*?(\{)", r"\1", stripped, count=1, flags=re.DOTALL).strip()
+    stripped = re.sub(r"<\|im_end\|>", "", stripped).strip()
     # If the response already looks like JSON, do not scan for code fences.
-    # JSON string values may legitimately mention ``` markers.
     if stripped.startswith("{") or stripped.startswith("["):
         return stripped
     # Match ```json or ``` at the start, capture everything until closing ```
@@ -743,10 +743,20 @@ class InferenceClient:
             # using the structured tool-call API. Detect and promote them so
             # the normal dispatch branch handles them without a second LLM call.
             if not response.tool_calls and response.content:
+                _raw_content = _strip_markdown_json(response.content.strip())
                 try:
-                    _maybe_tc = json.loads(_strip_markdown_json(response.content.strip()))
+                    _maybe_tc = json.loads(_raw_content)
                 except json.JSONDecodeError:
+                    # Try NDJSON: multiple JSON objects on separate lines
                     _maybe_tc = None
+                    _lines = [ln.strip() for ln in _raw_content.splitlines() if ln.strip().startswith("{")]
+                    if len(_lines) >= 2:
+                        try:
+                            _parsed_lines = [json.loads(ln) for ln in _lines]
+                            if all(isinstance(o, dict) and "name" in o and "arguments" in o for o in _parsed_lines):
+                                _maybe_tc = _parsed_lines
+                        except json.JSONDecodeError:
+                            pass
                 if _maybe_tc is not None:
                     _tc_list: list[dict] = []
                     if isinstance(_maybe_tc, dict) and "name" in _maybe_tc and "arguments" in _maybe_tc:
