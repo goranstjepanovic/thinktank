@@ -739,6 +739,36 @@ class InferenceClient:
             )
             current_call_index += 1
 
+            # Some local models emit tool calls as plain-text JSON instead of
+            # using the structured tool-call API. Detect and promote them so
+            # the normal dispatch branch handles them without a second LLM call.
+            if not response.tool_calls and response.content:
+                try:
+                    _maybe_tc = json.loads(_strip_markdown_json(response.content.strip()))
+                except json.JSONDecodeError:
+                    _maybe_tc = None
+                if _maybe_tc is not None:
+                    _tc_list: list[dict] = []
+                    if isinstance(_maybe_tc, dict) and "name" in _maybe_tc and "arguments" in _maybe_tc:
+                        _tc_list = [_maybe_tc]
+                    elif isinstance(_maybe_tc, list) and all(
+                        isinstance(t, dict) and "name" in t and "arguments" in t for t in _maybe_tc
+                    ):
+                        _tc_list = _maybe_tc
+                    if _tc_list:
+                        known_names = {t.name for t in available_tools}
+                        _valid_tc = [t for t in _tc_list if t["name"] in known_names]
+                        if _valid_tc:
+                            logger.warning(
+                                "tools stage=%-20s model emitted %d tool call(s) as plain text — dispatching: %s",
+                                stage_key, len(_valid_tc), [t["name"] for t in _valid_tc],
+                            )
+                            response.tool_calls = [
+                                ToolCall(name=t["name"], arguments=t.get("arguments") or {})
+                                for t in _valid_tc
+                            ]
+                            response.content = ""
+
             # Model called a tool — execute each, append results, loop
             if response.tool_calls:
                 # Append the assistant's tool-call turn to the conversation
@@ -1242,40 +1272,6 @@ class InferenceClient:
 
             # No tool calls — model returned its final answer
             content = response.content.strip() if response.content else ""
-
-            # Some local models emit tool calls as plain-text JSON instead of
-            # using the structured tool-call API.  Detect and dispatch them so
-            # the loop continues rather than treating them as a final answer.
-            if content:
-                try:
-                    _maybe_tc = json.loads(_strip_markdown_json(content))
-                except json.JSONDecodeError:
-                    _maybe_tc = None
-                if _maybe_tc is not None:
-                    # Single tool call: {"name": "...", "arguments": {...}}
-                    _tc_list: list[dict] = []
-                    if isinstance(_maybe_tc, dict) and "name" in _maybe_tc and "arguments" in _maybe_tc:
-                        _tc_list = [_maybe_tc]
-                    # Array of tool calls: [{"name": ..., "arguments": ...}, ...]
-                    elif isinstance(_maybe_tc, list) and all(
-                        isinstance(t, dict) and "name" in t and "arguments" in t for t in _maybe_tc
-                    ):
-                        _tc_list = _maybe_tc
-                    if _tc_list:
-                        known_names = {t.name for t in available_tools}
-                        _valid = [t for t in _tc_list if t["name"] in known_names]
-                        if _valid:
-                            logger.warning(
-                                "tools stage=%-20s model emitted %d tool call(s) as plain text — dispatching: %s",
-                                stage_key, len(_valid), [t["name"] for t in _valid],
-                            )
-                            response.tool_calls = [
-                                ToolCall(name=t["name"], arguments=t.get("arguments") or {})
-                                for t in _valid
-                            ]
-                            # Don't append to working_messages here — the tool-dispatch
-                            # branch above will handle it on the next iteration.
-                            continue
 
             if not return_json:
                 return content
