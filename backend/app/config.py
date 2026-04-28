@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # If not set, DuckDuckGo is used automatically (no key required).
     tavily_api_key: str = ""
 
+    # Image generation (ComfyUI — local, free)
+    # Start ComfyUI first, then set these in .env.
+    # COMFYUI_MODEL: checkpoint filename as it appears in ComfyUI (e.g. "sd_xl_base_1.0.safetensors").
+    # Leave empty to auto-detect the first available model.
+    comfyui_base_url: str = "http://localhost:8188"
+    comfyui_model: str = ""
+
     # Pipeline
     max_concurrent_branches: int = 4
     initial_branches_per_idea: int = 2

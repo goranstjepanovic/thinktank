@@ -311,6 +311,47 @@ READ_PRD_TOOL = ToolDefinition(
     },
 )
 
+GENERATE_IMAGE_TOOL = ToolDefinition(
+    name="generate_image",
+    description=(
+        "Generate an image from a text prompt using the local ComfyUI service and save it "
+        "to the project directory. Returns the relative path where the image was written. "
+        "Use this to create image assets the project needs: hero images, backgrounds, icons, "
+        "logos, placeholders, etc. The output_path must be relative to the project root "
+        "(e.g. 'public/images/hero.png', 'assets/logo.png', 'src/assets/bg.jpg')."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Detailed description of the image to generate.",
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Relative path within the project to save the image (e.g. 'public/images/hero.png').",
+            },
+            "negative_prompt": {
+                "type": "string",
+                "description": "Things to avoid in the image. Defaults to generic quality filters.",
+            },
+            "width": {
+                "type": "integer",
+                "description": "Width in pixels (default 512, max 2048). Use 1024 for SDXL models.",
+            },
+            "height": {
+                "type": "integer",
+                "description": "Height in pixels (default 512, max 2048). Use 1024 for SDXL models.",
+            },
+            "steps": {
+                "type": "integer",
+                "description": "Number of diffusion steps (default 20). More steps = higher quality but slower.",
+            },
+        },
+        "required": ["prompt", "output_path"],
+    },
+)
+
 INSPECT_FILES_TOOL = ToolDefinition(
     name="inspect_files",
     description=(
@@ -619,6 +660,8 @@ class InferenceClient:
             available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
             if not explore_only:
                 available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
+                if settings.comfyui_base_url:
+                    available_tools.append(GENERATE_IMAGE_TOOL)
         if extra_tools:
             available_tools += extra_tools
             # If inspect_files is provided, remove read_file so the model is forced
@@ -1103,6 +1146,44 @@ class InferenceClient:
                                     "pattern": _pattern,
                                     "match_count": len(result_dict.get("matches", [])),
                                 })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "generate_image":
+                        if not allowed_file_dir or explore_only:
+                            result_dict = {"success": False, "error": "generate_image not available in this context"}
+                        elif not settings.comfyui_base_url:
+                            result_dict = {"success": False, "error": "ComfyUI is not configured (set COMFYUI_BASE_URL in .env)"}
+                        else:
+                            from app.tools.image_generator import generate_image as _generate_image
+                            import time as _time
+                            _t0 = _time.monotonic()
+                            _img_result = await _generate_image(
+                                prompt=tc.arguments.get("prompt", ""),
+                                output_path=tc.arguments.get("output_path", ""),
+                                allowed_base_dir=allowed_file_dir,
+                                base_url=settings.comfyui_base_url,
+                                model_name=settings.comfyui_model,
+                                negative_prompt=tc.arguments.get("negative_prompt", ""),
+                                width=int(tc.arguments.get("width") or 512),
+                                height=int(tc.arguments.get("height") or 512),
+                                steps=int(tc.arguments.get("steps") or 20),
+                            )
+                            result_dict = {
+                                "success": _img_result.error is None,
+                                "path": _img_result.path,
+                                "backend": _img_result.backend,
+                                "width": _img_result.width,
+                                "height": _img_result.height,
+                                "duration_ms": _img_result.duration_ms,
+                            }
+                            if _img_result.error:
+                                result_dict["error"] = _img_result.error
+                            logger.info(
+                                "tools stage=%-20s generate_image path=%r ok=%s duration_ms=%d",
+                                stage_key, _img_result.path, _img_result.error is None, _img_result.duration_ms,
+                            )
+                            if on_tool_result:
+                                await on_tool_result("generate_image", result_dict)
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif custom_tool_handlers and tc.name in custom_tool_handlers:
