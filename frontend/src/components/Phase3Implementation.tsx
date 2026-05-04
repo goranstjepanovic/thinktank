@@ -86,7 +86,7 @@ type ActivityEntry =
   | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
   | { kind: 'orchestrator_thinking'; id: number }
   | { kind: 'orchestrator_message'; id: number; content: string }
-  | { kind: 'sub_agent_block'; id: number; taskId: string; title: string; status: 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
+  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
 
 let _entryId = 0;
 const nextId = () => ++_entryId;
@@ -378,8 +378,8 @@ const UPDATE_ICONS: Record<string, string> = {
   web_search: '🌐',
 };
 
-function TaskBlock({ taskId: _taskId, title, status, summary, filesWritten, blocker, updates, onStop }: {
-  taskId: string; title: string; status: 'running' | 'done' | 'blocked';
+function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, onStop }: {
+  taskId: string; agentId?: string; title: string; status: 'running' | 'done' | 'blocked';
   summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
   onStop?: () => void;
 }) {
@@ -413,8 +413,15 @@ function TaskBlock({ taskId: _taskId, title, status, summary, filesWritten, bloc
             </span>
           ) : statusIcon}
         </span>
-        <span style={{ fontSize: 13, fontWeight: 600, flex: 1, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {title}
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {title}
+          </span>
+          {agentId && (
+            <span style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'monospace', display: 'block' }}>
+              #{agentId}
+            </span>
+          )}
         </span>
         {filesWritten.length > 0 && (
           <span style={{ fontSize: 11, color: 'var(--text2)', flexShrink: 0 }}>
@@ -501,6 +508,7 @@ function CompletedGroup({ tasks, allSucceeded, allTotal, onStop }: {
         <TaskBlock
           key={t.id}
           taskId={t.taskId}
+          agentId={t.agentId}
           title={t.title}
           status={t.status}
           summary={t.summary}
@@ -1208,7 +1216,7 @@ export function Phase3Implementation() {
           } else if (e.event_type === 'sub_agent_complete') {
             const success = e.payload.success as boolean;
             const blocker = (e.payload.blocker as string) ?? null;
-            return [{ kind: 'sub_agent_block', id: nextId(), taskId: e.payload.task_id as string, title: (e.payload.title as string) || `Task ${e.payload.task_id}`, status: success && !blocker ? 'done' : 'blocked', summary: e.payload.summary as string, filesWritten: (e.payload.files_written as string[]) ?? [], blocker, updates: [], ts: e.created_at }];
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId: e.payload.task_id as string, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${e.payload.task_id}`, status: success && !blocker ? 'done' : 'blocked', summary: e.payload.summary as string, filesWritten: (e.payload.files_written as string[]) ?? [], blocker, updates: [], ts: e.created_at }];
           } else {
             // Skip unknown event types (sub_agent_started, orchestrator_thinking, etc.)
             return [];
@@ -1392,6 +1400,7 @@ export function Phase3Implementation() {
           addEntry({
             kind: 'sub_agent_block', id: nextId(),
             taskId: event.payload.task_id as string,
+            agentId: event.payload.agent_id as string | undefined,
             title: event.payload.title as string,
             status: 'running',
             summary: '',
@@ -1894,6 +1903,7 @@ export function Phase3Implementation() {
                         <TaskBlock
                           key={t.id}
                           taskId={t.taskId}
+                          agentId={t.agentId}
                           title={t.title}
                           status={t.status}
                           summary={t.summary}
@@ -1906,6 +1916,7 @@ export function Phase3Implementation() {
                         <TaskBlock
                           key={t.id}
                           taskId={t.taskId}
+                          agentId={t.agentId}
                           title={t.title}
                           status={t.status}
                           summary={t.summary}

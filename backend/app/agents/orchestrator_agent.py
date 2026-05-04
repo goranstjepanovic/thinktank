@@ -18,6 +18,7 @@ Flow:
 
 import asyncio
 import logging
+import uuid
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -1179,9 +1180,11 @@ class OrchestratorAgent:
             for t in valid_tasks:
                 task_id = str(t.get("id") or f"task_{round_idx}")
                 task_title = str(t.get("title") or "Task")[:80]
+                agent_id = uuid.uuid4().hex[:8]
                 t["_id"] = task_id
                 t["_title"] = task_title
-                await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title})
+                t["_agent_id"] = agent_id
+                await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
 
             # Detect established source layout so sub-agents stay consistent
             _structure = _detect_project_structure(completed_tasks)
@@ -1200,6 +1203,7 @@ class OrchestratorAgent:
                 await on_orchestrator_event("sub_agent_complete", {
                     "task_id": task_id,
                     "title": task_title,
+                    "agent_id": t.get("_agent_id"),
                     "summary": sub_result.get("summary", ""),
                     "files_written": sub_result.get("files_written", []),
                     "commands_run": sub_result.get("commands_run", []),
@@ -1244,6 +1248,7 @@ class OrchestratorAgent:
         async def _run_one(t: dict) -> dict:
             task_id = t["_id"]
             task_title = t["_title"]
+            agent_id = t.get("_agent_id", task_id)
             instruction = str(t.get("instruction") or "").strip()
             try:
                 return await self._run_sub_agent(
@@ -1252,6 +1257,7 @@ class OrchestratorAgent:
                     on_tool_result, on_orchestrator_event,
                     source_root=source_root,
                     prd_content=prd_content,
+                    agent_id=agent_id,
                 )
             except asyncio.CancelledError:
                 await on_orchestrator_event("sub_agent_complete", {
@@ -1362,8 +1368,9 @@ class OrchestratorAgent:
         on_orchestrator_event: OnOrchestratorEvent,
         source_root: str | None = None,
         prd_content: str | None = None,
+        agent_id: str | None = None,
     ) -> dict:
-        logger.info("sub_agent: starting task '%s' (%s)", task_title, task_id)
+        logger.info("sub_agent: starting task '%s' (%s) agent=%s", task_title, task_id, agent_id or "?")
 
         async def _wrapped_on_tool(tool_name: str, result: dict) -> None:
             await on_tool_result(tool_name, result)
@@ -1427,6 +1434,7 @@ class OrchestratorAgent:
                         model_override=model_override,
                         extra_tools=_sub_agent_extra_tools(),
                         custom_tool_handlers={"read_prd": _handle_read_prd},
+                        agent_id=agent_id,
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title)
             except Exception as e:

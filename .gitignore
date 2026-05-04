@@ -27,9 +27,7 @@ frontend/.env.local
 .vscode/
 .idea/
 *.swp
-
-# Claude Code
-.claude/settings.local.json
+.claude/
 
 # OS
 .DS_Store

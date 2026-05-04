@@ -616,6 +616,7 @@ class InferenceClient:
         extra_tools: "list[ToolDefinition] | None" = None,
         custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
         model_override: str | None = None,
+        agent_id: str | None = None,
     ) -> dict | str:
         """
         Multi-turn tool-use call. The model may invoke `run_python` zero or more times
@@ -669,11 +670,13 @@ class InferenceClient:
                 available_tools = [t for t in available_tools if t.name != "read_file"]
 
         effective_model = model_override or stage_cfg.model
-        logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s",
-                    stage_key, effective_model, [t.name for t in available_tools], max_tool_rounds if max_tool_rounds is not None else "unlimited")
+        _agent_suffix = f"  agent={agent_id}" if agent_id else ""
+        logger.info("tools stage=%-20s model=%s  tools=%s  round_limit=%s%s",
+                    stage_key, effective_model, [t.name for t in available_tools],
+                    max_tool_rounds if max_tool_rounds is not None else "unlimited", _agent_suffix)
         round_num = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
-            logger.info("tools stage=%-20s round=%d", stage_key, round_num)
+            logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
                 model=effective_model,
                 messages=working_messages,
@@ -800,6 +803,10 @@ class InferenceClient:
                             "exit_code": script_result.exit_code,
                             "timed_out": script_result.timed_out,
                         }
+                        _script_hint = " ".join(script.split())[:80]
+                        _py_status = "TIMEOUT" if script_result.timed_out else f"exit={script_result.exit_code}"
+                        logger.info("tools stage=%-20s run_python %s dur=%dms | %s%s",
+                                    stage_key, _py_status, script_result.duration_ms, _script_hint, _agent_suffix)
                         await self._log_script_execution(
                             session=session, idea_id=idea_id, branch_id=branch_id,
                             stage_result_id=stage_result_id, call_index=current_call_index,
@@ -1095,8 +1102,8 @@ class InferenceClient:
                                 except Exception as _e:
                                     entries = []
                                 result_dict = {"path": _rel or ".", "entries": entries}
-                            logger.info("tools stage=%-20s list_files path=%r → %d entries",
-                                        stage_key, _rel or ".", len(result_dict.get("entries", [])))
+                            logger.info("tools stage=%-20s list_files path=%r → %d entries%s",
+                                        stage_key, _rel or ".", len(result_dict.get("entries", [])), _agent_suffix)
                             if on_tool_result:
                                 await on_tool_result("list_files", {
                                     "path": _rel or ".",
@@ -1138,7 +1145,7 @@ class InferenceClient:
                                         }
                                 except Exception as _e:
                                     result_dict = {"error": f"failed to read: {_e}"}
-                            logger.info("tools stage=%-20s read_file path=%r", stage_key, _rel)
+                            logger.info("tools stage=%-20s read_file path=%r%s", stage_key, _rel, _agent_suffix)
                             if on_tool_result:
                                 await on_tool_result("read_file", {"path": _rel})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
@@ -1198,8 +1205,8 @@ class InferenceClient:
                                     }
                                 except Exception as _e:
                                     result_dict = {"error": f"grep failed: {_e}"}
-                            logger.info("tools stage=%-20s grep_files pattern=%r → %d matches",
-                                        stage_key, _pattern, len(result_dict.get("matches", [])))
+                            logger.info("tools stage=%-20s grep_files pattern=%r → %d matches%s",
+                                        stage_key, _pattern, len(result_dict.get("matches", [])), _agent_suffix)
                             if on_tool_result:
                                 await on_tool_result("grep_files", {
                                     "pattern": _pattern,

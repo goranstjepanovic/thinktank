@@ -168,8 +168,9 @@ stages:
     think: false
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "qwen3.6:27b"
+    model: "mrthp/omnicoder2"
     fallback_models:
+      - "qwen3.6:27b"
       - "qwen3-coder:30b"
       - "gemma4:latest"
       - "qwen2.5-coder:14b"

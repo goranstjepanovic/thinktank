@@ -11,7 +11,8 @@
       "Bash(curl -s http://127.0.0.1:7700/api/v1/health)",
       "Bash(taskkill /F /IM uvicorn.exe)",
       "Bash(curl *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(.venv/Scripts/python.exe -c ' *)"
     ]
   }
 }
