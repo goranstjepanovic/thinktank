@@ -463,6 +463,13 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
       {expanded && updates.length > 0 && (
         <div style={{ borderTop: '1px solid var(--border)', padding: '6px 12px', maxHeight: 240, overflowY: 'auto' }}>
           {updates.map((u, i) => {
+            if (u.updateType === 'message') {
+              return (
+                <div key={i} style={{ padding: '4px 0', fontSize: 11, color: 'var(--text)', fontStyle: 'italic', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                  {u.detail}
+                </div>
+              );
+            }
             const icon = UPDATE_ICONS[u.updateType] ?? '·';
             const isFile = u.updateType === 'file_edit';
             return (

@@ -17,6 +17,7 @@ Flow:
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -1400,6 +1401,21 @@ class OrchestratorAgent:
                 "result": result,
             })
 
+        async def _on_text_response(raw: str) -> None:
+            text = raw.strip()
+            try:
+                obj = json.loads(text)
+                if isinstance(obj, dict):
+                    text = str(obj.get("message") or obj.get("summary") or text).strip()
+            except Exception:
+                pass
+            if text:
+                await on_orchestrator_event("sub_agent_update", {
+                    "task_id": task_id,
+                    "update_type": "message",
+                    "detail": text[:300],
+                })
+
         async def _handle_read_prd(_args: dict) -> dict:
             return {"prd": prd_content or "", "length": len(prd_content or "")}
 
@@ -1440,6 +1456,7 @@ class OrchestratorAgent:
                         return_json=True,
                         call_index=0,
                         on_tool_result=_wrapped_on_tool,
+                        on_text_response=_on_text_response,
                         model_override=model_override,
                         extra_tools=_sub_agent_extra_tools(),
                         custom_tool_handlers={"read_prd": _handle_read_prd},

@@ -611,7 +611,8 @@ class InferenceClient:
         max_tool_rounds: int | None = 8,
         allowed_file_dir: str | None = None,
         explore_only: bool = False,
-        on_tool_result=None,  # Optional[Callable[[str, dict], Awaitable[None]]]
+        on_tool_result=None,   # Optional[Callable[[str, dict], Awaitable[None]]]
+        on_text_response=None, # Optional[Callable[[str], Awaitable[None]]] — fires when model returns text with no tool calls
         return_json: bool = True,
         extra_tools: "list[ToolDefinition] | None" = None,
         custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
@@ -1291,6 +1292,8 @@ class InferenceClient:
             content = response.content.strip() if response.content else ""
             _preview = " ".join(content.split())[:120]
             logger.info("tools stage=%-20s round=%d → no tool calls: %r%s", stage_key, round_num, _preview, _agent_suffix)
+            if on_text_response and content:
+                await on_text_response(content)
 
             if not return_json:
                 return content
