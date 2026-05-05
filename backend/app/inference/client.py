@@ -151,9 +151,11 @@ LIST_FILES_TOOL = ToolDefinition(
 READ_FILE_TOOL = ToolDefinition(
     name="read_file",
     description=(
-        "Read the contents of a file in the project directory. "
-        "Use this to inspect a specific file before deciding what to change. "
-        "Large files are automatically truncated."
+        "Read a file's contents, optionally within a line range. "
+        "Without start_line/end_line: returns the first 200 lines plus total_lines and size_bytes — "
+        "check total_lines to know if you need more reads. "
+        "With start_line and end_line: returns exactly those lines (0-indexed, end_line exclusive). "
+        "Use this to read large files in chunks, e.g. read_file(path, 200, 400) for lines 200–399."
     ),
     parameters={
         "type": "object",
@@ -161,6 +163,14 @@ READ_FILE_TOOL = ToolDefinition(
             "path": {
                 "type": "string",
                 "description": "Relative path to the file (e.g. 'backend/app/main.py').",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "First line to read, 0-indexed. Omit to start from line 0.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Exclusive end line (e.g. 400 returns lines 0–399). Omit to read one 200-line chunk from start_line.",
             },
         },
         "required": ["path"],
@@ -1150,7 +1160,7 @@ class InferenceClient:
                             result_dict = {"error": "read_file not available in this context"}
                         else:
                             from pathlib import Path as _Path
-                            _MAX_READ = 12_000
+                            _CHUNK = 200  # default lines per read
                             _base = _Path(allowed_file_dir).resolve()
                             _rel = normalize_project_relative_path(
                                 allowed_file_dir,
@@ -1169,17 +1179,29 @@ class InferenceClient:
                                     if b"\x00" in raw_bytes[:512]:
                                         result_dict = {"error": "binary file — cannot read as text"}
                                     else:
-                                        text = raw_bytes[:_MAX_READ].decode("utf-8", errors="replace")
-                                        truncated = len(raw_bytes) > _MAX_READ
+                                        all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
+                                        total_lines = len(all_lines)
+                                        _arg_start = tc.arguments.get("start_line")
+                                        _arg_end = tc.arguments.get("end_line")
+                                        start = int(_arg_start) if _arg_start is not None else 0
+                                        end = int(_arg_end) if _arg_end is not None else min(start + _CHUNK, total_lines)
+                                        start = max(0, min(start, total_lines))
+                                        end = max(start, min(end, total_lines))
+                                        chunk = all_lines[start:end]
                                         result_dict = {
                                             "path": _rel,
-                                            "content": text + ("\n... (truncated)" if truncated else ""),
+                                            "content": "".join(chunk),
+                                            "start_line": start,
+                                            "end_line": end,
+                                            "total_lines": total_lines,
                                             "size_bytes": len(raw_bytes),
-                                            "truncated": truncated,
                                         }
                                 except Exception as _e:
                                     result_dict = {"error": f"failed to read: {_e}"}
-                            logger.info("tools stage=%-20s read_file path=%r%s", stage_key, _rel, _agent_suffix)
+                            _range_str = ""
+                            if "start_line" in result_dict or "end_line" in result_dict:
+                                _range_str = f" lines={result_dict.get('start_line', 0)}-{result_dict.get('end_line', '?')}/{result_dict.get('total_lines', '?')}"
+                            logger.info("tools stage=%-20s read_file path=%r%s%s", stage_key, _rel, _range_str, _agent_suffix)
                             if on_tool_result:
                                 await on_tool_result("read_file", {"path": _rel})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
