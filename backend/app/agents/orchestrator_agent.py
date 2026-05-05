@@ -1177,7 +1177,7 @@ class OrchestratorAgent:
             )
             await on_orchestrator_event("orchestrator_message", {"content": plan_msg})
 
-            # Emit started events for all tasks upfront
+            # Emit queued events for all tasks upfront; started fires per-task once a slot is free
             for t in valid_tasks:
                 task_id = str(t.get("id") or f"task_{round_idx}")
                 task_title = str(t.get("title") or "Task")[:80]
@@ -1185,7 +1185,7 @@ class OrchestratorAgent:
                 t["_id"] = task_id
                 t["_title"] = task_title
                 t["_agent_id"] = agent_id
-                await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
+                await on_orchestrator_event("sub_agent_queued", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
 
             # Detect established source layout so sub-agents stay consistent
             _structure = _detect_project_structure(completed_tasks)
@@ -1251,6 +1251,7 @@ class OrchestratorAgent:
             task_title = t["_title"]
             agent_id = t.get("_agent_id", task_id)
             instruction = str(t.get("instruction") or "").strip()
+            await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
             try:
                 return await self._run_sub_agent(
                     idea, branch, output_dir,

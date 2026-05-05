@@ -86,7 +86,7 @@ type ActivityEntry =
   | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
   | { kind: 'orchestrator_thinking'; id: number }
   | { kind: 'orchestrator_message'; id: number; content: string }
-  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
+  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
 
 let _entryId = 0;
 const nextId = () => ++_entryId;
@@ -379,15 +379,16 @@ const UPDATE_ICONS: Record<string, string> = {
 };
 
 function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, onStop }: {
-  taskId: string; agentId?: string; title: string; status: 'running' | 'done' | 'blocked';
+  taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked';
   summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
   onStop?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isRunning = status === 'running';
+  const isQueued = status === 'queued';
 
   const statusColor = status === 'done' ? 'var(--green)' : status === 'blocked' ? 'var(--yellow)' : 'var(--text2)';
-  const statusIcon = status === 'done' ? '✓' : status === 'blocked' ? '⚠' : null;
+  const statusIcon = status === 'done' ? '✓' : status === 'blocked' ? '⚠' : isQueued ? '⏳' : null;
 
   return (
     <div style={{
@@ -404,6 +405,7 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
           display: 'flex', alignItems: 'center', gap: 8,
           padding: '8px 12px', cursor: 'pointer',
           userSelect: 'none',
+          opacity: isQueued ? 0.5 : 1,
         }}
       >
         <span style={{ color: statusColor, fontWeight: 700, flexShrink: 0, fontSize: 13, minWidth: 16 }}>
@@ -1396,18 +1398,22 @@ export function Phase3Implementation() {
           });
           break;
 
-        case 'phase3.sub_agent_started':
+        case 'phase3.sub_agent_queued':
           addEntry({
             kind: 'sub_agent_block', id: nextId(),
             taskId: event.payload.task_id as string,
             agentId: event.payload.agent_id as string | undefined,
             title: event.payload.title as string,
-            status: 'running',
+            status: 'queued',
             summary: '',
             filesWritten: [],
             blocker: null,
             updates: [],
           });
+          break;
+
+        case 'phase3.sub_agent_started':
+          updateSubAgentBlock(event.payload.task_id as string, e => ({ ...e, status: 'running' }));
           break;
 
         case 'phase3.sub_agent_model_fallback': {
@@ -1875,8 +1881,9 @@ export function Phase3Implementation() {
             {/* Right: tasks panel */}
             {(() => {
               const allTasks = log.filter((e): e is SubAgentBlockEntry => e.kind === 'sub_agent_block');
+              const queuedTasks = allTasks.filter(t => t.status === 'queued');
               const runningTasks = allTasks.filter(t => t.status === 'running');
-              const completedTasks = allTasks.filter(t => t.status !== 'running');
+              const completedTasks = allTasks.filter(t => t.status === 'done' || t.status === 'blocked');
               const recentCompleted = completedTasks.slice(-3);
               const olderCompleted = completedTasks.slice(0, -3);
               const succeededTotal = completedTasks.filter(t => t.status === 'done').length;
@@ -1926,6 +1933,26 @@ export function Phase3Implementation() {
                           onStop={doCancel}
                         />
                       ))}
+                      {queuedTasks.length > 0 && (
+                        <>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '10px 0 4px' }}>
+                            Queued · {queuedTasks.length}
+                          </p>
+                          {queuedTasks.map(t => (
+                            <TaskBlock
+                              key={t.id}
+                              taskId={t.taskId}
+                              agentId={t.agentId}
+                              title={t.title}
+                              status={t.status}
+                              summary={t.summary}
+                              filesWritten={t.filesWritten}
+                              blocker={t.blocker}
+                              updates={t.updates}
+                            />
+                          ))}
+                        </>
+                      )}
                     </>
                   )}
                 </div>
