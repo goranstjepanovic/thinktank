@@ -29,6 +29,7 @@ class BackendConfig:
 class ResourceConfig:
     max_concurrent_branches: int
     initial_branches_per_idea: int
+    max_parallel_sub_agents: int = 1
 
 
 class ModelRegistry:
@@ -67,6 +68,7 @@ class ModelRegistry:
         self.resources = ResourceConfig(
             max_concurrent_branches=res.get("max_concurrent_branches", 4),
             initial_branches_per_idea=res.get("initial_branches_per_idea", 2),
+            max_parallel_sub_agents=res.get("max_parallel_sub_agents", 1),
         )
 
     def get_stage(self, stage_key: str) -> StageConfig:

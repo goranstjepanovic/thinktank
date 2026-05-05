@@ -186,3 +186,4 @@ resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2
   max_branches_per_idea: 10
+  max_parallel_sub_agents: 1

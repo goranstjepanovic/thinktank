@@ -24,6 +24,7 @@ from typing import Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.models import Idea, Phase3Session, SolutionBranch
 from app.inference.base import Message
@@ -1274,7 +1275,14 @@ class OrchestratorAgent:
         if len(tasks) == 1:
             return [await _run_one(tasks[0])]
 
-        results = await asyncio.gather(*[_run_one(t) for t in tasks], return_exceptions=True)
+        limit = settings.max_parallel_sub_agents
+        semaphore = asyncio.Semaphore(limit)
+
+        async def _run_one_limited(t: dict) -> dict:
+            async with semaphore:
+                return await _run_one(t)
+
+        results = await asyncio.gather(*[_run_one_limited(t) for t in tasks], return_exceptions=True)
         out: list[dict] = []
         for t, r in zip(tasks, results):
             if isinstance(r, BaseException):
