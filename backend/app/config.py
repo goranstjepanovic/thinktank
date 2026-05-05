@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     max_concurrent_branches: int = 4
     initial_branches_per_idea: int = 2
     max_branches_per_idea: int = 6  # hard cap — prevents runaway spawning
-    max_parallel_sub_agents: int = 1  # Phase 3: max sub-agents running simultaneously; rest queue
 
     # Script runner (F16) — sandboxed Python, short timeout
     script_runner_timeout_seconds: int = 30

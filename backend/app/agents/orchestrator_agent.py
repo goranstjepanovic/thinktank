@@ -1332,8 +1332,9 @@ class OrchestratorAgent:
         if len(tasks) == 1:
             return [await _run_one(tasks[0])]
 
-        limit = settings.max_parallel_sub_agents
-        semaphore = asyncio.Semaphore(limit)
+        limit = self._client._registry.resources.max_parallel_sub_agents
+        semaphore = asyncio.Semaphore(max(1, limit))
+        logger.debug("sub_agent_batch: running %d task(s) with concurrency limit=%d", len(tasks), limit)
 
         async def _run_one_limited(t: dict) -> dict:
             async with semaphore:
