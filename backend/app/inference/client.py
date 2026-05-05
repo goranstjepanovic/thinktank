@@ -676,7 +676,7 @@ class InferenceClient:
                     max_tool_rounds if max_tool_rounds is not None else "unlimited", _agent_suffix)
         round_num = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
-            logger.debug("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
+            logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
                 model=effective_model,
                 messages=working_messages,
@@ -1289,6 +1289,8 @@ class InferenceClient:
 
             # No tool calls — model returned its final answer
             content = response.content.strip() if response.content else ""
+            _preview = " ".join(content.split())[:120]
+            logger.info("tools stage=%-20s round=%d → no tool calls: %r%s", stage_key, round_num, _preview, _agent_suffix)
 
             if not return_json:
                 return content
