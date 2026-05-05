@@ -676,7 +676,7 @@ class InferenceClient:
                     max_tool_rounds if max_tool_rounds is not None else "unlimited", _agent_suffix)
         round_num = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
-            logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
+            logger.debug("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
                 model=effective_model,
                 messages=working_messages,
