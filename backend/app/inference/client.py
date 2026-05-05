@@ -676,6 +676,8 @@ class InferenceClient:
                     stage_key, effective_model, [t.name for t in available_tools],
                     max_tool_rounds if max_tool_rounds is not None else "unlimited", _agent_suffix)
         round_num = 0
+        _stall_sig: frozenset | None = None
+        _stall_count = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
@@ -785,6 +787,37 @@ class InferenceClient:
 
             # Model called a tool — execute each, append results, loop
             if response.tool_calls:
+                # Stall detection: if the model keeps calling the same tool(s) with the same
+                # arguments round after round, it's stuck. Inject a nudge after 3 repeats.
+                _round_sig = frozenset(
+                    (tc.name, json.dumps(tc.arguments, sort_keys=True))
+                    for tc in response.tool_calls
+                )
+                if _round_sig == _stall_sig:
+                    _stall_count += 1
+                else:
+                    _stall_sig = _round_sig
+                    _stall_count = 1
+                if _stall_count >= 3:
+                    _stalled_tools = ", ".join(tc.name for tc in response.tool_calls)
+                    logger.warning(
+                        "tools stage=%-20s stall: same call (%s) repeated %d times — nudging%s",
+                        stage_key, _stalled_tools, _stall_count, _agent_suffix,
+                    )
+                    working_messages.append(Message(
+                        role="user",
+                        content=(
+                            f"You have called `{_stalled_tools}` with identical arguments "
+                            f"{_stall_count} times in a row and received the same result each time. "
+                            "This loop is not making progress.\n\n"
+                            "STOP all exploration now. Call `file_edit` to write your assigned files "
+                            "immediately. If you are unsure of the exact content, write your best "
+                            "implementation — do not call any listing or reading tools again."
+                        ),
+                    ))
+                    _stall_sig = None
+                    _stall_count = 0
+
                 # Append the assistant's tool-call turn to the conversation
                 working_messages.append(
                     Message(role="assistant", content="", tool_calls=response.tool_calls)
