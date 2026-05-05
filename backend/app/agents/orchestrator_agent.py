@@ -169,6 +169,17 @@ def _write_progress_md(
         logger.warning("progress_md: failed to write: %s", exc)
 
 
+def _read_services_json(output_dir: str) -> dict | None:
+    """Read SERVICES.json from the output directory, returning None if absent or malformed."""
+    try:
+        path = Path(output_dir) / "SERVICES.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("services_json: failed to read: %s", exc)
+    return None
+
+
 _MAX_PRD_CHARS = 24_000
 
 
@@ -266,6 +277,16 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "  • Vite projects → no Rollup config at root; Vite IS the bundler\n"
         "  • SvelteKit → use @sveltejs/kit, not bare vite-plugin-svelte directly\n"
         "- When writing a task instruction that involves package.json, explicitly state the exact compatible versions to use.\n\n"
+        "## Startup scripts — mandatory before done=true\n\n"
+        "Sub-agents register every runnable service in `SERVICES.json` at the project root. "
+        "When you are about to set `done: true`, check the current user prompt for a SERVICES.json block. "
+        "If it is present and a startup script has NOT yet been completed, you MUST dispatch a "
+        "'Create startup scripts' task BEFORE setting `done: true`:\n"
+        "  - Read SERVICES.json\n"
+        "  - Write `start.sh` (Linux/Mac) and `start.bat` (Windows) that install dependencies "
+        "and start each service in the correct order\n"
+        "  - Update README.md with 'How to run' instructions including URLs/ports for each service\n"
+        "Only after that task completes may you set `done: true`.\n\n"
         "## Critical rule — what sub-agent tasks ARE and ARE NOT\n\n"
         "Sub-agent tasks exist for ONE purpose only: **writing files and running commands**.\n"
         "They cannot help you explore the project — exploration is YOUR job via your own tools.\n\n"
@@ -521,6 +542,7 @@ def _orchestrator_user_prompt(
     prd_sections: list[str] | None = None,
     interface_summary: str | None = None,
     file_tree: str | None = None,
+    services_json: dict | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -690,6 +712,15 @@ def _orchestrator_user_prompt(
     if file_tree and completed_tasks:
         tree_block = f"\n\n## Current project files\n\n```\n{file_tree}\n```"
 
+    services_block = ""
+    if services_json and services_json.get("services"):
+        services_block = (
+            "\n\n## SERVICES.json — registered entry points\n\n"
+            "```json\n" + json.dumps(services_json, indent=2) + "\n```\n\n"
+            "Use this when writing the startup script task instruction. "
+            "If no 'Create startup scripts' task has been completed yet, dispatch it before setting done=true."
+        )
+
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
@@ -698,6 +729,7 @@ def _orchestrator_user_prompt(
         f"{structure_block}"
         f"{tree_block}"
         f"{interface_block}"
+        f"{services_block}"
         f"{feedback_block}\n\n"
         f"{start_hint}"
         f"{verify_block}"
@@ -756,6 +788,25 @@ def _sub_agent_system_prompt() -> str:
         "Never use file_edit to write text/SVG content to .png/.jpg paths — file_edit will reject it.\n"
         "- For other binary files (fonts, videos, etc.) skip them and note it in your summary\n"
         "- Use `delete_path` to remove deprecated or unused files/directories — do not leave dead code\n\n"
+        "## Service registration — SERVICES.json\n\n"
+        "If your task creates any runnable process a user needs to start — an HTTP server, API, "
+        "frontend dev server, CLI entry point, WebSocket server, etc. — you MUST write or update "
+        "`SERVICES.json` at the project root. Read the existing file first (if present) and preserve "
+        "other entries. Write the complete updated file using `file_edit` with path `SERVICES.json`.\n\n"
+        "Schema:\n"
+        "```json\n"
+        '{"services": [{\n'
+        '  "name": "backend",\n'
+        '  "entry_file": "backend/main.py",\n'
+        '  "start_command": "uvicorn main:app --host 0.0.0.0 --port 8000",\n'
+        '  "port": 8000,\n'
+        '  "install_command": "pip install -r requirements.txt",\n'
+        '  "env_file": ".env"\n'
+        "}]}\n"
+        "```\n"
+        "Fields: `name` (short id), `entry_file` (relative path), `start_command` (exact command to run), "
+        "`port` (null if not a network service), `install_command` (null if no install step), "
+        "`env_file` (null if none). Do NOT register build steps, test runners, or one-off scripts.\n\n"
         "## Package and dependency rules\n\n"
         "- Use only ONE build tool / package manager at the project root — never create a second package.json tree "
         "that depends on the first (no nested app-within-app structures)\n"
@@ -890,6 +941,7 @@ class OrchestratorAgent:
 
             # Build orchestrator messages with accumulated context
             _file_tree = _build_file_tree(output_dir) if output_dir else None
+            _services_json = _read_services_json(output_dir) if output_dir else None
             orch_messages = [
                 Message(role="system", content=_orchestrator_system_prompt(prd_content)),
                 Message(role="user", content=_orchestrator_user_prompt(
@@ -899,6 +951,7 @@ class OrchestratorAgent:
                     prd_sections=_prd_sections if _verification_pending else None,
                     interface_summary=_interface_summary,
                     file_tree=_file_tree,
+                    services_json=_services_json,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
@@ -997,10 +1050,10 @@ class OrchestratorAgent:
                     branch_id=branch.id,
                     allowed_file_dir=output_dir,
                     explore_only=True,
-                    # 10 rounds: list_files (1-2, served from cached tree) +
-                    # inspect_files (1-2 batches) + dispatch JSON (1) + spare.
-                    # Verification: 15 rounds — needs to inspect all files then classify.
-                    max_tool_rounds=15 if _verification_pending else 10,
+                    # 20 rounds: inspect_files (up to 3 batches of 10 files) +
+                    # grep/list (2-3) + build check (1) + dispatch JSON (1) + spare.
+                    # Verification: 25 rounds — must inspect every file then classify each PRD section.
+                    max_tool_rounds=25 if _verification_pending else 20,
                     return_json=True,
                     call_index=round_idx * 100,
                     on_tool_result=_orch_tool_cb,
