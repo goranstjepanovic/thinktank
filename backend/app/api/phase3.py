@@ -235,6 +235,9 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 title = str(data.get("title", ""))
                 agent_id = str(data.get("agent_id", ""))
                 await event_bus.publish(ev.phase3_sub_agent_queued(idea_id, session_id, task_id, title, agent_id))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_queued", payload_json=json.dumps({"task_id": task_id, "title": title, "agent_id": agent_id})))
+                    await adb.commit()
 
             elif event_type == "sub_agent_started":
                 task_id = str(data.get("task_id", ""))

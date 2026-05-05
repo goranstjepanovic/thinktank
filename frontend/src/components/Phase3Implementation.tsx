@@ -1210,6 +1210,15 @@ export function Phase3Implementation() {
           api.getPhase3Messages(id).catch(() => [] as Phase3ChatMessage[]),
         ]);
 
+        // Pre-scan to know which tasks reached started/completed — used to
+        // reconstruct in-flight tasks without creating duplicate blocks.
+        const completedTaskIds = new Set<string>();
+        const startedTaskIds = new Set<string>();
+        for (const e of events) {
+          if (e.event_type === 'sub_agent_complete') completedTaskIds.add(e.payload.task_id as string);
+          if (e.event_type === 'sub_agent_started') startedTaskIds.add(e.payload.task_id as string);
+        }
+
         // Build activity entries from persisted events
         const activityEntries: (ActivityEntry & { ts: string })[] = events.flatMap((e: Phase3ActivityEvent): (ActivityEntry & { ts: string })[] => {
           if (e.event_type === 'plan_ready') {
@@ -1222,12 +1231,21 @@ export function Phase3Implementation() {
             return [{ kind: 'file_failed', id: nextId(), path: e.payload.path as string, detail: e.payload.detail as string, ts: e.created_at }];
           } else if (e.event_type === 'command_executed') {
             return [{ kind: 'shell', id: nextId(), command: e.payload.command as string, exitCode: e.payload.exit_code as number, stdout: e.payload.stdout as string, stderr: e.payload.stderr as string, timedOut: e.payload.timed_out as boolean, durationMs: e.payload.duration_ms as number, ts: e.created_at }];
+          } else if (e.event_type === 'sub_agent_queued') {
+            const taskId = e.payload.task_id as string;
+            // Only show as queued if it never progressed further
+            if (startedTaskIds.has(taskId) || completedTaskIds.has(taskId)) return [];
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'queued', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
+          } else if (e.event_type === 'sub_agent_started') {
+            const taskId = e.payload.task_id as string;
+            // Only show as running if it never completed
+            if (completedTaskIds.has(taskId)) return [];
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
           } else if (e.event_type === 'sub_agent_complete') {
             const success = e.payload.success as boolean;
             const blocker = (e.payload.blocker as string) ?? null;
             return [{ kind: 'sub_agent_block', id: nextId(), taskId: e.payload.task_id as string, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${e.payload.task_id}`, status: success && !blocker ? 'done' : 'blocked', summary: e.payload.summary as string, filesWritten: (e.payload.files_written as string[]) ?? [], blocker, updates: [], ts: e.created_at }];
           } else {
-            // Skip unknown event types (sub_agent_started, orchestrator_thinking, etc.)
             return [];
           }
         });
