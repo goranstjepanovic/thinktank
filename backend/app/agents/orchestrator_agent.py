@@ -1437,9 +1437,12 @@ class OrchestratorAgent:
     ) -> dict:
         logger.info("sub_agent: starting task '%s' (%s) agent=%s", task_title, task_id, agent_id or "?")
 
+        _files_edited: list[str] = []  # reset each attempt to catch fabricated results
+
         async def _wrapped_on_tool(tool_name: str, result: dict) -> None:
             await on_tool_result(tool_name, result)
             if tool_name == "file_edit":
+                _files_edited.append(result.get("path", ""))
                 detail = result.get("path", "")
             elif tool_name == "delete_path":
                 detail = result.get("path", "")
@@ -1480,6 +1483,7 @@ class OrchestratorAgent:
         prior_failures: list[dict] = []
 
         for attempt, model_override in enumerate(models_to_try):
+            _files_edited.clear()
             if model_override:
                 logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_override)
                 await on_orchestrator_event("sub_agent_model_fallback", {
@@ -1518,6 +1522,32 @@ class OrchestratorAgent:
                         agent_id=agent_id,
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title)
+
+                    # Verify the model actually wrote what it claimed
+                    if last_result.get("success"):
+                        claimed = [f for f in (last_result.get("files_written") or []) if f]
+                        if claimed and not _files_edited:
+                            last_result["success"] = False
+                            last_result["blocker"] = (
+                                f"Model claimed {len(claimed)} file(s) written but never called "
+                                "file_edit — result is fabricated. Must use file_edit to write files."
+                            )
+                            logger.warning(
+                                "sub_agent: task '%s' attempt %d — fabricated result: claimed %s but no file_edit",
+                                task_title, attempt, claimed,
+                            )
+                        elif claimed:
+                            missing = [f for f in claimed if not (Path(output_dir) / f).exists()]
+                            if missing:
+                                last_result["success"] = False
+                                last_result["blocker"] = (
+                                    f"Files claimed but not found on disk: {', '.join(missing[:5])}"
+                                )
+                                logger.warning(
+                                    "sub_agent: task '%s' attempt %d — claimed files missing on disk: %s",
+                                    task_title, attempt, missing,
+                                )
+
             except Exception as e:
                 logger.error("sub_agent: task '%s' attempt %d failed: %s", task_title, attempt, e)
                 last_result = {
