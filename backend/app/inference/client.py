@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import pathlib as _pathlib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -922,7 +923,7 @@ class InferenceClient:
                             result_dict = {"success": False, "error": "file_edit tool not available in this context"}
                         elif (
                             tc.arguments.get("operation") == "write_file"
-                            and Path(tc.arguments.get("path", "")).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+                            and _pathlib.Path(tc.arguments.get("path", "")).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
                             and settings.comfyui_base_url
                         ):
                             # Agent is trying to write text content to a binary image path.
