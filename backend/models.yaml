@@ -12,10 +12,18 @@ backends:
     base_url: "http://localhost:8080"
     timeout_seconds: 120
   openvino:
-    # Post-v1. Driver raises NotImplementedError until implemented.
+    # Intel OpenVINO GenAI — targets Intel NPU / iGPU / CPU (not NVIDIA).
+    # Install: pip install openvino-genai optimum[openvino]
+    # Convert a model: optimum-cli export openvino --model <hf-model-id> --weight-format int4 <model_dir>/<name>
+    #
+    # device options:
+    #   NPU              — Intel AI Boost NPU (INT4 models ≤7B, power-efficient)
+    #   GPU              — Intel Arc integrated GPU (Arc Xe-LPG on Core Ultra 200)
+    #   CPU              — Always available; slower but no memory limits
+    #   AUTO:NPU,GPU,CPU — Tries each in order; recommended default
     model_dir: "C:/models/openvino"
-    device: "NPU"
-    timeout_seconds: 60
+    device: "AUTO:NPU,GPU,CPU"
+    timeout_seconds: 300  # first call includes model-load time (can be 30-120s)
 
 stages:
   intake:
