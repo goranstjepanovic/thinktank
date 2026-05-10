@@ -1073,7 +1073,7 @@ class OrchestratorAgent:
                     # Verification: 25 rounds — must inspect every file then classify each PRD section.
                     max_tool_rounds=25 if _verification_pending else 20,
                     return_json=True,
-                    call_index=round_idx * 100,
+                    call_index=0,
                     on_tool_result=_orch_tool_cb,
                     extra_tools=[INSPECT_FILES_TOOL, _RUN_BUILD_TOOL],
                     custom_tool_handlers={

@@ -18,7 +18,6 @@ function TopBar() {
         <span className="topbar-title">Think Tank</span>
       </Link>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginLeft: 'auto' }}>
-        <span style={{ fontSize: 12, color: 'var(--text2)' }}>Local AI Idea Analysis</span>
         <Link
           to="/ops"
           title="Operations"
