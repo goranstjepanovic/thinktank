@@ -1418,7 +1418,7 @@ export function Phase3Implementation() {
 
   const progressQ = useQuery({
     queryKey: ['phase3-progress', id],
-    queryFn: () => api.getPhase3File(id!, 'docs/progress.md'),
+    queryFn: () => api.getPhase3File(id!, 'docs/PROGRESS.md'),
     enabled: !!id && !!session?.project_root && session?.mode === 'multi_agent',
     refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 10_000,
     retry: false,
@@ -1462,6 +1462,21 @@ export function Phase3Implementation() {
 
   const updateSubAgentBlock = (taskId: string, updater: (e: Extract<ActivityEntry, { kind: 'sub_agent_block' }>) => Extract<ActivityEntry, { kind: 'sub_agent_block' }>) =>
     setLog(prev => prev.map(e => e.kind === 'sub_agent_block' && e.taskId === taskId ? updater(e) : e));
+
+  // Like updateSubAgentBlock but creates a new block if none exists for this taskId.
+  // Needed when page loads mid-run and misses the queued/started WS events.
+  const upsertSubAgentBlock = (
+    taskId: string,
+    updater: (e: Extract<ActivityEntry, { kind: 'sub_agent_block' }>) => Extract<ActivityEntry, { kind: 'sub_agent_block' }>,
+    factory: () => Extract<ActivityEntry, { kind: 'sub_agent_block' }>,
+  ) =>
+    setLog(prev => {
+      if (prev.some(e => e.kind === 'sub_agent_block' && e.taskId === taskId)) {
+        return prev.map(e => e.kind === 'sub_agent_block' && e.taskId === taskId ? updater(e) : e);
+      }
+      const newBlock = factory();
+      return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use'), newBlock];
+    });
 
   // Auto-scroll log on new entries or when switching back to the chat tab
   useEffect(() => {
@@ -1724,9 +1739,15 @@ export function Phase3Implementation() {
           });
           break;
 
-        case 'phase3.sub_agent_started':
-          updateSubAgentBlock(event.payload.task_id as string, e => ({ ...e, status: 'running' }));
+        case 'phase3.sub_agent_started': {
+          const taskId = event.payload.task_id as string;
+          upsertSubAgentBlock(
+            taskId,
+            e => ({ ...e, status: 'running' }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: event.payload.agent_id as string | undefined, title: (event.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [] }),
+          );
           break;
+        }
 
         case 'phase3.sub_agent_model_fallback': {
           const taskId = event.payload.task_id as string;
@@ -1755,13 +1776,11 @@ export function Phase3Implementation() {
           const filesWritten = (event.payload.files_written as string[]) ?? [];
           const success = event.payload.success as boolean;
           const blocker = event.payload.blocker as string | null;
-          updateSubAgentBlock(taskId, e => ({
-            ...e,
-            status: success && !blocker ? 'done' : 'blocked',
-            summary,
-            filesWritten,
-            blocker,
-          }));
+          upsertSubAgentBlock(
+            taskId,
+            e => ({ ...e, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: event.payload.agent_id as string | undefined, title: (event.payload.title as string) || `Task ${taskId}`, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker, updates: [] }),
+          );
           // Debounce file list refresh on sub-agent completion
           if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
           fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
