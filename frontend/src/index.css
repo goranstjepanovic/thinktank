@@ -134,7 +134,7 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px
   position: sticky; top: 0; z-index: 10;
 }
 .topbar-title { font-size: 16px; font-weight: 700; color: var(--accent2); letter-spacing: -0.02em; }
-.page { padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%; }
+.page { padding: 24px; width: 100%; }
 
 /* Tabs */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
