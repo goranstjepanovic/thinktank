@@ -1448,9 +1448,14 @@ export function Phase3Implementation() {
       if (entry.kind === 'writing') {
         return [...prev.filter(e => e.kind !== 'writing' && e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
       }
-      // orchestrator_message and sub_agent_block clear transient thinking
-      if (entry.kind === 'orchestrator_message' || entry.kind === 'sub_agent_block') {
+      if (entry.kind === 'orchestrator_message') {
         return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
+      }
+      if (entry.kind === 'sub_agent_block') {
+        const filtered = prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use');
+        // If a block for this task already exists, skip — updateSubAgentBlock handles mutations
+        if (filtered.some(e => e.kind === 'sub_agent_block' && e.taskId === entry.taskId)) return filtered;
+        return [...filtered, entry];
       }
       return [...prev.filter(e => e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
     });
