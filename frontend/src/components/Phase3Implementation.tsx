@@ -1495,7 +1495,7 @@ export function Phase3Implementation() {
         }
 
         // Build activity entries from persisted events
-        const activityEntries: (ActivityEntry & { ts: string })[] = events.flatMap((e: Phase3ActivityEvent): (ActivityEntry & { ts: string })[] => {
+        const rawActivityEntries: (ActivityEntry & { ts: string })[] = events.flatMap((e: Phase3ActivityEvent): (ActivityEntry & { ts: string })[] => {
           if (e.event_type === 'plan_ready') {
             return [{ kind: 'plan_ready', id: nextId(), fileCount: e.payload.file_count as number, message: (e.payload.message as string) || '', ts: e.created_at }];
           } else if (e.event_type === 'pass_started') {
@@ -1508,12 +1508,10 @@ export function Phase3Implementation() {
             return [{ kind: 'shell', id: nextId(), command: e.payload.command as string, exitCode: e.payload.exit_code as number, stdout: e.payload.stdout as string, stderr: e.payload.stderr as string, timedOut: e.payload.timed_out as boolean, durationMs: e.payload.duration_ms as number, ts: e.created_at }];
           } else if (e.event_type === 'sub_agent_queued') {
             const taskId = e.payload.task_id as string;
-            // Only show as queued if it never progressed further
             if (startedTaskIds.has(taskId) || completedTaskIds.has(taskId)) return [];
             return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'queued', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
           } else if (e.event_type === 'sub_agent_started') {
             const taskId = e.payload.task_id as string;
-            // Only show as running if it never completed
             if (completedTaskIds.has(taskId)) return [];
             return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
           } else if (e.event_type === 'sub_agent_complete') {
@@ -1524,6 +1522,20 @@ export function Phase3Implementation() {
             return [];
           }
         });
+
+        // Deduplicate sub_agent_blocks: events are chronological so iterating
+        // backward and keeping only the first-seen taskId yields the most
+        // advanced state for each task (done > running > queued).
+        const seenTaskIds = new Set<string>();
+        const activityEntries: typeof rawActivityEntries = [];
+        for (let i = rawActivityEntries.length - 1; i >= 0; i--) {
+          const e = rawActivityEntries[i];
+          if (e.kind === 'sub_agent_block') {
+            if (seenTaskIds.has(e.taskId)) continue;
+            seenTaskIds.add(e.taskId);
+          }
+          activityEntries.unshift(e);
+        }
 
         // Merge activity events and chat messages, sorted by timestamp
         const allTimestamped = [
