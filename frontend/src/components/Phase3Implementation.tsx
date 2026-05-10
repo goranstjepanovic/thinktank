@@ -1136,6 +1136,13 @@ function ResetMenu({ disabled, onReset }: {
 // Phase 3 sidebar
 // ---------------------------------------------------------------------------
 
+function fmtMs(ms: number | null | undefined): string {
+  if (ms == null) return '—';
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
+  if (ms >= 1000)  return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
 function SidebarLabel({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
@@ -1160,6 +1167,7 @@ function Phase3Sidebar({
   log,
   phase2Summary,
   progressMd,
+  telemetry,
 }: {
   idea: IdeaDetail;
   selectedBranch: IdeaDetail['branches'][number] | undefined;
@@ -1167,6 +1175,7 @@ function Phase3Sidebar({
   log: ActivityEntry[];
   phase2Summary: string | null;
   progressMd: string | null;
+  telemetry: import('../types').TelemetrySummary | null;
 }) {
   const tasks = useMemo(() => {
     if (!progressMd) return null;
@@ -1305,6 +1314,66 @@ function Phase3Sidebar({
           </>
         )}
       </div>
+
+      {telemetry && telemetry.total_calls > 0 && (
+        <>
+          <div style={{ height: 1, background: 'var(--border)' }} />
+          <div>
+            <SidebarLabel>This idea — Telemetry</SidebarLabel>
+            {/* Key stats row */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+              <span style={{ ...sidebarPill }}>
+                {telemetry.total_calls} calls
+              </span>
+              <span style={{
+                ...sidebarPill,
+                color: telemetry.total_calls === 0 ? 'var(--text2)'
+                  : (telemetry.by_model.reduce((s, m) => s + m.success, 0) / telemetry.total_calls) >= 0.9 ? 'var(--green)'
+                  : (telemetry.by_model.reduce((s, m) => s + m.success, 0) / telemetry.total_calls) >= 0.7 ? 'var(--yellow)'
+                  : 'var(--red)',
+              }}>
+                {Math.round(telemetry.by_model.reduce((s, m) => s + m.success, 0) / telemetry.total_calls * 100)}% ok
+              </span>
+              {(() => {
+                const all = telemetry.by_model.filter(m => m.avg_duration_ms != null);
+                if (!all.length) return null;
+                const wavg = Math.round(all.reduce((s, m) => s + (m.avg_duration_ms ?? 0) * m.calls, 0) / all.reduce((s, m) => s + m.calls, 0));
+                return <span style={{ ...sidebarPill, color: 'var(--text2)' }}>{fmtMs(wavg)} avg</span>;
+              })()}
+            </div>
+            {/* Top models */}
+            {telemetry.by_model.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6 }}>
+                {telemetry.by_model.slice(0, 3).map((m, i) => {
+                  const name = m.model.includes('/') ? m.model.split('/').pop()! : m.model;
+                  const pct = Math.round(m.success_rate * 100);
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 10, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.model}>
+                        {name}
+                      </span>
+                      <span style={{ fontSize: 10, color: pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--yellow)' : 'var(--red)', flexShrink: 0 }}>
+                        {m.calls}× {pct}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {/* Stage breakdown */}
+            {telemetry.by_stage.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {telemetry.by_stage.slice(0, 4).map((s, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text2)' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.stage}</span>
+                    <span style={{ flexShrink: 0, marginLeft: 6 }}>{s.calls} · {fmtMs(s.avg_duration_ms)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1353,6 +1422,14 @@ export function Phase3Implementation() {
     enabled: !!id && !!session?.project_root,
     refetchInterval: isActivelyRunning ? 10_000 : false,
     retry: false,
+  });
+
+  const telemetryQ = useQuery({
+    queryKey: ['telemetry-idea', id],
+    queryFn: () => api.getTelemetrySummary({ project_id: id }),
+    enabled: !!id && !!session,
+    refetchInterval: isActivelyRunning ? 15_000 : 60_000,
+    staleTime: 10_000,
   });
 
   const addEntry = (entry: ActivityEntry) =>
@@ -1934,6 +2011,7 @@ export function Phase3Implementation() {
           log={log}
           phase2Summary={phase2Q.data?.resolution_summary ?? null}
           progressMd={progressQ.data?.content ?? null}
+          telemetry={telemetryQ.data ?? null}
         />
 
         {/* Main content */}
