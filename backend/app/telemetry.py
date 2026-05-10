@@ -35,6 +35,15 @@ def suppress_next_call() -> None:
     _suppress_next.set(True)
 
 
+def clear_suppress() -> None:
+    """Clear a pending suppress flag without consuming it via log_call.
+
+    Call this before a manual log_call to ensure it runs even if the
+    inner call_with_tools threw before reaching its own log_call.
+    """
+    _suppress_next.set(False)
+
+
 def log_call(
     *,
     stage: str,

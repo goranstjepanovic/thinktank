@@ -1805,6 +1805,9 @@ class OrchestratorAgent:
 
             # Log task-level outcome — success means the sub-agent actually completed
             # its task, not just that the inference call returned without an exception.
+            # Clear the suppress flag first: if call_with_tools threw before its own
+            # log_call, the flag was never consumed and would silently drop this record.
+            _telemetry.clear_suppress()
             _telemetry.log_call(
                 stage="phase3_sub_agent",
                 model=model_override,
