@@ -1162,18 +1162,14 @@ const sidebarPill: React.CSSProperties = {
 
 function Phase3Sidebar({
   idea,
-  selectedBranch,
   session,
   log,
-  phase2Summary,
   progressMd,
   telemetry,
 }: {
   idea: IdeaDetail;
-  selectedBranch: IdeaDetail['branches'][number] | undefined;
   session: Phase3Session;
   log: ActivityEntry[];
-  phase2Summary: string | null;
   progressMd: string | null;
   telemetry: import('../types').TelemetrySummary | null;
 }) {
@@ -1213,43 +1209,8 @@ function Phase3Sidebar({
         <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.4 }}>{idea.name}</div>
         {idea.description && (
           <div style={{ color: 'var(--text2)', fontSize: 11, marginTop: 4, lineHeight: 1.5 }}>
-            {idea.description.length > 120 ? idea.description.slice(0, 120) + '…' : idea.description}
+            {idea.description.length > 140 ? idea.description.slice(0, 140) + '…' : idea.description}
           </div>
-        )}
-      </div>
-
-      <div style={{ height: 1, background: 'var(--border)' }} />
-
-      {/* Phase 1 */}
-      <div>
-        <SidebarLabel>Phase 1 — Solution</SidebarLabel>
-        {selectedBranch ? (
-          <>
-            <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 4 }}>Branch {selectedBranch.branch_index}</div>
-            {selectedBranch.approach_summary && (
-              <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text)' }}>
-                {selectedBranch.approach_summary.length > 220
-                  ? selectedBranch.approach_summary.slice(0, 220) + '…'
-                  : selectedBranch.approach_summary}
-              </div>
-            )}
-          </>
-        ) : (
-          <div style={{ fontSize: 11, color: 'var(--text2)' }}>No branch selected</div>
-        )}
-      </div>
-
-      <div style={{ height: 1, background: 'var(--border)' }} />
-
-      {/* Phase 2 */}
-      <div>
-        <SidebarLabel>Phase 2 — Q&amp;A</SidebarLabel>
-        {phase2Summary ? (
-          <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text)' }}>
-            {phase2Summary.length > 260 ? phase2Summary.slice(0, 260) + '…' : phase2Summary}
-          </div>
-        ) : (
-          <div style={{ fontSize: 11, color: 'var(--text2)' }}>No summary available</div>
         )}
       </div>
 
@@ -1341,34 +1302,32 @@ function Phase3Sidebar({
                 return <span style={{ ...sidebarPill, color: 'var(--text2)' }}>{fmtMs(wavg)} avg</span>;
               })()}
             </div>
-            {/* Top models */}
+            {/* All models */}
             {telemetry.by_model.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6 }}>
-                {telemetry.by_model.slice(0, 3).map((m, i) => {
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {telemetry.by_model.map((m, i) => {
                   const name = m.model.includes('/') ? m.model.split('/').pop()! : m.model;
                   const pct = Math.round(m.success_rate * 100);
+                  const failures = m.calls - m.success;
                   return (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
-                      <span style={{ fontSize: 10, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.model}>
-                        {name}
-                      </span>
-                      <span style={{ fontSize: 10, color: pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--yellow)' : 'var(--red)', flexShrink: 0 }}>
-                        {m.calls}× {pct}%
-                      </span>
+                    <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.model}>
+                          {name}
+                        </span>
+                        <span style={{ fontSize: 11, color: pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--yellow)' : 'var(--red)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                          {pct}%
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, fontSize: 10, color: 'var(--text2)' }}>
+                        <span>{m.calls} calls</span>
+                        {failures > 0 && <span style={{ color: 'var(--red)' }}>{failures} failed</span>}
+                        {m.fallbacks > 0 && <span style={{ color: 'var(--text2)' }}>{m.fallbacks} as fallback</span>}
+                        {m.avg_duration_ms != null && <span style={{ marginLeft: 'auto' }}>{fmtMs(m.avg_duration_ms)}</span>}
+                      </div>
                     </div>
                   );
                 })}
-              </div>
-            )}
-            {/* Stage breakdown */}
-            {telemetry.by_stage.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                {telemetry.by_stage.slice(0, 4).map((s, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text2)' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.stage}</span>
-                    <span style={{ flexShrink: 0, marginLeft: 6 }}>{s.calls} · {fmtMs(s.avg_duration_ms)}</span>
-                  </div>
-                ))}
               </div>
             )}
           </div>
@@ -2042,10 +2001,8 @@ export function Phase3Implementation() {
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
         <Phase3Sidebar
           idea={idea}
-          selectedBranch={selectedBranch}
           session={session}
           log={log}
-          phase2Summary={phase2Q.data?.resolution_summary ?? null}
           progressMd={progressQ.data?.content ?? null}
           telemetry={telemetryQ.data ?? null}
         />

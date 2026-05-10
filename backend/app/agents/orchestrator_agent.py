@@ -1712,6 +1712,7 @@ class OrchestratorAgent:
         last_result: dict = {}
         prior_failures: list[dict] = []
 
+        import time as _time
         from app import telemetry as _telemetry
         from app.tools.shell_runner import background_process_manager as _bg_procs
 
@@ -1740,6 +1741,8 @@ class OrchestratorAgent:
                 source_root=source_root,
             )
 
+            _attempt_start = _time.monotonic()
+            _telemetry.suppress_next_call()  # orchestrator logs task-level outcome below
             try:
                 async with AsyncSessionLocal() as sub_db:
                     last_result = await self._client.call_with_tools(
@@ -1799,6 +1802,17 @@ class OrchestratorAgent:
                     "success": False,
                     "blocker": str(e),
                 }
+
+            # Log task-level outcome — success means the sub-agent actually completed
+            # its task, not just that the inference call returned without an exception.
+            _telemetry.log_call(
+                stage="phase3_sub_agent",
+                model=model_override,
+                backend=stage_cfg.backend,
+                duration_ms=int((_time.monotonic() - _attempt_start) * 1000),
+                success=bool(last_result.get("success", True)) and not last_result.get("blocker"),
+                error=last_result.get("blocker") or None,
+            )
 
             if last_result.get("success", True):
                 return last_result

@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 _project_ctx: ContextVar[dict[str, str]] = ContextVar("telemetry_project", default={})
 _call_ctx: ContextVar[dict[str, Any]] = ContextVar("telemetry_call", default={})
+_suppress_next: ContextVar[bool] = ContextVar("telemetry_suppress_next", default=False)
 
 _log_path: Path | None = None
 
@@ -27,6 +28,11 @@ def set_project(project_id: str, project_name: str = "") -> None:
 def set_call_context(is_fallback: bool = False, fallback_from: str | None = None) -> None:
     """Tag the next model call with fallback metadata. Call before each attempt."""
     _call_ctx.set({"is_fallback": is_fallback, "fallback_from": fallback_from})
+
+
+def suppress_next_call() -> None:
+    """Suppress the next log_call — caller will log the task-level outcome itself."""
+    _suppress_next.set(True)
 
 
 def log_call(
@@ -62,6 +68,9 @@ def log_call(
       error           First 200 chars of the error message (null on success)
     """
     if _log_path is None:
+        return
+    if _suppress_next.get():
+        _suppress_next.set(False)
         return
 
     proj = _project_ctx.get()
