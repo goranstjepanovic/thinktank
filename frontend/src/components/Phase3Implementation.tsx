@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/core';
 import langBash from 'highlight.js/lib/languages/bash';
 import langCss from 'highlight.js/lib/languages/css';
@@ -1132,6 +1133,183 @@ function ResetMenu({ disabled, onReset }: {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3 sidebar
+// ---------------------------------------------------------------------------
+
+function SidebarLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+      {children}
+    </div>
+  );
+}
+
+const sidebarPill: React.CSSProperties = {
+  fontSize: 10,
+  padding: '2px 6px',
+  borderRadius: 4,
+  background: 'var(--bg2)',
+  border: '1px solid var(--border)',
+  fontVariantNumeric: 'tabular-nums',
+};
+
+function Phase3Sidebar({
+  idea,
+  selectedBranch,
+  session,
+  log,
+  phase2Summary,
+  progressMd,
+}: {
+  idea: IdeaDetail;
+  selectedBranch: IdeaDetail['branches'][number] | undefined;
+  session: Phase3Session;
+  log: ActivityEntry[];
+  phase2Summary: string | null;
+  progressMd: string | null;
+}) {
+  const tasks = useMemo(() => {
+    if (!progressMd) return null;
+    const done: string[] = [];
+    const pending: string[] = [];
+    for (const line of progressMd.split('\n')) {
+      const m = line.match(/^\s*-\s*\[(x| )\]\s*(.+)/i);
+      if (m) (m[1].toLowerCase() === 'x' ? done : pending).push(m[2].trim());
+    }
+    return { done, pending, total: done.length + pending.length };
+  }, [progressMd]);
+
+  const fileCount = log.filter(e => e.kind === 'file').length;
+  const shellCount = log.filter(e => e.kind === 'shell').length;
+  const subAgentBlocks = log.filter(e => e.kind === 'sub_agent_block') as Extract<ActivityEntry, { kind: 'sub_agent_block' }>[];
+  const doneTasks = subAgentBlocks.filter(b => b.status === 'done').length;
+  const totalTasks = subAgentBlocks.length;
+
+  return (
+    <div style={{
+      width: 220,
+      flexShrink: 0,
+      borderRight: '1px solid var(--border)',
+      overflowY: 'auto',
+      padding: '16px 14px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 16,
+      fontSize: 12,
+      background: 'var(--bg)',
+    }}>
+      {/* Idea */}
+      <div>
+        <SidebarLabel>Idea</SidebarLabel>
+        <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.4 }}>{idea.name}</div>
+        {idea.description && (
+          <div style={{ color: 'var(--text2)', fontSize: 11, marginTop: 4, lineHeight: 1.5 }}>
+            {idea.description.length > 120 ? idea.description.slice(0, 120) + '…' : idea.description}
+          </div>
+        )}
+      </div>
+
+      <div style={{ height: 1, background: 'var(--border)' }} />
+
+      {/* Phase 1 */}
+      <div>
+        <SidebarLabel>Phase 1 — Solution</SidebarLabel>
+        {selectedBranch ? (
+          <>
+            <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 4 }}>Branch {selectedBranch.branch_index}</div>
+            {selectedBranch.approach_summary && (
+              <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text)' }}>
+                {selectedBranch.approach_summary.length > 220
+                  ? selectedBranch.approach_summary.slice(0, 220) + '…'
+                  : selectedBranch.approach_summary}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--text2)' }}>No branch selected</div>
+        )}
+      </div>
+
+      <div style={{ height: 1, background: 'var(--border)' }} />
+
+      {/* Phase 2 */}
+      <div>
+        <SidebarLabel>Phase 2 — Q&amp;A</SidebarLabel>
+        {phase2Summary ? (
+          <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text)' }}>
+            {phase2Summary.length > 260 ? phase2Summary.slice(0, 260) + '…' : phase2Summary}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--text2)' }}>No summary available</div>
+        )}
+      </div>
+
+      <div style={{ height: 1, background: 'var(--border)' }} />
+
+      {/* Phase 3 */}
+      <div>
+        <SidebarLabel>Phase 3 — Progress</SidebarLabel>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          {fileCount > 0 && (
+            <span style={{ ...sidebarPill, color: 'var(--green)' }}>{fileCount} files</span>
+          )}
+          {shellCount > 0 && (
+            <span style={{ ...sidebarPill, color: 'var(--text2)' }}>{shellCount} cmds</span>
+          )}
+          {totalTasks > 0 && (
+            <span style={{ ...sidebarPill, color: doneTasks === totalTasks ? 'var(--green)' : 'var(--text2)' }}>
+              {doneTasks}/{totalTasks} tasks
+            </span>
+          )}
+          {fileCount === 0 && shellCount === 0 && totalTasks === 0 && (
+            <span style={{ fontSize: 11, color: 'var(--text2)' }}>
+              {session.status === 'COMPLETE' ? 'Complete' : 'Not started yet'}
+            </span>
+          )}
+        </div>
+
+        {tasks && tasks.total > 0 && (
+          <>
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%',
+                  width: `${Math.round(tasks.done.length / tasks.total * 100)}%`,
+                  background: 'var(--green)',
+                  borderRadius: 2,
+                  transition: 'width 0.4s',
+                }} />
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 3 }}>
+                {tasks.done.length}/{tasks.total} done
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {[
+                ...tasks.done.map(t => ({ t, done: true })),
+                ...tasks.pending.map(t => ({ t, done: false })),
+              ].slice(0, 14).map(({ t, done }, i) => (
+                <div key={i} style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                  <span style={{ color: done ? 'var(--green)' : 'var(--border)', flexShrink: 0, fontSize: 11, marginTop: 1 }}>
+                    {done ? '✓' : '○'}
+                  </span>
+                  <span style={{ fontSize: 11, lineHeight: 1.4, color: done ? 'var(--text2)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none', opacity: done ? 0.65 : 1 }}>
+                    {t}
+                  </span>
+                </div>
+              ))}
+              {tasks.total > 14 && (
+                <div style={{ fontSize: 10, color: 'var(--text2)' }}>+{tasks.total - 14} more</div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -1161,6 +1339,21 @@ export function Phase3Implementation() {
 
   const isActivelyRunning = session?.status === 'PLANNING' || session?.status === 'RUNNING' || session?.status === 'WAITING';
   useWakeLock(isActivelyRunning);
+
+  const phase2Q = useQuery({
+    queryKey: ['phase2', id],
+    queryFn: () => api.getPhase2(id!),
+    enabled: !!id,
+    staleTime: 60_000,
+  });
+
+  const progressQ = useQuery({
+    queryKey: ['phase3-progress', id],
+    queryFn: () => api.getPhase3File(id!, 'progress.md'),
+    enabled: !!id && !!session?.project_root,
+    refetchInterval: isActivelyRunning ? 10_000 : false,
+    retry: false,
+  });
 
   const addEntry = (entry: ActivityEntry) =>
     setLog(prev => {
@@ -1732,8 +1925,19 @@ export function Phase3Implementation() {
         </div>
       )}
 
-      {/* Main content */}
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* Body: sidebar + main */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
+        <Phase3Sidebar
+          idea={idea}
+          selectedBranch={selectedBranch}
+          session={session}
+          log={log}
+          phase2Summary={phase2Q.data?.resolution_summary ?? null}
+          progressMd={progressQ.data?.content ?? null}
+        />
+
+        {/* Main content */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
         {/* Stats + tab bar */}
         <div style={{
@@ -2103,7 +2307,8 @@ export function Phase3Implementation() {
             <FileBrowser ideaId={id!} refreshKey={fileRefreshKey} />
           </div>
         )}
-      </div>
+        </div>{/* end main column */}
+      </div>{/* end body row */}
     </div>
   );
 }
