@@ -420,7 +420,7 @@ export function OpsDashboard() {
         <StatCard label="Total Calls" value={totalCalls.toLocaleString()} sub={`last ${RANGE_OPTIONS.find(o => o.hours === rangeHours)?.label}`} />
         <StatCard label="Success Rate" value={totalCalls ? `${successRate}%` : '—'} color={successRate >= 90 ? 'var(--green)' : successRate >= 70 ? 'var(--yellow)' : 'var(--red)'} />
         <StatCard label="Avg Duration" value={fmtMs(avgDuration)} sub="weighted by calls" />
-        <StatCard label="Fallback Rate" value={totalCalls ? `${fallbackRate}%` : '—'} color={fallbackRate > 10 ? 'var(--red)' : fallbackRate > 3 ? 'var(--yellow)' : 'var(--green)'} sub="calls routed to fallback" />
+        <StatCard label="Fallback Rate" value={totalCalls ? `${fallbackRate}%` : '—'} color={fallbackRate > 10 ? 'var(--red)' : fallbackRate > 3 ? 'var(--yellow)' : 'var(--green)'} sub="calls served by a rescue model" />
         <StatCard label="Backends" value={String(data?.by_backend.length ?? 0)} sub={data?.by_backend.map(b => b.backend).join(', ') || '—'} />
       </div>
 
@@ -462,8 +462,8 @@ export function OpsDashboard() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                    {['Model', 'Backend', 'Calls', 'Success', 'Fallbacks', 'Rate', 'Avg', 'p95'].map(h => (
-                      <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                    {['Model', 'Backend', 'Calls', 'Success', 'Failures', 'Recv as fallback', 'Rate', 'Avg', 'p95'].map(h => (
+                      <th key={h} title={h === 'Recv as fallback' ? 'Times this model was called because another model failed (not a failure of this model)' : h === 'Failures' ? 'Calls where this model itself failed' : undefined} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap', cursor: h === 'Recv as fallback' || h === 'Failures' ? 'help' : undefined }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -474,7 +474,8 @@ export function OpsDashboard() {
                       <td style={{ padding: '7px 10px', color: 'var(--text2)' }}>{m.backend}</td>
                       <td style={{ padding: '7px 10px', fontVariantNumeric: 'tabular-nums' }}>{m.calls}</td>
                       <td style={{ padding: '7px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{m.success}</td>
-                      <td style={{ padding: '7px 10px', color: m.fallbacks > 0 ? 'var(--yellow)' : 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{m.fallbacks}</td>
+                      <td style={{ padding: '7px 10px', color: (m.calls - m.success) > 0 ? 'var(--red)' : 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{m.calls - m.success}</td>
+                      <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{m.fallbacks || '—'}</td>
                       <td style={{ padding: '7px 10px', color: m.success_rate >= 0.9 ? 'var(--green)' : m.success_rate >= 0.7 ? 'var(--yellow)' : 'var(--red)' }}>
                         {Math.round(m.success_rate * 100)}%
                       </td>
