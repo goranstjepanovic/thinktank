@@ -1418,7 +1418,7 @@ export function Phase3Implementation() {
 
   const progressQ = useQuery({
     queryKey: ['phase3-progress', id],
-    queryFn: () => api.getPhase3File(id!, 'progress.md'),
+    queryFn: () => api.getPhase3File(id!, 'docs/progress.md'),
     enabled: !!id && !!session?.project_root && session?.mode === 'multi_agent',
     refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 10_000,
     retry: false,
