@@ -185,6 +185,79 @@ background_process_manager = BackgroundProcessManager()
 
 
 # ---------------------------------------------------------------------------
+# Port-kill helper (cross-platform)
+# ---------------------------------------------------------------------------
+
+def kill_port_process(port: int) -> dict:
+    """
+    Find and kill the process listening on `port`.
+
+    Returns {"killed": bool, "pids": [...], "port": int, "error": str|None}.
+    Safe to call even when nothing is listening — returns killed=False with an
+    informative message rather than raising.
+    """
+    import os
+    import subprocess
+    import signal as _signal
+
+    killed_pids: list[int] = []
+
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as exc:
+            return {"killed": False, "pids": [], "port": port, "error": f"netstat failed: {exc}"}
+
+        pids: set[str] = set()
+        for line in result.stdout.splitlines():
+            # Match lines like: TCP  0.0.0.0:3000  ... LISTENING  1234
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                if parts:
+                    pids.add(parts[-1])
+
+        if not pids:
+            return {"killed": False, "pids": [], "port": port, "error": f"No process listening on port {port}"}
+
+        for pid_str in pids:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", pid_str],
+                    capture_output=True, timeout=5,
+                )
+                killed_pids.append(int(pid_str))
+            except Exception:
+                pass
+    else:
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as exc:
+            return {"killed": False, "pids": [], "port": port, "error": f"lsof failed: {exc}"}
+
+        raw_pids = [p.strip() for p in result.stdout.strip().splitlines() if p.strip().isdigit()]
+        if not raw_pids:
+            return {"killed": False, "pids": [], "port": port, "error": f"No process listening on port {port}"}
+
+        for pid_str in raw_pids:
+            try:
+                os.kill(int(pid_str), _signal.SIGTERM)
+                killed_pids.append(int(pid_str))
+            except Exception:
+                pass
+
+    if not killed_pids:
+        return {"killed": False, "pids": [], "port": port, "error": "Found PIDs but kill failed — may need elevated privileges"}
+
+    return {"killed": True, "pids": killed_pids, "port": port, "error": None}
+
+
+# ---------------------------------------------------------------------------
 # Shell environment helpers
 # ---------------------------------------------------------------------------
 

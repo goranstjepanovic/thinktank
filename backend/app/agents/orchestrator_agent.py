@@ -1713,9 +1713,15 @@ class OrchestratorAgent:
         prior_failures: list[dict] = []
 
         from app import telemetry as _telemetry
+        from app.tools.shell_runner import background_process_manager as _bg_procs
 
-        for attempt, model_override in enumerate(models_to_try):
+        try:
+          for attempt, model_override in enumerate(models_to_try):
             _files_edited.clear()
+            # Kill any background processes left behind by the previous attempt
+            # (e.g. a dev server started for build-checking that was never stopped).
+            if attempt > 0:
+                _bg_procs.cleanup_dir(output_dir)
             _telemetry.set_call_context(
                 is_fallback=attempt > 0,
                 fallback_from=models_to_try[attempt - 1] if attempt > 0 else None,
@@ -1808,4 +1814,8 @@ class OrchestratorAgent:
                         (last_result.get("summary") or "")[:120],
                         f"retrying with {models_to_try[attempt + 1]}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
 
-        return last_result
+          return last_result
+        finally:
+            # Always clean up any background processes the sub-agent left running
+            # (dev servers, watchers, etc.) so they don't hold ports across tasks.
+            _bg_procs.cleanup_dir(output_dir)

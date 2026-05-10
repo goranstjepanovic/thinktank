@@ -421,6 +421,26 @@ STOP_SHELL_PROCESS_TOOL = ToolDefinition(
     },
 )
 
+KILL_PORT_TOOL = ToolDefinition(
+    name="kill_port",
+    description=(
+        "Kill the process currently listening on a given port number. "
+        "Use this when a server start or build check fails with EADDRINUSE / 'address already in use'. "
+        "For example, if starting the project server on port 3000 fails, "
+        "call kill_port(port=3000) then retry. Safe to call even when nothing is listening."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "port": {
+                "type": "integer",
+                "description": "The port number to free (e.g. 3000, 8080, 5000).",
+            },
+        },
+        "required": ["port"],
+    },
+)
+
 
 class InferenceClientError(Exception):
     pass
@@ -674,7 +694,7 @@ class InferenceClient:
         if allowed_file_dir:
             available_tools += [LIST_FILES_TOOL, READ_FILE_TOOL, GREP_FILES_TOOL]
             if not explore_only:
-                available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL]
+                available_tools += [FILE_EDIT_TOOL, DELETE_PATH_TOOL, SHELL_TOOL, RUN_SHELL_BG_TOOL, GET_SHELL_OUTPUT_TOOL, STOP_SHELL_PROCESS_TOOL, KILL_PORT_TOOL]
         if extra_tools:
             available_tools += extra_tools
             # If inspect_files is provided, remove read_file so the model is forced
@@ -1119,6 +1139,19 @@ class InferenceClient:
                                     "exit_code": result_dict.get("exit_code"),
                                     "message": result_dict.get("message", result_dict.get("error", "")),
                                 })
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "kill_port":
+                        if not allowed_file_dir or explore_only:
+                            result_dict = {"error": "kill_port not available in this context"}
+                        else:
+                            from app.tools.shell_runner import kill_port_process
+                            port = int(tc.arguments.get("port", 0))
+                            result_dict = kill_port_process(port)
+                            logger.info("tools stage=%-20s kill_port port=%d killed=%s pids=%s",
+                                        stage_key, port, result_dict.get("killed"), result_dict.get("pids"))
+                            if on_tool_result:
+                                await on_tool_result("kill_port", result_dict)
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "list_files":
