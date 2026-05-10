@@ -68,7 +68,7 @@ export function SettingsPage() {
   const busy = saving || moving;
 
   return (
-    <div className="page" style={{ maxWidth: 640, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ padding: '32px 24px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 32 }}>
         <button className="btn-ghost" style={{ fontSize: 13 }} onClick={() => navigate('/')}>
           ← Back

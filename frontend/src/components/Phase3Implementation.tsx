@@ -995,7 +995,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
                   )}
                 </div>
               ) : (selectedPath ?? '').endsWith('.md') ? (
-                <div className="markdown" style={{ padding: '20px 24px', fontSize: 13, maxWidth: 860 }}>
+                <div className="markdown" style={{ padding: '20px 24px', fontSize: 13 }}>
                   <ReactMarkdown>{fileContent}</ReactMarkdown>
                 </div>
               ) : (
