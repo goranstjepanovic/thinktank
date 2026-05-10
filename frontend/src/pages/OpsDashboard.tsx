@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -310,7 +310,7 @@ export function OpsDashboard() {
   const [filterStage, setFilterStage] = useState('');
   const [showCalls, setShowCalls] = useState(false);
 
-  const since = sinceFromHours(rangeHours);
+  const since = useMemo(() => sinceFromHours(rangeHours), [rangeHours]);
 
   const summaryQ = useQuery({
     queryKey: ['telemetry-summary', since, filterModel, filterBackend, filterProject, filterStage],
@@ -368,7 +368,7 @@ export function OpsDashboard() {
   const hasFilters = filterModel || filterBackend || filterProject || filterStage;
 
   return (
-    <div style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
+    <div style={{ padding: '24px 28px' }}>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
