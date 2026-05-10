@@ -183,10 +183,35 @@ def _read_services_json(output_dir: str) -> dict | None:
 _MAX_PRD_CHARS = 24_000
 
 
-def _orchestrator_system_prompt(prd_content: str) -> str:
+def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None = None) -> str:
     prd_excerpt = prd_content[:_MAX_PRD_CHARS]
     if len(prd_content) > _MAX_PRD_CHARS:
         prd_excerpt += "\n... (PRD truncated for context)"
+
+    if selectable_models:
+        model_lines = "\n".join(
+            f'- **"{m.name}"** (`{m.model}`): {m.description}'
+            for m in selectable_models
+        )
+        model_section = (
+            f"## Sub-agent model selection\n\n"
+            f"Each task must include a `\"model\"` field. Pick based on task complexity:\n\n"
+            f"{model_lines}\n\n"
+            f"Default to **\"fast\"** when unsure — only escalate when the task genuinely requires it.\n\n"
+        )
+        task_schema = (
+            '{"id": "snake_case_id", "title": "short title ≤ 60 chars", "model": "fast", '
+            '"instruction": "complete self-contained instructions — list all files to create, '
+            'their purpose, cross-file dependencies, and commands to run"}'
+        )
+    else:
+        model_section = ""
+        task_schema = (
+            '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
+            '"instruction": "complete self-contained instructions — list all files to create, '
+            'their purpose, cross-file dependencies, and commands to run"}'
+        )
+
     return (
         "You are an orchestrator agent for a software implementation pipeline.\n\n"
         "## Your role\n\n"
@@ -203,16 +228,18 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "Do NOT call `file_edit`, `read_file`, or `run_shell` — those are reserved for sub-agents.\n\n"
         "## Product Requirements Document\n\n"
         f"{prd_excerpt}\n\n"
+        f"{model_section}"
         "## Output format\n\n"
         "After any tool use (or immediately), output a JSON object only — no prose:\n"
         '{"analysis": "what has been done and what remains", '
-        '"next_tasks": ['
-        '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
-        '"instruction": "complete self-contained instructions — list all files to create, '
-        'their purpose, cross-file dependencies, and commands to run"}'
-        '], "done": false, "user_message": null}\n\n'
-        "You may include 1–3 tasks in `next_tasks`. Tasks in the same batch run concurrently, "
-        "so they MUST target completely independent files and modules — no two tasks in a batch "
+        f'"next_tasks": [{task_schema}], '
+        '"done": false, "user_message": null}\n\n'
+        "You may include 1–2 tasks in `next_tasks`. **Prefer 1 task per batch** — only use 2 when "
+        "both tasks are truly independent and each is immediately ready to implement. "
+        "Each task must be atomic: implement exactly one logical unit (one module, one component, "
+        "one endpoint, one service). Aim for tasks that touch 1–3 files at most. "
+        "A large feature should be split across multiple sequential batches, not crammed into one task. "
+        "Tasks in the same batch MUST target completely independent files — no two tasks in a batch "
         "may write to the same file.\n\n"
         "When all PRD sections are implemented:\n"
         '{"analysis": "all tasks complete", "next_tasks": [], "done": true, "user_message": null}\n\n'
@@ -296,7 +323,7 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "If you need to see the project state, call `list_files` or `inspect_files` RIGHT NOW in this response "
         "before deciding tasks. Do NOT create a sub-agent to do it for you.\n\n"
         "## Rules\n\n"
-        "- Delegate 1–3 cohesive, independent tasks per response\n"
+        "- Delegate 1–2 cohesive, independent tasks per response; prefer 1 task when unsure\n"
         "- **Exploration budget: maximum 2 rounds** (one `list_files` + one `inspect_files` batch). "
         "Dispatch tasks by round 3 at the latest — do not keep reading files. "
         "For bug-fix or startup requests, you do NOT need to identify the root cause yourself: "
@@ -757,24 +784,9 @@ def _sub_agent_system_prompt() -> str:
         "If your task names the file to write, skip `list_files` entirely and go straight to writing. "
         "`read_file` always returns `total_lines` — if the file is large, request specific ranges with "
         "`start_line`/`end_line` (e.g. `read_file(path='foo.py', start_line=200, end_line=400)`).\n"
-        "3. Write all files required for your task using `file_edit`\n"
+        "3. Write all files required for your task using `file_edit` — write complete, real implementations\n"
         "4. Run any required commands (install dependencies, build, test) using `run_shell`\n"
-        "5. **Self-verify every file you wrote — MANDATORY, do not skip:**\n"
-        "   a. Call `read_file` on each file you wrote and scan the content for: TODO, FIXME, "
-        "placeholder comments, `raise NotImplementedError`, ellipsis (`...`), or any stub markers.\n"
-        "   b. If any are found — rewrite that file now with the complete real implementation.\n"
-        "   c. Call `read_prd` and confirm every PRD requirement in your task scope is satisfied.\n"
-        "   d. **Import verification — check every import resolves:** For every "
-        "`import { X, Y } from './module'` (or `from module import X`) in files you wrote, "
-        "call `read_file` on that module and confirm X and Y are actually exported/defined there. "
-        "If a symbol is missing — add the missing export to that module OR fix the import name. "
-        "Do not skip this step; mismatched symbol names are the #1 cause of apps that fail to run.\n"
-        "   e. **Prop/interface verification (React/typed code):** If you wrote a component that is "
-        "rendered by another component (e.g. `<Board cards={cards} onCardClick={fn} />`), read the "
-        "Board component definition and confirm it accepts `cards` and `onCardClick` with those exact "
-        "names. If there is a mismatch, fix the prop names in the caller or receiver — not both.\n"
-        "   f. Only return `success: true` after every file is verified stub-free and all imports resolve.\n"
-        "6. Return a JSON summary when done\n\n"
+        "5. Return a JSON summary when done\n\n"
         "## File writing rules\n\n"
         "- Write complete file content — never truncate, use ellipsis, or leave TODO/FIXME/placeholder text\n"
         "- Returning `success: true` with any stub, TODO, FIXME, `raise NotImplementedError`, "
@@ -913,6 +925,9 @@ class OrchestratorAgent:
         user_message_queue: "asyncio.Queue[str]",
         follow_up_message: str | None = None,
     ) -> str:
+        from app import telemetry as _telemetry
+        _telemetry.set_project(idea.id, idea.name)
+
         output_dir = session.output_dir or ""
         completed_tasks: list[dict] = []
         _interface_summary: str | None = None  # updated after every batch
@@ -944,8 +959,9 @@ class OrchestratorAgent:
             # Build orchestrator messages with accumulated context
             _file_tree = _build_file_tree(output_dir) if output_dir else None
             _services_json = _read_services_json(output_dir) if output_dir else None
+            _selectable = self._client._registry.get_stage("phase3_sub_agent").selectable_models
             orch_messages = [
-                Message(role="system", content=_orchestrator_system_prompt(prd_content)),
+                Message(role="system", content=_orchestrator_system_prompt(prd_content, _selectable)),
                 Message(role="user", content=_orchestrator_user_prompt(
                     idea, branch, completed_tasks, _initial_follow_up,
                     pending_user_messages=pending_messages or None,
@@ -1302,21 +1318,36 @@ class OrchestratorAgent:
     ) -> list[dict]:
         """Run a batch of tasks concurrently. Each task gets its own DB session."""
 
+        max_verify_cycles = self._client._registry.resources.max_verify_fix_cycles
+
         async def _run_one(t: dict) -> dict:
             task_id = t["_id"]
             task_title = t["_title"]
             agent_id = t.get("_agent_id", task_id)
             instruction = str(t.get("instruction") or "").strip()
+            model_hint = str(t.get("model") or "").strip() or None
             await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
             try:
-                return await self._run_sub_agent(
+                result = await self._run_sub_agent(
                     idea, branch, output_dir,
                     task_id, task_title, instruction,
                     on_tool_result, on_orchestrator_event,
                     source_root=source_root,
                     prd_content=prd_content,
                     agent_id=agent_id,
+                    model_hint=model_hint,
                 )
+                if result.get("success") and max_verify_cycles > 0:
+                    result = await self._run_task_verify_fix_loop(
+                        idea, branch, output_dir,
+                        t, result,
+                        on_tool_result, on_orchestrator_event,
+                        prd_content=prd_content,
+                        agent_id=agent_id,
+                        max_fix_cycles=max_verify_cycles,
+                        model_hint=model_hint,
+                    )
+                return result
             except asyncio.CancelledError:
                 await on_orchestrator_event("sub_agent_complete", {
                     "task_id": task_id,
@@ -1422,6 +1453,190 @@ class OrchestratorAgent:
 
         return {"files": files}
 
+    async def _run_task_verification_agent(
+        self,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        task_id: str,
+        task_title: str,
+        task_instruction: str,
+        files_written: list[str],
+        on_tool_result: OnToolResult,
+        on_orchestrator_event: OnOrchestratorEvent,
+        prd_content: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict:
+        """Read the files a sub-agent wrote and verify they are stub-free and correct.
+
+        Returns {verified: bool, issues: [str]}.
+        Never blocks on its own failure — returns verified=True on internal error.
+        """
+        if not files_written:
+            return {"verified": True, "issues": []}
+
+        verify_agent_id = f"verify_{agent_id or task_id}"
+        await on_orchestrator_event("sub_agent_verify_started", {
+            "task_id": task_id,
+            "title": f"Verify: {task_title}",
+            "agent_id": verify_agent_id,
+            "files": files_written,
+        })
+
+        system_prompt = (
+            "You are a code verification agent. Your only job is to read files and report problems — "
+            "you do NOT write, modify, or delete any files.\n\n"
+            "## What to check in every file\n\n"
+            "1. Stub markers: TODO, FIXME, placeholder comments, `raise NotImplementedError`, "
+            "ellipsis (`...`), or any function body that contains only a comment or `pass`\n"
+            "2. Broken imports: for every `import { X } from './mod'` or `from mod import X`, "
+            "call `read_file` on that module and confirm X is actually exported/defined there\n"
+            "3. Completeness: the file must implement what the task instruction requires — "
+            "not just a skeleton but real, working logic\n\n"
+            "## Output format — JSON only, no prose\n\n"
+            '{"verified": true, "issues": []}\n'
+            "If problems found:\n"
+            '{"verified": false, "issues": ["path/file.py: TODO stub at line 42 — function not implemented", ...]}\n\n'
+            "Be specific: include file path, what is wrong, and where."
+        )
+
+        files_list = "\n".join(f"  - {f}" for f in files_written)
+        user_prompt = (
+            f"Task that was implemented:\n{task_instruction}\n\n"
+            f"Files written:\n{files_list}\n\n"
+            "Call `read_file` on each file above, then verify it matches the task requirements. "
+            "Report every stub, incomplete section, or unresolved import."
+        )
+
+        result: dict = {"verified": True, "issues": []}
+        try:
+            async with AsyncSessionLocal() as sub_db:
+                raw = await self._client.call_with_tools(
+                    stage_key="phase3_task_verify",
+                    messages=[
+                        Message(role="system", content=system_prompt),
+                        Message(role="user", content=user_prompt),
+                    ],
+                    session=sub_db,
+                    idea_id=idea.id,
+                    branch_id=branch.id,
+                    allowed_file_dir=output_dir,
+                    explore_only=True,
+                    max_tool_rounds=15,
+                    return_json=True,
+                    call_index=0,
+                    on_tool_result=on_tool_result,
+                    agent_id=verify_agent_id,
+                )
+            if isinstance(raw, dict):
+                result = {
+                    "verified": bool(raw.get("verified", True)),
+                    "issues": list(raw.get("issues") or []),
+                }
+        except Exception as exc:
+            logger.warning("verification_agent: task '%s' failed — skipping: %s", task_title, exc)
+
+        await on_orchestrator_event("sub_agent_verify_complete", {
+            "task_id": task_id,
+            "title": f"Verify: {task_title}",
+            "agent_id": verify_agent_id,
+            "verified": result["verified"],
+            "issues": result["issues"],
+        })
+        logger.info(
+            "verification_agent: task '%s' verified=%s issues=%d",
+            task_title, result["verified"], len(result["issues"]),
+        )
+        return result
+
+    async def _run_task_verify_fix_loop(
+        self,
+        idea: Idea,
+        branch: SolutionBranch,
+        output_dir: str,
+        task: dict,
+        impl_result: dict,
+        on_tool_result: OnToolResult,
+        on_orchestrator_event: OnOrchestratorEvent,
+        prd_content: str | None = None,
+        agent_id: str | None = None,
+        max_fix_cycles: int = 3,
+        model_hint: str | None = None,
+    ) -> dict:
+        """Verify the implementation, then fix+re-verify until passing or max_fix_cycles reached."""
+        task_id = task["_id"]
+        task_title = task["_title"]
+        instruction = str(task.get("instruction") or "")
+        files_written = list(impl_result.get("files_written") or [])
+
+        for cycle in range(max_fix_cycles + 1):
+            verify = await self._run_task_verification_agent(
+                idea, branch, output_dir,
+                task_id, task_title, instruction,
+                files_written,
+                on_tool_result, on_orchestrator_event,
+                prd_content=prd_content,
+                agent_id=agent_id,
+            )
+            if verify["verified"]:
+                break
+
+            if cycle >= max_fix_cycles:
+                logger.warning(
+                    "verify_fix_loop: task '%s' failed verification after %d fix cycle(s)",
+                    task_title, max_fix_cycles,
+                )
+                impl_result["success"] = False
+                impl_result["blocker"] = (
+                    f"Failed verification after {max_fix_cycles} fix attempt(s). "
+                    "Issues: " + "; ".join(verify["issues"][:5])
+                )
+                break
+
+            issues_text = "\n".join(f"- {i}" for i in verify["issues"])
+            fix_instruction = (
+                f"Original task:\n{instruction}\n\n"
+                f"Files that need fixing:\n" + "\n".join(f"- {f}" for f in files_written) + "\n\n"
+                f"Issues found by verification (fix cycle {cycle + 1}):\n{issues_text}\n\n"
+                "Read each file listed above, fix every issue, and write the corrected file. "
+                "Do NOT introduce new TODOs, stubs, or placeholders — write complete working code."
+            )
+            fix_id = f"{task_id}_fix{cycle + 1}"
+            fix_title = f"Fix ({cycle + 1}): {task_title}"
+            fix_agent_id = f"fix_{agent_id or task_id}_{cycle + 1}"
+
+            await on_orchestrator_event("sub_agent_fix_started", {
+                "task_id": fix_id,
+                "title": fix_title,
+                "agent_id": fix_agent_id,
+                "parent_task_id": task_id,
+                "cycle": cycle + 1,
+            })
+            fix_result = await self._run_sub_agent(
+                idea, branch, output_dir,
+                fix_id, fix_title, fix_instruction,
+                on_tool_result, on_orchestrator_event,
+                source_root=None,
+                prd_content=prd_content,
+                agent_id=fix_agent_id,
+                model_hint=model_hint,
+            )
+            await on_orchestrator_event("sub_agent_fix_complete", {
+                "task_id": fix_id,
+                "title": fix_title,
+                "agent_id": fix_agent_id,
+                "parent_task_id": task_id,
+                "cycle": cycle + 1,
+                "success": fix_result.get("success", False),
+                "files_written": fix_result.get("files_written", []),
+            })
+            for f in fix_result.get("files_written") or []:
+                if f not in files_written:
+                    files_written.append(f)
+
+        impl_result["files_written"] = files_written
+        return impl_result
+
     async def _run_sub_agent(
         self,
         idea: Idea,
@@ -1435,8 +1650,24 @@ class OrchestratorAgent:
         source_root: str | None = None,
         prd_content: str | None = None,
         agent_id: str | None = None,
+        model_hint: str | None = None,
     ) -> dict:
-        logger.info("sub_agent: starting task '%s' (%s) agent=%s", task_title, task_id, agent_id or "?")
+        stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
+
+        # Resolve the primary model: orchestrator hint → first selectable (fast) → stage default
+        selectable_map = {m.name: m.model for m in stage_cfg.selectable_models}
+        if model_hint and model_hint in selectable_map:
+            primary_model = selectable_map[model_hint]
+        elif stage_cfg.selectable_models:
+            primary_model = stage_cfg.selectable_models[0].model  # default: fast
+        else:
+            primary_model = stage_cfg.model
+
+        models_to_try = [primary_model] + [m for m in stage_cfg.fallback_models if m != primary_model]
+        logger.info(
+            "sub_agent: starting task '%s' (%s) agent=%s model=%s (hint=%r)",
+            task_title, task_id, agent_id or "?", primary_model, model_hint,
+        )
 
         _files_edited: list[str] = []  # reset each attempt to catch fabricated results
 
@@ -1478,14 +1709,18 @@ class OrchestratorAgent:
         async def _handle_read_prd(_args: dict) -> dict:
             return {"prd": prd_content or "", "length": len(prd_content or "")}
 
-        stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
-        models_to_try: list[str | None] = [None] + list(stage_cfg.fallback_models)
         last_result: dict = {}
         prior_failures: list[dict] = []
 
+        from app import telemetry as _telemetry
+
         for attempt, model_override in enumerate(models_to_try):
             _files_edited.clear()
-            if model_override:
+            _telemetry.set_call_context(
+                is_fallback=attempt > 0,
+                fallback_from=models_to_try[attempt - 1] if attempt > 0 else None,
+            )
+            if attempt > 0:
                 logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_override)
                 await on_orchestrator_event("sub_agent_model_fallback", {
                     "task_id": task_id,

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     documents_dir: Path = data_dir / "documents"
     implementations_dir: Path = data_dir / "implementations"
     models_yaml_path: Path = base_dir / "models.yaml"
+    telemetry_log_path: Path = base_dir / "logs" / "model_telemetry.jsonl"
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./data/thinktank.db"

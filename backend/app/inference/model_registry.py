@@ -1,7 +1,15 @@
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+
+@dataclass
+class SelectableModel:
+    name: str
+    model: str
+    description: str = ""
 
 
 @dataclass
@@ -14,6 +22,7 @@ class StageConfig:
     num_ctx: int = 8192
     supports_tools: bool = False
     fallback_models: list[str] = field(default_factory=list)
+    selectable_models: list[SelectableModel] = field(default_factory=list)
     timeout_seconds: int | None = None  # overrides backend default when set
     extra: dict = field(default_factory=dict)  # passed verbatim to the backend payload
 
@@ -26,10 +35,32 @@ class BackendConfig:
 
 
 @dataclass
+class QuantizationConfig:
+    large_model_min_b: int | None = 14
+    large_model_quant: str = "q4_K_M"
+
+
+@dataclass
 class ResourceConfig:
     max_concurrent_branches: int
     initial_branches_per_idea: int
     max_parallel_sub_agents: int = 1
+    max_verify_fix_cycles: int = 3
+
+
+def apply_quant_suffix(model: str, quant_level: str) -> str:
+    """Append a quantization suffix to an Ollama model tag.
+
+    Only call this when you know the quantized variant has been pulled.
+    E.g. apply_quant_suffix("qwen3.6:27b", "q4_K_M") → "qwen3.6:27b-q4_K_M"
+    No-ops if the tag already contains a quant suffix or has no ':' separator.
+    """
+    if not quant_level or ":" not in model:
+        return model
+    name, tag = model.split(":", 1)
+    if re.search(r"-q\d", tag, re.IGNORECASE):
+        return model
+    return f"{name}:{tag}-{quant_level}"
 
 
 class ModelRegistry:
@@ -48,18 +79,34 @@ class ModelRegistry:
                 extra={k: v for k, v in cfg.items() if k not in ("base_url", "timeout_seconds")},
             )
 
+        qcfg = data.get("quantization") or {}
+        self._quant = QuantizationConfig(
+            large_model_min_b=qcfg.get("large_model_min_b", 14),
+            large_model_quant=qcfg.get("large_model_quant", "q4_K_M"),
+        ) if qcfg else None
+
         _KNOWN = {"model", "backend", "temperature", "max_tokens", "format",
-                  "num_ctx", "supports_tools", "fallback_models", "timeout_seconds"}
+                  "num_ctx", "supports_tools", "fallback_models", "selectable_models", "timeout_seconds"}
         for stage_key, cfg in data.get("stages", {}).items():
+            backend = cfg["backend"]
+            selectable = [
+                SelectableModel(name=s["name"], model=s["model"], description=s.get("description", ""))
+                for s in (cfg.get("selectable_models") or [])
+            ]
+            # When selectable_models is present, derive the primary model from the first entry
+            model = cfg.get("model") or (selectable[0].model if selectable else None)
+            if not model:
+                raise ValueError(f"Stage '{stage_key}' must define either 'model' or 'selectable_models'")
             self._stages[stage_key] = StageConfig(
-                model=cfg["model"],
-                backend=cfg["backend"],
+                model=model,
+                backend=backend,
                 temperature=cfg.get("temperature", self._defaults.get("temperature", 0.2)),
                 max_tokens=cfg.get("max_tokens", self._defaults.get("max_tokens")),
                 format=cfg.get("format", self._defaults.get("format", "json")),
                 num_ctx=cfg.get("num_ctx", self._defaults.get("num_ctx", 8192)),
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
                 fallback_models=list(cfg.get("fallback_models") or []),
+                selectable_models=selectable,
                 timeout_seconds=cfg.get("timeout_seconds"),
                 extra={k: v for k, v in cfg.items() if k not in _KNOWN},
             )
@@ -69,6 +116,7 @@ class ModelRegistry:
             max_concurrent_branches=res.get("max_concurrent_branches", 4),
             initial_branches_per_idea=res.get("initial_branches_per_idea", 2),
             max_parallel_sub_agents=res.get("max_parallel_sub_agents", 1),
+            max_verify_fix_cycles=res.get("max_verify_fix_cycles", 3),
         )
 
     def get_stage(self, stage_key: str) -> StageConfig:

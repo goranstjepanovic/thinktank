@@ -102,6 +102,27 @@ export const api = {
   listFailureAnalyses: (ideaId: string) =>
     request<import('../types').FailureAnalysis[]>(`/ideas/${ideaId}/failure-analyses`),
 
+  // Telemetry / Ops dashboard
+  getTelemetrySummary: (params: {
+    since?: string; until?: string;
+    model?: string; project_id?: string; backend?: string; stage?: string;
+  }) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v) p.set(k, v);
+    const qs = p.toString();
+    return request<import('../types').TelemetrySummary>(`/telemetry/summary${qs ? `?${qs}` : ''}`);
+  },
+  getTelemetryCalls: (params: {
+    since?: string; until?: string;
+    model?: string; project_id?: string; backend?: string; stage?: string;
+    limit?: number; offset?: number;
+  }) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') p.set(k, String(v));
+    const qs = p.toString();
+    return request<import('../types').TelemetryCallsResponse>(`/telemetry/calls${qs ? `?${qs}` : ''}`);
+  },
+
   // Settings
   getSettings: () => request<{ implementations_dir: string }>('/settings'),
   updateSettings: (body: { implementations_dir: string }) =>

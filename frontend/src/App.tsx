@@ -5,6 +5,7 @@ import { IdeaDetail } from './components/IdeaDetail';
 import { Phase2Chat } from './components/Phase2Chat';
 import { Phase3Implementation } from './components/Phase3Implementation';
 import { SolutionDetail } from './components/SolutionDetail';
+import { OpsDashboard } from './pages/OpsDashboard';
 import { SettingsPage } from './pages/SettingsPage';
 
 const queryClient = new QueryClient();
@@ -18,6 +19,16 @@ function TopBar() {
       </Link>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginLeft: 'auto' }}>
         <span style={{ fontSize: 12, color: 'var(--text2)' }}>Local AI Idea Analysis</span>
+        <Link
+          to="/ops"
+          title="Operations"
+          style={{ fontSize: 12, color: 'var(--text2)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          Ops
+        </Link>
         <Link
           to="/settings"
           title="Settings"
@@ -46,6 +57,7 @@ export default function App() {
             <Route path="/ideas/:ideaId/solutions/:branchId" element={<SolutionDetail />} />
             <Route path="/ideas/:id/phase2" element={<Phase2Chat />} />
             <Route path="/ideas/:id/phase3" element={<Phase3Implementation />} />
+            <Route path="/ops" element={<OpsDashboard />} />
           </Routes>
         </div>
       </BrowserRouter>

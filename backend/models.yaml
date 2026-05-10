@@ -4,6 +4,23 @@ defaults:
   format: "json"
   supports_tools: false
 
+quantization:
+  # Reference config — NOT auto-applied. Set exact quantized model names in each
+  # stage below (e.g. "qwen3.6:27b-q4_K_M") after pulling that variant with Ollama.
+  # llamacpp and openvino set quantization externally (GGUF file / optimum export).
+  #
+  # Common Ollama quant levels (smallest → largest VRAM):
+  #   q3_K_M  — aggressive; good for 27B–30B on 16 GB VRAM
+  #   q4_0    — fast, slight quality loss
+  #   q4_K_M  — balanced Q4 (recommended default for 14B+)
+  #   q5_K_M  — better quality, more VRAM
+  #   q8_0    — near-lossless; requires nearly full FP16 VRAM
+  #
+  # To switch quant level for qwen3.6:27b: update the tag in the fallback_models
+  # lists and re-pull, e.g.: ollama pull qwen3.6:27b-q4_K_M
+  large_model_min_b: 14
+  large_model_quant: "q4_K_M"
+
 backends:
   ollama:
     base_url: "http://localhost:11434"
@@ -14,7 +31,7 @@ backends:
   openvino:
     # Intel OpenVINO GenAI — targets Intel NPU / iGPU / CPU (not NVIDIA).
     # Install: pip install openvino-genai optimum[openvino]
-    # Convert a model: optimum-cli export openvino --model <hf-model-id> --weight-format int4 <model_dir>/<name>
+    # Convert a model: optimum-cli export openvino --model <hf-model-id> --weight-format int4_mixed <model_dir>/<name>
     #
     # device options:
     #   NPU              — Intel AI Boost NPU (INT4 models ≤7B, power-efficient)
@@ -123,7 +140,7 @@ stages:
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
     model: "qwen2.5-coder:14b"
     fallback_models:
-      - "qwen3.6:27b"
+      - "qwen3.6:27b-q4_K_M"
       - "codestral:22b"
       - "qwen3-coder:30b"
       - "gemma4:latest"
@@ -154,12 +171,13 @@ stages:
     supports_tools: true
 
   phase3_orchestrator:  # Multi-agent mode — planner that reads PRD and delegates tasks
-    model: "qwen3.5:9b"
-    backend: "ollama"
+    model: "qwen3-8b"
+    backend: "openvino"
+    device: "AUTO:CPU"  # NPU compiler (vpux) fails on Qwen3-8B; skip it
     temperature: 0.2
     max_tokens: 4096
     format: "json"
-    num_ctx: 32768
+    num_ctx: 32768      # ignored by OpenVINO (uses model's compiled max)
     supports_tools: true
     timeout_seconds: 900
     think: false
@@ -176,22 +194,44 @@ stages:
     think: false
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    model: "mrthp/omnicoder2"
-    fallback_models:
-      - "qwen3.6:27b"
-      - "qwen3-coder:30b"
+    # Orchestrator picks one of these per task; first entry is the default when no model is specified
+    selectable_models:
+      - name: "fast"
+        model: "qwen3.5:9B"
+        description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
+      - name: "standard"
+        model: "qwen2.5-coder:14b"
+        description: "Most implementation tasks — multi-file modules, straightforward logic"
+      - name: "large"
+        model: "qwen3.6:27b-q4_K_M"
+        description: "Complex algorithms, intricate cross-file wiring, large refactors"
+    fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
+      - "mrthp/omnicoder2"
       - "gemma4:latest"
-      - "qwen2.5-coder:14b"
+      - "phi4:14b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: null
     format: "json"
     num_ctx: 16384
     supports_tools: true
-    timeout_seconds: 1200  # larger tool-capable models may need more time on local hardware
+    timeout_seconds: 1200
+
+  phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
+    model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above
+    backend: "openvino"
+    # device not set — inherits AUTO:NPU,GPU,CPU from backend default (NPU works for this model)
+    temperature: 0.1
+    max_tokens: 1024
+    format: "json"
+    num_ctx: 8192
+    supports_tools: true
+    timeout_seconds: 180
 
 resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2
   max_branches_per_idea: 10
   max_parallel_sub_agents: 1
+  # Max verify→fix cycles per task. 0 disables task-level verification entirely.
+  max_verify_fix_cycles: 3

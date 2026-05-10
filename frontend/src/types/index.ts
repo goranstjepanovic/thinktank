@@ -179,3 +179,89 @@ export const STAGE_NAMES = [
   'Deep Review',
   'Documentation',
 ];
+
+// ---------------------------------------------------------------------------
+// Telemetry / Ops dashboard
+// ---------------------------------------------------------------------------
+
+export interface ModelStat {
+  model: string;
+  backend: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+}
+
+export interface StageStat {
+  stage: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+}
+
+export interface ProjectStat {
+  project_id: string;
+  project_name: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+}
+
+export interface BackendStat {
+  backend: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+}
+
+export interface TimeBucket {
+  bucket: string;
+  calls: number;
+  success: number;
+  avg_duration_ms: number | null;
+}
+
+export interface TelemetrySummary {
+  total_calls: number;
+  period_hours: number;
+  by_model: ModelStat[];
+  by_stage: StageStat[];
+  by_project: ProjectStat[];
+  by_backend: BackendStat[];
+  over_time: TimeBucket[];
+  available_models: string[];
+  available_backends: string[];
+  available_stages: string[];
+  available_projects: { id: string; name: string }[];
+}
+
+export interface TelemetryCall {
+  ts: string;
+  project_id: string;
+  project_name: string;
+  stage: string;
+  model: string;
+  backend: string;
+  duration_ms: number | null;
+  success: boolean;
+  is_fallback: boolean;
+  fallback_from: string | null;
+  tokens_prompt: number | null;
+  tokens_completion: number | null;
+  error: string | null;
+}
+
+export interface TelemetryCallsResponse {
+  calls: TelemetryCall[];
+  total: number;
+}

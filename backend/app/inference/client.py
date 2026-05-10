@@ -508,6 +508,7 @@ class InferenceClient:
                 request=request,
                 response=response,
                 error=error_str,
+                stage_key=stage_key,
             )
 
         try:
@@ -606,6 +607,7 @@ class InferenceClient:
                 request=request,
                 response=response,
                 error=error_str,
+                stage_key=stage_key,
             )
 
         return response.content.strip() if response.content else ""
@@ -700,6 +702,7 @@ class InferenceClient:
                 num_ctx=stage_cfg.num_ctx,
                 tools=available_tools,
                 timeout_seconds=stage_cfg.timeout_seconds,
+                extra=stage_cfg.extra,
             )
 
             response: InferenceResponse | None = None
@@ -712,9 +715,10 @@ class InferenceClient:
                 await self._log_call(
                     session=session, idea_id=idea_id, branch_id=branch_id,
                     stage_result_id=stage_result_id, call_type="STAGE",
-                    call_index=current_call_index, model_name=stage_cfg.model,
+                    call_index=current_call_index, model_name=effective_model,
                     backend=stage_cfg.backend, request=request,
                     response=None, error=error_str,
+                    stage_key=stage_key,
                 )
                 # If this is the first round (no tool results appended yet) the model
                 # likely doesn't support tool-calling.  Fall back to a plain call so
@@ -750,9 +754,10 @@ class InferenceClient:
             await self._log_call(
                 session=session, idea_id=idea_id, branch_id=branch_id,
                 stage_result_id=stage_result_id, call_type="STAGE",
-                call_index=current_call_index, model_name=stage_cfg.model,
+                call_index=current_call_index, model_name=effective_model,
                 backend=stage_cfg.backend, request=request,
                 response=response, error=None,
+                stage_key=stage_key,
             )
             current_call_index += 1
 
@@ -1469,6 +1474,7 @@ class InferenceClient:
         request: InferenceRequest,
         response: InferenceResponse | None,
         error: str | None,
+        stage_key: str = "",
     ) -> None:
         from app.db.models import ModelCall
 
@@ -1493,6 +1499,21 @@ class InferenceClient:
         )
         session.add(call)
         await session.commit()
+
+        # Emit telemetry for the first call of each logical stage invocation.
+        # Subsequent rounds (tool calls in call_with_tools) are skipped to avoid spam.
+        if call_index == 0 and stage_key:
+            from app import telemetry as _telemetry
+            _telemetry.log_call(
+                stage=stage_key,
+                model=model_name,
+                backend=backend,
+                duration_ms=response.duration_ms if response else None,
+                success=error is None,
+                error=error,
+                tokens_prompt=response.tokens_prompt if response else None,
+                tokens_completion=response.tokens_completion if response else None,
+            )
 
     async def _log_script_execution(
         self,
