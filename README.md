@@ -66,7 +66,7 @@ Sub-agents can use different models per task — a config file tweak, not a code
 - Node.js 18+
 - [Ollama](https://ollama.com) installed and running
 - A GPU with enough VRAM for the models you want to run (tested on RTX 4070 SUPER 12 GB)
-- **Optional:** Intel Core Ultra CPU for OpenVINO NPU/GPU stages (tested on Core Ultra 9 285H)
+- **Optional:** Intel Core Ultra CPU for OpenVINO NPU/GPU stages (tested on Core Ultra 7 265k)
 
 ---
 
