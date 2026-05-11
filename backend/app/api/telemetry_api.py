@@ -167,12 +167,20 @@ async def get_summary(
 
     # -- time buckets -------------------------------------------------------
     bkt_s = _bucket_seconds(period_hours)
+    # Snap origin to a clean boundary so labels align to calendar units rather
+    # than the arbitrary _since moment (e.g. 10:27 UTC).
+    if bkt_s >= 7200:   # 2 h, 12 h, 1 day → midnight UTC
+        bucket_origin = _since.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif bkt_s >= 300:  # 5 min, 30 min → top of hour
+        bucket_origin = _since.replace(minute=0, second=0, microsecond=0)
+    else:
+        bucket_origin = _since
     time_buckets: dict[int, dict] = defaultdict(_new_agg)
     for rec in records:
         ts = _parse_ts(rec.get("ts", ""))
         if ts is None:
             continue
-        idx = int((ts - _since).total_seconds() // bkt_s)
+        idx = int((ts - bucket_origin).total_seconds() // bkt_s)
         bk = time_buckets[idx]
         bk["calls"] += 1
         bk["success"] += int(bool(rec.get("success", True)))
@@ -180,13 +188,13 @@ async def get_summary(
         if dur is not None:
             bk["durations"].append(float(dur))
 
-    num_buckets = max(1, int(period_hours * 3600 / bkt_s) + 1)
+    num_buckets = max(1, int((_until - bucket_origin).total_seconds() / bkt_s) + 1)
     over_time = []
     for i in range(num_buckets):
         bk = time_buckets.get(i, {"calls": 0, "success": 0, "durations": []})
         durs = bk.get("durations", [])
         over_time.append({
-            "bucket": (_since + timedelta(seconds=i * bkt_s)).isoformat(),
+            "bucket": (bucket_origin + timedelta(seconds=i * bkt_s)).isoformat(),
             "calls": bk["calls"],
             "success": bk["success"],
             "avg_duration_ms": round(statistics.mean(durs)) if durs else None,
