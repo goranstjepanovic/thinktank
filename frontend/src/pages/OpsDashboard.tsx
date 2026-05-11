@@ -71,6 +71,8 @@ const TOOLTIP_STYLE = {
   color: 'var(--text)',
   fontSize: 12,
 };
+const TOOLTIP_TEXT_STYLE = { color: 'var(--text)' };
+const TOOLTIP_PROPS = { contentStyle: TOOLTIP_STYLE, labelStyle: TOOLTIP_TEXT_STYLE, itemStyle: TOOLTIP_TEXT_STYLE };
 
 const AXIS_STYLE = { fill: 'var(--text2)', fontSize: 11 };
 const GRID_STROKE = 'var(--border)';
@@ -156,7 +158,7 @@ function TimelineChart({ data, periodHours }: { data: TimeBucket[]; periodHours:
         <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
         <XAxis dataKey="label" tick={AXIS_STYLE} interval="preserveStartEnd" />
         <YAxis tick={AXIS_STYLE} allowDecimals={false} />
-        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Tooltip {...TOOLTIP_PROPS} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         <Line type="monotone" dataKey="calls" name="Total" stroke="#60a5fa" dot={false} strokeWidth={2} />
         <Line type="monotone" dataKey="success" name="Success" stroke="#34d399" dot={false} strokeWidth={2} />
@@ -181,7 +183,7 @@ function ModelSuccessChart({ data }: { data: ModelStat[] }) {
         <XAxis type="number" domain={[0, 100]} tick={AXIS_STYLE} tickFormatter={v => `${v}%`} />
         <YAxis type="category" dataKey="label" tick={AXIS_STYLE} width={130} />
         <Tooltip
-          contentStyle={TOOLTIP_STYLE}
+          {...TOOLTIP_PROPS}
           formatter={(v, _name, props) => [`${v}%  (${props.payload.success}/${props.payload.calls})`, 'Success']}
         />
         <Bar dataKey="pct" name="Success %" radius={[0, 3, 3, 0]}>
@@ -209,7 +211,7 @@ function ModelDurationChart({ data }: { data: ModelStat[] }) {
         <XAxis type="number" tick={AXIS_STYLE} tickFormatter={v => fmtMs(v)} />
         <YAxis type="category" dataKey="label" tick={AXIS_STYLE} width={130} />
         <Tooltip
-          contentStyle={TOOLTIP_STYLE}
+          {...TOOLTIP_PROPS}
           formatter={(v) => [fmtMs(v as number), 'Avg duration']}
         />
         <Bar dataKey="avg_duration_ms" name="Avg duration" radius={[0, 3, 3, 0]}>
@@ -235,7 +237,7 @@ function BackendCompareChart({ data }: { data: BackendStat[] }) {
         <XAxis dataKey="backend" tick={AXIS_STYLE} />
         <YAxis yAxisId="calls" tick={AXIS_STYLE} allowDecimals={false} />
         <YAxis yAxisId="pct" orientation="right" tick={AXIS_STYLE} domain={[0, 100]} tickFormatter={v => `${v}%`} />
-        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Tooltip {...TOOLTIP_PROPS} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         <Bar yAxisId="calls" dataKey="calls" name="Calls" fill="#60a5fa" radius={[3, 3, 0, 0]} />
         <Bar yAxisId="pct" dataKey="pct" name="Success %" fill="#34d399" radius={[3, 3, 0, 0]} />
