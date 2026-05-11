@@ -140,11 +140,9 @@ stages:
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
     model: "qwen2.5-coder:14b"
     fallback_models:
-      - "qwen3.6:27b-q4_K_M"
-      - "codestral:22b"
       - "qwen3-coder:30b"
+      - "codestral:22b"
       - "gemma4:latest"
-      - "phi4:14b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: 8192
