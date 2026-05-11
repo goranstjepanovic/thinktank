@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -246,24 +247,47 @@ class OpenVinoDriver(InferenceBackend):
             request.timeout_seconds if request.timeout_seconds is not None else self._timeout
         )
 
+        stop_event = threading.Event()
+
+        def _run_generate() -> str:
+            collected: list[str] = []
+
+            def streamer(token_text: str) -> bool:
+                if stop_event.is_set():
+                    return True  # signals OpenVINO to abort generation
+                collected.append(token_text)
+                return False
+
+            try:
+                pipeline.generate(prompt, config, streamer=streamer)
+            except Exception as exc:
+                if stop_event.is_set():
+                    return ""
+                raise InferenceBackendError(
+                    f"OpenVINO inference error (model={request.model}): {exc}"
+                ) from exc
+            return "".join(collected)
+
         t0 = time.monotonic()
         loop = asyncio.get_event_loop()
+        # shield keeps the executor thread alive so stop_event can reach the streamer
+        executor_future = loop.run_in_executor(None, _run_generate)
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: pipeline.generate(prompt, config)),
+            content_raw = await asyncio.wait_for(
+                asyncio.shield(executor_future),
                 timeout=effective_timeout,
             )
         except asyncio.TimeoutError as exc:
+            stop_event.set()
             raise InferenceBackendError(
                 f"OpenVINO inference timed out after {effective_timeout}s (model={request.model})"
             ) from exc
-        except Exception as exc:
-            raise InferenceBackendError(
-                f"OpenVINO inference error (model={request.model}): {exc}"
-            ) from exc
+        except asyncio.CancelledError:
+            stop_event.set()
+            raise  # propagate so the pipeline task is properly cancelled
 
         duration_ms = int((time.monotonic() - t0) * 1000)
-        content = _THINK_RE.sub("", self._decode_result(result)).strip()
+        content = _THINK_RE.sub("", content_raw).strip()
 
         tool_calls: list[ToolCall] = []
         if request.tools:
@@ -280,7 +304,7 @@ class OpenVinoDriver(InferenceBackend):
             tokens_prompt=None,
             tokens_completion=None,
             duration_ms=duration_ms,
-            raw_response={"generated_text": content},
+            raw_response={"generated_text": content_raw},
             tool_calls=tool_calls,
         )
 
