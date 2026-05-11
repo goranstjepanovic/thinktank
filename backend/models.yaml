@@ -203,13 +203,13 @@ stages:
         model: "qwen2.5-coder:14b"
         description: "Most implementation tasks — multi-file modules, straightforward logic"
       - name: "large"
-        model: "qwen3.6:27b-q4_K_M"
+        model: "qwen3-coder:30b"
         description: "Complex algorithms, intricate cross-file wiring, large refactors"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
       - "mrthp/omnicoder2"
       - "gemma4:latest"
       - "qwen2.5-coder:14b"
-      - "qwen3.6:27b-q4_K_M"
+      - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: null

@@ -1379,7 +1379,7 @@ export function Phase3Implementation() {
     queryKey: ['phase3-progress', id],
     queryFn: () => api.getPhase3File(id!, 'docs/PROGRESS.md'),
     enabled: !!id && !!session?.project_root && session?.mode === 'multi_agent',
-    refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 10_000,
+    refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 60_000,
     retry: false,
   });
 
@@ -1387,8 +1387,8 @@ export function Phase3Implementation() {
     queryKey: ['telemetry-idea', id],
     queryFn: () => api.getTelemetrySummary({ project_id: id }),
     enabled: !!id && !!session,
-    refetchInterval: isActivelyRunning ? 15_000 : 60_000,
-    staleTime: 10_000,
+    refetchInterval: isActivelyRunning ? 60_000 : 300_000,
+    staleTime: 30_000,
   });
 
   const addEntry = (entry: ActivityEntry) =>

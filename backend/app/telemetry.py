@@ -84,6 +84,7 @@ def log_call(
 
     proj = _project_ctx.get()
     extra = _call_ctx.get()
+    _call_ctx.set({})  # consume — prevent bleed into subsequent calls in the same coroutine context
 
     record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
