@@ -65,7 +65,7 @@ Sub-agents can use different models per task — a config file tweak, not a code
 - Python 3.11+
 - Node.js 18+
 - [Ollama](https://ollama.com) installed and running
-- A GPU with enough VRAM for the models you want to run (tested on RTX 4090 24 GB)
+- A GPU with enough VRAM for the models you want to run (tested on RTX 4070 SUPER 12 GB)
 - **Optional:** Intel Core Ultra CPU for OpenVINO NPU/GPU stages (tested on Core Ultra 9 285H)
 
 ---
@@ -211,8 +211,8 @@ thinktank/
 
 | Component | Spec |
 |-----------|------|
-| GPU | NVIDIA RTX 4090 (24 GB VRAM) |
-| NPU/iGPU | Intel Core Ultra 9 285H (Arc iGPU + NPU via OpenVINO) |
+| GPU | NVIDIA RTX 4070 SUPER (12 GB VRAM) |
+| NPU/iGPU | Intel Core Ultra 7 265K (Arc iGPU + NPU via OpenVINO) |
 | RAM | 64 GB |
 | OS | Windows 11 |
 
