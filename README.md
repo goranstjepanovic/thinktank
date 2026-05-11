@@ -2,6 +2,8 @@
 
 A local AI system that takes a raw idea through structured analysis, interactive Q&A, and autonomous multi-agent code generation — running entirely on your own hardware with no API costs or context limits.
 
+![Phase 3 multi-agent implementation](docs/multi_agent_implementation.png)
+
 ---
 
 ## What makes this interesting
@@ -15,6 +17,8 @@ A local AI system that takes a raw idea through structured analysis, interactive
 **Config-only model routing.** All stage → model → backend assignments live in `models.yaml`. Swap any model without touching application code.
 
 **Live model telemetry.** An Ops dashboard tracks inference call counts, success rates, average duration, p95 latency, and fallback rates per model across all pipeline runs.
+
+![Ops dashboard](docs/ops_dashboard.png)
 
 ---
 
@@ -36,6 +40,8 @@ Submit an idea with a description, requirements, and constraints. Think Tank spa
 | 7 — Documentation | Generates architecture docs, specs, roadmap, and more |
 
 Branches that fail are analysed for root cause and new alternative branches are spawned. The pipeline converges when at least one branch reaches VIABLE status. You then review all viable solutions and select one to proceed with.
+
+![Phase 1 solution branching](docs/solution_branching.png)
 
 ### Phase 2 — Q&A & Resolution
 
