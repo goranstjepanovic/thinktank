@@ -120,6 +120,12 @@ def phase3_tool_use(idea_id: str, session_id: str, tool: str, detail: str) -> Pi
 def phase3_verifying(idea_id: str, session_id: str, file_count: int) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.verifying", idea_id=idea_id, payload={"session_id": session_id, "file_count": file_count})
 
+def phase3_plan_warnings(idea_id: str, session_id: str, warnings: list[str]) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.plan_warnings", idea_id=idea_id, payload={"session_id": session_id, "warnings": warnings})
+
+def phase3_syntax_check(idea_id: str, session_id: str, path: str, passed: bool, error: str, retrying: bool) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.syntax_check", idea_id=idea_id, payload={"session_id": session_id, "path": path, "passed": passed, "error": error, "retrying": retrying})
+
 def phase3_waiting(idea_id: str, session_id: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.waiting", idea_id=idea_id, payload={"session_id": session_id})
 

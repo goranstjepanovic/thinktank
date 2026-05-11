@@ -192,6 +192,10 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 await event_bus.publish(ev.phase3_shell_stop(idea_id, session_id, handle=result.get("handle", ""), pid=result.get("pid"), stopped=result.get("stopped", False), exit_code=result.get("exit_code"), message=result.get("message", "")))
             elif tool_name == "verify_started":
                 await event_bus.publish(ev.phase3_verifying(idea_id, session_id, result.get("file_count", 0)))
+            elif tool_name == "plan_warnings":
+                await event_bus.publish(ev.phase3_plan_warnings(idea_id, session_id, result.get("warnings", [])))
+            elif tool_name == "syntax_check":
+                await event_bus.publish(ev.phase3_syntax_check(idea_id, session_id, result.get("path", ""), result.get("passed", True), result.get("error", ""), result.get("retrying", False)))
             elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
                 await _emit_tool_use(idea_id, session_id, tool_name, result)
 
@@ -458,6 +462,10 @@ async def _run_implementation(idea_id: str, session_id: str) -> None:
                 ))
             elif tool_name == "verify_started":
                 await event_bus.publish(ev.phase3_verifying(idea_id, session_id, result.get("file_count", 0)))
+            elif tool_name == "plan_warnings":
+                await event_bus.publish(ev.phase3_plan_warnings(idea_id, session_id, result.get("warnings", [])))
+            elif tool_name == "syntax_check":
+                await event_bus.publish(ev.phase3_syntax_check(idea_id, session_id, result.get("path", ""), result.get("passed", True), result.get("error", ""), result.get("retrying", False)))
             elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
                 await _emit_tool_use(idea_id, session_id, tool_name, result)
 
@@ -936,6 +944,8 @@ async def _run_iteration(idea_id: str, session_id: str, user_message_id: str) ->
                     exit_code=result.get("exit_code"),
                     message=result.get("message", ""),
                 ))
+            elif tool_name == "syntax_check":
+                await event_bus.publish(ev.phase3_syntax_check(idea_id, session_id, result.get("path", ""), result.get("passed", True), result.get("error", ""), result.get("retrying", False)))
             elif tool_name in ("list_files", "read_file", "grep_files", "web_search"):
                 await _emit_tool_use(idea_id, session_id, tool_name, result)
 

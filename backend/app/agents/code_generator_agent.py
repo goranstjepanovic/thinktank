@@ -8,6 +8,9 @@ Final: Run each setup command → emit event
 
 import json
 import logging
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -23,10 +26,11 @@ from app.tools.shell_runner import ShellResult, run_shell_command, shell_environ
 
 logger = logging.getLogger(__name__)
 
-PLAN_STAGE_KEY = "phase3_plan"
-FILE_STAGE_KEY = "phase3_file"
-PRD_STAGE_KEY  = "phase3_prd"
-PRD_PATH       = "docs/PRD.md"
+PLAN_STAGE_KEY    = "phase3_plan"
+FILE_STAGE_KEY    = "phase3_file"
+PRD_STAGE_KEY     = "phase3_prd"
+PRD_PATH          = "docs/PRD.md"
+MANIFEST_FILENAME = "MANIFEST.json"
 MAX_COMMAND_REPAIR_ROUNDS = 2
 
 # PRD sections generated individually to stay within output token limits.
@@ -99,6 +103,15 @@ def _plan_system_prompt() -> str:
         "- `tests/` — if tests live outside the component they test\n"
         "For single-layer projects (e.g. a CLI tool, a pure backend API, a pure frontend) "
         "use a `src/` subdirectory instead of splitting by tier.\n\n"
+        "## Structural anti-patterns — NEVER do these\n\n"
+        "- Do NOT split the same code layer across two locations. "
+        "If your project has a `server/` or `backend/` tier, ALL server-side code lives inside it. "
+        "Never create both `services/` and `server/services/` — pick ONE canonical path.\n"
+        "- Do NOT create two files with the same name at different directory depths "
+        "(e.g., `services/gameLogic.js` AND `server/services/gameLogic.js`). "
+        "One canonical path per module — duplicates always cause import confusion.\n"
+        "- Every import you write in generated files must reference exactly the path shown in the file plan. "
+        "Use paths relative to the file's own location.\n\n"
         "## Root-level files (always include)\n\n"
         "- `README.md` — setup, usage, and architecture overview\n"
         "- `.gitignore` — appropriate for the tech stack\n"
@@ -352,14 +365,26 @@ def _verify_user_prompt(
     branch: SolutionBranch,
     file_plan_summary: str,
     written_paths: list[str],
+    import_issues: list[dict] | None = None,
 ) -> str:
     written = "\n".join(f"  {p}" for p in written_paths)
+    import_block = ""
+    if import_issues:
+        lines = "\n".join(
+            f"  - {i['file']}: imports '{i['import']}' → expected at {i['expected']} (not found on disk)"
+            for i in import_issues[:20]
+        )
+        import_block = (
+            f"\n\nSTATIC IMPORT ANALYSIS — broken relative imports detected:\n{lines}\n\n"
+            "Fix these import paths as your first priority before reviewing other issues."
+        )
     return (
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
         f"SOLUTION APPROACH:\n{branch.approach_summary or 'N/A'}\n\n"
         f"PLANNED FILE STRUCTURE:\n{file_plan_summary}\n\n"
         f"FILES WRITTEN ({len(written_paths)}):\n{written}\n\n"
+        f"MANIFEST: {MANIFEST_FILENAME} in the project root lists every planned file with its status.{import_block}\n\n"
         "Review the generated files for correctness. "
         "Start by listing the project root, then read the entry-point and shared-utility files. "
         "Fix any real bugs you find, then return the JSON summary."
@@ -447,6 +472,115 @@ def _normalize_file_paths_for_output(files: list[dict], output_dir: str) -> list
         seen.add(path)
         normalized.append({**file_spec, "path": path})
     return normalized
+
+
+def _validate_file_plan(files: list[dict]) -> list[str]:
+    """Detect structural fragmentation in the planned file list. Returns warning strings."""
+    _ALLOW_MULTI = {
+        "index.js", "index.ts", "index.jsx", "index.tsx", "index.py",
+        "__init__.py", "README.md", "package.json", "tsconfig.json",
+        ".gitignore", "Makefile", "Dockerfile", ".env.example",
+    }
+    warnings: list[str] = []
+
+    # 1. Duplicate basenames at different paths
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for f in files:
+        name = Path(f.get("path", "")).name
+        if name and name not in _ALLOW_MULTI:
+            by_name[name].append(f["path"])
+    for name, paths in by_name.items():
+        if len(paths) > 1:
+            warnings.append(f"Duplicate filename `{name}` planned at: {', '.join(paths)}")
+
+    # 2. Same directory name appearing at multiple tree depths (e.g., services/ at depth 0 AND server/services/ at depth 1)
+    dir_by_leaf: dict[str, set[int]] = defaultdict(set)
+    for f in files:
+        parts = Path(f.get("path", "")).parts[:-1]
+        for depth, part in enumerate(parts):
+            dir_by_leaf[part].add(depth)
+    for dir_name, depths in dir_by_leaf.items():
+        if len(depths) > 1:
+            warnings.append(
+                f"Directory `{dir_name}/` appears at tree depths {sorted(depths)} — "
+                "possible duplicate structure"
+            )
+
+    return warnings
+
+
+def _write_manifest(output_dir: str, files: list[dict], commands: list[str], project_name: str) -> None:
+    """Write MANIFEST.json to the output root after the file plan is ready."""
+    manifest = {
+        "project": project_name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "files": [
+            {"path": f["path"], "description": f.get("description", ""), "status": "pending"}
+            for f in files
+        ],
+        "commands": commands,
+    }
+    manifest_path = Path(output_dir) / MANIFEST_FILENAME
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _update_manifest_status(output_dir: str, file_path: str, status: str) -> None:
+    """Update the status of one file entry in MANIFEST.json."""
+    manifest_path = Path(output_dir) / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in manifest.get("files", []):
+            if entry.get("path") == file_path:
+                entry["status"] = status
+                break
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _check_relative_imports(output_dir: str, written_paths: list[str]) -> list[dict]:
+    """
+    Parse relative JS/TS imports in written files and check if the target files exist.
+    Returns a list of broken import dicts: {file, import, expected}.
+    Only checks relative paths (starting with ./ or ../).
+    """
+    issues: list[dict] = []
+    base = Path(output_dir).resolve()
+    js_exts = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"}
+    js_files = [p for p in written_paths if Path(p).suffix.lower() in js_exts]
+
+    import_re = re.compile(
+        r"""(?:require\s*\(\s*|from\s+)['"](\.[^'"]+)['"]""",
+        re.MULTILINE,
+    )
+
+    for rel_path in js_files:
+        abs_path = base / rel_path
+        if not abs_path.exists():
+            continue
+        try:
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        file_dir = abs_path.parent
+        for match in import_re.finditer(content):
+            import_str = match.group(1).split("?")[0].split("#")[0]
+            resolved_base = (file_dir / import_str).resolve()
+            found = any(
+                Path(str(resolved_base) + ext).exists()
+                for ext in ("", ".js", ".ts", ".jsx", ".tsx", "/index.js", "/index.ts")
+            )
+            if not found:
+                try:
+                    expected = str(resolved_base.relative_to(base)).replace("\\", "/")
+                except ValueError:
+                    expected = str(resolved_base)
+                issues.append({"file": rel_path, "import": import_str, "expected": expected})
+
+    return issues
 
 
 def _command_failed(result: ShellResult) -> bool:
@@ -574,6 +708,53 @@ class CodeGeneratorAgent:
     def __init__(self, inference_client: InferenceClient) -> None:
         self._client = inference_client
 
+    async def _syntax_check_file(self, abs_path: str, rel_path: str, output_dir: str) -> tuple[bool, str]:
+        """Run a fast syntax check on the generated file. Returns (passed, error_message)."""
+        ext = Path(rel_path).suffix.lower()
+        if ext in (".js", ".mjs", ".cjs"):
+            r = await run_shell_command(f'node --check "{abs_path}"', working_dir=output_dir, timeout_seconds=15)
+            if r.exit_code != 0 and not r.timed_out:
+                return False, (r.stderr or r.stdout).strip()[:800]
+        elif ext == ".py":
+            r = await run_shell_command(f'python -m py_compile "{abs_path}"', working_dir=output_dir, timeout_seconds=15)
+            if r.exit_code != 0 and not r.timed_out:
+                return False, (r.stderr or r.stdout).strip()[:800]
+        elif ext == ".json" and Path(rel_path).name not in {"package-lock.json", "yarn.lock"}:
+            try:
+                with open(abs_path, encoding="utf-8") as fh:
+                    json.load(fh)
+            except Exception as e:
+                return False, str(e)[:500]
+        return True, ""
+
+    async def _generate_file_content(
+        self,
+        db: AsyncSession,
+        idea: Idea,
+        branch: SolutionBranch,
+        messages: list[Message],
+        call_type: str,
+        call_index: int,
+    ) -> str | None:
+        """Generate file content with primary model + fallback chain. Returns stripped content or None."""
+        fallbacks = [None] + list(self._client._registry.get_stage(FILE_STAGE_KEY).fallback_models)
+        for model in fallbacks:
+            try:
+                raw = await self._client.call_text(
+                    stage_key=FILE_STAGE_KEY,
+                    messages=messages,
+                    session=db,
+                    idea_id=idea.id,
+                    branch_id=branch.id,
+                    call_type=call_type,
+                    call_index=call_index,
+                    model_override=model,
+                )
+                return _strip_code_fence(raw)
+            except Exception as e:
+                logger.warning("code_generator: model %s failed for index %d: %s", model or "primary", call_index, e)
+        return None
+
     async def _run_commands(
         self,
         commands: list[str],
@@ -665,6 +846,7 @@ class CodeGeneratorAgent:
         file_plan_summary: str,
         written_paths: list[str],
         on_tool_result: Callable[[str, dict], Awaitable[None]] | None,
+        import_issues: list[dict] | None = None,
     ) -> str:
         """Post-generation verification pass: read written files, find and fix real bugs."""
         if not written_paths:
@@ -679,7 +861,7 @@ class CodeGeneratorAgent:
             stage_key="phase3_explore",
             messages=[
                 Message(role="system", content=_verify_system_prompt()),
-                Message(role="user", content=_verify_user_prompt(idea, branch, file_plan_summary, written_paths)),
+                Message(role="user", content=_verify_user_prompt(idea, branch, file_plan_summary, written_paths, import_issues)),
             ],
             session=db,
             idea_id=idea.id,
@@ -861,6 +1043,19 @@ class CodeGeneratorAgent:
         files = [f for f in files if f.get("path", "").strip() != PRD_PATH]
         files.insert(0, {"path": PRD_PATH, "description": "Product Requirements Document — full project specification"})
 
+        # Structural validation — detect duplicate trees before generation starts
+        plan_warnings = _validate_file_plan(files)
+        if plan_warnings:
+            logger.warning("code_generator: plan has %d structural warning(s)", len(plan_warnings))
+            if on_tool_result:
+                await on_tool_result("plan_warnings", {"warnings": plan_warnings})
+
+        # Persist the canonical file tree on disk so generators stay consistent
+        try:
+            _write_manifest(output_dir, files, commands, idea.name)
+        except Exception as e:
+            logger.warning("code_generator: failed to write manifest: %s", e)
+
         plan_message = str(plan_data.get("message", "")).strip()
         logger.info("code_generator: file plan has %d files (+PRD), %d commands", len(files) - 1, len(commands))
         if on_tool_result:
@@ -917,26 +1112,10 @@ class CodeGeneratorAgent:
                         file_plan_summary, written_paths, path, description,
                     )),
                 ]
-                content = None
-                _file_fallbacks = [None] + list(self._client._registry.get_stage(FILE_STAGE_KEY).fallback_models)
-                for _fb_model in _file_fallbacks:
-                    try:
-                        raw = await self._client.call_text(
-                            stage_key=FILE_STAGE_KEY,
-                            messages=file_messages,
-                            session=db,
-                            idea_id=idea.id,
-                            branch_id=branch.id,
-                            call_type="PHASE3",
-                            call_index=i + 1,
-                            model_override=_fb_model,
-                        )
-                        content = _strip_code_fence(raw)
-                        break
-                    except Exception as e:
-                        logger.warning("code_generator: failed to generate %s with model %s: %s", path, _fb_model or "primary", e)
+                content = await self._generate_file_content(db, idea, branch, file_messages, "PHASE3", i + 1)
                 if content is None:
                     logger.error("code_generator: all models failed for %s — skipping", path)
+                    _update_manifest_status(output_dir, path, "failed")
                     continue
 
             abs_path = str(Path(output_dir) / path)
@@ -946,8 +1125,10 @@ class CodeGeneratorAgent:
             if result.get("success"):
                 files_written += 1
                 written_paths.append(path)
+                _update_manifest_status(output_dir, path, "written")
                 logger.debug("code_generator: wrote %s (%d B)", path, size_bytes)
             else:
+                _update_manifest_status(output_dir, path, "failed")
                 logger.error("code_generator: failed to write %s: %s", path, result.get("error"))
 
             if on_tool_result:
@@ -959,10 +1140,54 @@ class CodeGeneratorAgent:
                     "detail": result.get("error", ""),
                 })
 
+            # Per-file syntax check (skip PRD and binary-like files)
+            if result.get("success") and path != PRD_PATH:
+                syntax_ok, syntax_err = await self._syntax_check_file(abs_path, path, output_dir)
+                if not syntax_ok:
+                    logger.warning("code_generator: syntax error in %s — retrying once", path)
+                    if on_tool_result:
+                        await on_tool_result("syntax_check", {"path": path, "passed": False, "error": syntax_err, "retrying": True})
+                    # Retry with error context injected
+                    retry_messages = [
+                        Message(role="system", content=_file_system_prompt()),
+                        Message(role="user", content=(
+                            _file_user_prompt(
+                                idea, branch, resolution_summary, architecture_doc,
+                                file_plan_summary, written_paths, path, description,
+                            )
+                            + f"\n\nPREVIOUS ATTEMPT HAD A SYNTAX ERROR — fix it:\n{syntax_err}"
+                        )),
+                    ]
+                    retry_content = await self._generate_file_content(db, idea, branch, retry_messages, "PHASE3", i + 1)
+                    if retry_content:
+                        retry_result = await file_manager.write_file(abs_path, retry_content)
+                        if retry_result.get("success"):
+                            syntax_ok2, syntax_err2 = await self._syntax_check_file(abs_path, path, output_dir)
+                            if on_tool_result:
+                                await on_tool_result("syntax_check", {"path": path, "passed": syntax_ok2, "error": syntax_err2, "retrying": False})
+                            if syntax_ok2:
+                                logger.info("code_generator: syntax retry succeeded for %s", path)
+                        else:
+                            if on_tool_result:
+                                await on_tool_result("syntax_check", {"path": path, "passed": False, "error": "retry write failed", "retrying": False})
+                    else:
+                        if on_tool_result:
+                            await on_tool_result("syntax_check", {"path": path, "passed": False, "error": "retry generation failed", "retrying": False})
+
+        # ── Import analysis: feed broken relative imports to the verifier ─────
+        import_issues: list[dict] = []
+        try:
+            import_issues = _check_relative_imports(output_dir, written_paths)
+            if import_issues:
+                logger.info("code_generator: %d broken relative import(s) detected pre-verification", len(import_issues))
+        except Exception as e:
+            logger.warning("code_generator: import analysis failed: %s", e)
+
         # ── Verification: read written files and fix any real bugs ───────────
         verify_summary = await self._verify_and_fix_files(
             db, idea, branch, output_dir,
             file_plan_summary, written_paths, on_tool_result,
+            import_issues=import_issues or None,
         )
 
         # ── Final: run setup commands ─────────────────────────────────────────
@@ -1189,34 +1414,18 @@ class CodeGeneratorAgent:
                 f"CURRENT CONTENT OF {path}:\n{existing_content}\n\n"
                 if existing_content else ""
             )
+            iter_user_prompt = (
+                f"PROJECT: {idea.name}\n\n"
+                f"USER REQUEST: {user_request}\n\n"
+                f"{existing_block}"
+                f"CHANGE REQUIRED: {description}\n\n"
+                f"Write the complete updated content of `{path}` now."
+            )
             file_messages = [
                 Message(role="system", content=_file_system_prompt()),
-                Message(role="user", content=(
-                    f"PROJECT: {idea.name}\n\n"
-                    f"USER REQUEST: {user_request}\n\n"
-                    f"{existing_block}"
-                    f"CHANGE REQUIRED: {description}\n\n"
-                    f"Write the complete updated content of `{path}` now."
-                )),
+                Message(role="user", content=iter_user_prompt),
             ]
-            content = None
-            _iter_fallbacks = [None] + list(self._client._registry.get_stage(FILE_STAGE_KEY).fallback_models)
-            for _fb_model in _iter_fallbacks:
-                try:
-                    raw = await self._client.call_text(
-                        stage_key=FILE_STAGE_KEY,
-                        messages=file_messages,
-                        session=db,
-                        idea_id=idea.id,
-                        branch_id=branch.id,
-                        call_type="PHASE3_ITER",
-                        call_index=i + 1,
-                        model_override=_fb_model,
-                    )
-                    content = _strip_code_fence(raw)
-                    break
-                except Exception as e:
-                    logger.warning("iteration: failed to generate %s with model %s: %s", path, _fb_model or "primary", e)
+            content = await self._generate_file_content(db, idea, branch, file_messages, "PHASE3_ITER", i + 1)
             if content is None:
                 logger.error("iteration: all models failed for %s — skipping", path)
                 continue
@@ -1237,6 +1446,28 @@ class CodeGeneratorAgent:
                     "size_bytes": size_bytes,
                     "detail": result.get("error", ""),
                 })
+
+            # Per-file syntax check in iterations too
+            if result.get("success"):
+                syntax_ok, syntax_err = await self._syntax_check_file(abs_path, path, output_dir)
+                if not syntax_ok:
+                    logger.warning("iteration: syntax error in %s — retrying once", path)
+                    if on_tool_result:
+                        await on_tool_result("syntax_check", {"path": path, "passed": False, "error": syntax_err, "retrying": True})
+                    retry_messages = [
+                        Message(role="system", content=_file_system_prompt()),
+                        Message(role="user", content=iter_user_prompt + f"\n\nPREVIOUS ATTEMPT HAD A SYNTAX ERROR — fix it:\n{syntax_err}"),
+                    ]
+                    retry_content = await self._generate_file_content(db, idea, branch, retry_messages, "PHASE3_ITER", i + 1)
+                    if retry_content:
+                        retry_result = await file_manager.write_file(abs_path, retry_content)
+                        if retry_result.get("success"):
+                            syntax_ok2, syntax_err2 = await self._syntax_check_file(abs_path, path, output_dir)
+                            if on_tool_result:
+                                await on_tool_result("syntax_check", {"path": path, "passed": syntax_ok2, "error": syntax_err2, "retrying": False})
+                    else:
+                        if on_tool_result:
+                            await on_tool_result("syntax_check", {"path": path, "passed": False, "error": "retry generation failed", "retrying": False})
 
         command_results = await self._run_commands(commands, output_dir, on_tool_result)
         repair_summary = await self._repair_failed_commands(

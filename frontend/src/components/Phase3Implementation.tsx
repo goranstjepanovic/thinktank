@@ -87,7 +87,9 @@ type ActivityEntry =
   | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
   | { kind: 'orchestrator_thinking'; id: number }
   | { kind: 'orchestrator_message'; id: number; content: string }
-  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] };
+  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] }
+  | { kind: 'plan_warnings'; id: number; warnings: string[] }
+  | { kind: 'syntax_check'; id: number; path: string; passed: boolean; error: string; retrying: boolean };
 
 let _entryId = 0;
 const nextId = () => ++_entryId;
@@ -365,6 +367,34 @@ function OrchestratorMessageEntry({ content }: { content: string }) {
           <ReactMarkdown>{content}</ReactMarkdown>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PlanWarningsEntry({ warnings }: { warnings: string[] }) {
+  return (
+    <div style={{ margin: '8px 0', padding: '10px 14px', background: '#1a1500', border: '1px solid #4a3800', borderRadius: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--yellow)', marginBottom: 6 }}>
+        ⚠ Structural issues detected in file plan — will attempt to continue
+      </div>
+      {warnings.map((w, i) => (
+        <div key={i} style={{ fontSize: 11, color: 'var(--yellow)', opacity: 0.85, padding: '2px 0', fontFamily: 'monospace', wordBreak: 'break-word' }}>
+          · {w}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SyntaxCheckEntry({ path, passed, error, retrying }: { path: string; passed: boolean; error: string; retrying: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 0 3px 16px', fontSize: 11 }}>
+      <span style={{ color: passed ? 'var(--green)' : 'var(--red)', fontWeight: 700, flexShrink: 0 }}>
+        {passed ? '✓ syntax OK' : retrying ? '⟳ syntax error — retrying' : '⚠ syntax error persists'}
+      </span>
+      {!passed && error && (
+        <code style={{ color: 'var(--red)', fontFamily: 'monospace', opacity: 0.8, wordBreak: 'break-all' }}>{error.split('\n')[0]}</code>
+      )}
     </div>
   );
 }
@@ -1745,6 +1775,20 @@ export function Phase3Implementation() {
           fileRefreshTimer.current = setTimeout(() => setFileRefreshKey(k => k + 1), 4000);
           break;
         }
+
+        case 'phase3.plan_warnings':
+          addEntry({ kind: 'plan_warnings', id: nextId(), warnings: (event.payload.warnings as string[]) || [] });
+          break;
+
+        case 'phase3.syntax_check':
+          addEntry({
+            kind: 'syntax_check', id: nextId(),
+            path: event.payload.path as string,
+            passed: event.payload.passed as boolean,
+            error: (event.payload.error as string) || '',
+            retrying: event.payload.retrying as boolean,
+          });
+          break;
       }
     } catch { /* ignore */ }
   });
@@ -2298,6 +2342,8 @@ export function Phase3Implementation() {
                   case 'complete': return <CompleteEntry key={entry.id} summary={entry.summary} outputDir={entry.outputDir} onBrowse={() => setMainTab('files')} isPrdOnly={session?.mode === 'prd_only'} />;
                   case 'user_msg': return <UserMsgEntry key={entry.id} content={entry.content} />;
                   case 'assistant_msg': return <AssistantMsgEntry key={entry.id} content={entry.content} />;
+                  case 'plan_warnings': return <PlanWarningsEntry key={entry.id} warnings={entry.warnings} />;
+                  case 'syntax_check': return <SyntaxCheckEntry key={entry.id} path={entry.path} passed={entry.passed} error={entry.error} retrying={entry.retrying} />;
                   default: return null;
                 }
               })}
