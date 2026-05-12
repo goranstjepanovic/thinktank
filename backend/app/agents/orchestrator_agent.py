@@ -1745,7 +1745,9 @@ class OrchestratorAgent:
                 })
 
         async def _handle_read_prd(_args: dict) -> dict:
-            return {"prd": prd_content or "", "length": len(prd_content or "")}
+            from app.tools.context_reducer import reduce_prd
+            reduced = reduce_prd(prd_content or "", task_instruction)
+            return {"prd": reduced, "length": len(reduced)}
 
         last_result: dict = {}
         prior_failures: list[dict] = []

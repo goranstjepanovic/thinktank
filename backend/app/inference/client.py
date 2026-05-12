@@ -715,6 +715,9 @@ class InferenceClient:
         _tool_call_counts: dict[str, int] = {}
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
+            if round_num > 0:
+                from app.tools.context_reducer import prune_stale_reads
+                working_messages = prune_stale_reads(working_messages)
             request = InferenceRequest(
                 model=effective_model,
                 messages=working_messages,
