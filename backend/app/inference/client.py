@@ -1670,9 +1670,15 @@ class InferenceClient:
 
         formatted = _format_tool_history(middle)
 
+        from app import telemetry as _telemetry
+
         summary: str = ""
+        _summarizer_model: str = "unknown"
+        _summarizer_backend: str = "unknown"
         try:
             stage_cfg = self._registry.get_stage("context_summarizer")
+            _summarizer_model = stage_cfg.model
+            _summarizer_backend = stage_cfg.backend
             driver = self._get_driver(stage_cfg.backend)
             req = InferenceRequest(
                 model=stage_cfg.model,
@@ -1699,7 +1705,24 @@ class InferenceClient:
             )
             resp = await driver.complete(req)
             summary = (resp.content or "").strip()
+            _telemetry.log_call(
+                stage="context_summarizer",
+                model=stage_cfg.model,
+                backend=stage_cfg.backend,
+                duration_ms=resp.duration_ms,
+                success=True,
+                tokens_prompt=resp.tokens_prompt,
+                tokens_completion=resp.tokens_completion,
+            )
         except Exception as exc:
+            _telemetry.log_call(
+                stage="context_summarizer",
+                model=_summarizer_model,
+                backend=_summarizer_backend,
+                duration_ms=None,
+                success=False,
+                error=str(exc),
+            )
             logger.warning(
                 "compress_context: stage=%s summarizer failed (%s) — using formatted fallback%s",
                 source_stage_key, exc, f"  agent={agent_id}" if agent_id else "",
