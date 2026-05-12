@@ -129,6 +129,12 @@ async def get_summary(
     project_names: dict[str, str] = {}
     backend_agg: dict[str, dict] = defaultdict(_new_agg)
 
+    # tool-call aggregation
+    # per-project: {project_id: {tool_name: total_calls}}
+    project_tool_totals: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    # per-model: list of total tool calls per invocation (to average)
+    model_tool_totals: dict[str, list[int]] = defaultdict(list)
+
     all_models: set[str] = set()
     all_backends: set[str] = set()
     all_stages: set[str] = set()
@@ -143,6 +149,7 @@ async def get_summary(
         ok = bool(rec.get("success", True))
         dur = rec.get("duration_ms")
         is_fb = bool(rec.get("is_fallback", False))
+        tc = rec.get("tool_calls") or {}
 
         all_models.add(m)
         all_backends.add(b)
@@ -164,6 +171,13 @@ async def get_summary(
             project_agg[pid]["success"] += int(ok)
             project_agg[pid]["fallbacks"] += int(is_fb)
             project_names[pid] = pname
+
+        # tool-call stats
+        if tc:
+            if pid:
+                for tool, count in tc.items():
+                    project_tool_totals[pid][tool] += count
+            model_tool_totals[m].append(sum(tc.values()))
 
     # -- time buckets -------------------------------------------------------
     bkt_s = _bucket_seconds(period_hours)
@@ -215,6 +229,43 @@ async def get_summary(
             out.update(extra)
         return out
 
+    # avg tool calls per project, per tool name
+    # For each tool, average its per-project total across all projects that used it.
+    all_tools: set[str] = set()
+    for ptotals in project_tool_totals.values():
+        all_tools.update(ptotals.keys())
+    avg_tools_per_project = sorted(
+        [
+            {
+                "tool": tool,
+                "avg_calls_per_project": round(
+                    statistics.mean(
+                        project_tool_totals[pid].get(tool, 0)
+                        for pid in project_tool_totals
+                        if tool in project_tool_totals[pid]
+                    ),
+                    1,
+                ) if any(tool in project_tool_totals[pid] for pid in project_tool_totals) else 0,
+                "projects_used": sum(1 for pid in project_tool_totals if tool in project_tool_totals[pid]),
+            }
+            for tool in all_tools
+        ],
+        key=lambda x: -x["avg_calls_per_project"],
+    )
+
+    # avg total tool calls per model invocation
+    avg_tools_per_model = sorted(
+        [
+            {
+                "model": m,
+                "avg_tool_calls_per_invocation": round(statistics.mean(totals), 1) if totals else 0,
+                "invocations_with_tools": len(totals),
+            }
+            for m, totals in model_tool_totals.items()
+        ],
+        key=lambda x: -x["avg_tool_calls_per_invocation"],
+    )
+
     by_model = sorted(
         [{"model": k, "backend": model_backend.get(k, ""), **_fmt(k, v)}
          for k, v in model_agg.items()],
@@ -242,6 +293,8 @@ async def get_summary(
         "by_project": by_project,
         "by_backend": by_backend,
         "over_time": over_time,
+        "avg_tools_per_project": avg_tools_per_project,
+        "avg_tools_per_model": avg_tools_per_model,
         "available_models": sorted(all_models),
         "available_backends": sorted(all_backends),
         "available_stages": sorted(all_stages),

@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../api/client';
-import type { BackendStat, ModelStat, TelemetryCall, TimeBucket } from '../types';
+import type { BackendStat, ModelStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -246,6 +246,61 @@ function BackendCompareChart({ data }: { data: BackendStat[] }) {
   );
 }
 
+// Avg tool calls per project (per tool)
+function ToolUsageChart({ data }: { data: ToolProjectStat[] }) {
+  const top = data.slice(0, 20).map((d, i) => ({
+    ...d,
+    color: MODEL_COLORS[i % MODEL_COLORS.length],
+  }));
+  const barH = Math.max(180, top.length * 30);
+  return (
+    <ResponsiveContainer width="100%" height={barH}>
+      <BarChart data={top} layout="vertical" style={CHART_STYLE} barCategoryGap="20%">
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+        <XAxis type="number" tick={AXIS_STYLE} allowDecimals={true} />
+        <YAxis type="category" dataKey="tool" tick={AXIS_STYLE} width={110} />
+        <Tooltip
+          {...TOOLTIP_PROPS}
+          formatter={(v, _n, props) => [`${v} (across ${props.payload.projects_used} project${props.payload.projects_used === 1 ? '' : 's'})`, 'Avg calls/project']}
+        />
+        <Bar dataKey="avg_calls_per_project" name="Avg calls/project" radius={[0, 3, 3, 0]}>
+          {top.map((entry, i) => (
+            <Cell key={i} fill={entry.color} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Avg tool calls per model invocation
+function ToolsPerModelChart({ data }: { data: ToolModelStat[] }) {
+  const top = data.slice(0, 12).map((d, i) => ({
+    ...d,
+    label: truncate(d.model),
+    color: MODEL_COLORS[i % MODEL_COLORS.length],
+  }));
+  const barH = Math.max(180, top.length * 32);
+  return (
+    <ResponsiveContainer width="100%" height={barH}>
+      <BarChart data={top} layout="vertical" style={CHART_STYLE} barCategoryGap="20%">
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+        <XAxis type="number" tick={AXIS_STYLE} allowDecimals={true} />
+        <YAxis type="category" dataKey="label" tick={AXIS_STYLE} width={130} />
+        <Tooltip
+          {...TOOLTIP_PROPS}
+          formatter={(v, _n, props) => [`${v} (${props.payload.invocations_with_tools} invocation${props.payload.invocations_with_tools === 1 ? '' : 's'})`, 'Avg tool calls']}
+        />
+        <Bar dataKey="avg_tool_calls_per_invocation" name="Avg tool calls" radius={[0, 3, 3, 0]}>
+          {top.map((entry, i) => (
+            <Cell key={i} fill={entry.color} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 // Recent calls table
 function CallsTable({ calls }: { calls: TelemetryCall[] }) {
   return (
@@ -453,6 +508,22 @@ export function OpsDashboard() {
           <ChartCard title={`Backend Comparison  ·  use the Backend filter above to focus on one`} minHeight={200}>
             <BackendCompareChart data={data.by_backend} />
           </ChartCard>
+        </div>
+      )}
+
+      {/* Tool usage charts — two side by side */}
+      {data && (data.avg_tools_per_project.length > 0 || data.avg_tools_per_model.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+          {data.avg_tools_per_project.length > 0 && (
+            <ChartCard title="Avg Tool Calls per Project" minHeight={280}>
+              <ToolUsageChart data={data.avg_tools_per_project} />
+            </ChartCard>
+          )}
+          {data.avg_tools_per_model.length > 0 && (
+            <ChartCard title="Avg Tool Calls per Model Invocation" minHeight={280}>
+              <ToolsPerModelChart data={data.avg_tools_per_model} />
+            </ChartCard>
+          )}
         </div>
       )}
 

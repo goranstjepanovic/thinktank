@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 _project_ctx: ContextVar[dict[str, str]] = ContextVar("telemetry_project", default={})
 _call_ctx: ContextVar[dict[str, Any]] = ContextVar("telemetry_call", default={})
 _suppress_next: ContextVar[bool] = ContextVar("telemetry_suppress_next", default=False)
+_tool_counts_ctx: ContextVar[dict[str, int]] = ContextVar("telemetry_tool_counts", default={})
 
 _log_path: Path | None = None
 
@@ -33,6 +34,11 @@ def set_call_context(is_fallback: bool = False, fallback_from: str | None = None
 def suppress_next_call() -> None:
     """Suppress the next log_call — caller will log the task-level outcome itself."""
     _suppress_next.set(True)
+
+
+def set_tool_counts(counts: dict[str, int]) -> None:
+    """Store tool call counts from call_with_tools so log_call can include them."""
+    _tool_counts_ctx.set(dict(counts))
 
 
 def clear_suppress() -> None:
@@ -85,6 +91,8 @@ def log_call(
     proj = _project_ctx.get()
     extra = _call_ctx.get()
     _call_ctx.set({})  # consume — prevent bleed into subsequent calls in the same coroutine context
+    tool_counts = _tool_counts_ctx.get()
+    _tool_counts_ctx.set({})  # consume
 
     record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -100,6 +108,7 @@ def log_call(
         "tokens_prompt": tokens_prompt,
         "tokens_completion": tokens_completion,
         "error": error[:200] if error else None,
+        "tool_calls": tool_counts if tool_counts else None,
     }
 
     try:

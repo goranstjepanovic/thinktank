@@ -712,6 +712,7 @@ class InferenceClient:
         _stall_sig: frozenset | None = None
         _stall_count = 0
         _total_stall_events = 0
+        _tool_call_counts: dict[str, int] = {}
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
@@ -847,6 +848,8 @@ class InferenceClient:
                             "tools stage=%-20s stall limit reached (%d events) — aborting loop%s",
                             stage_key, _total_stall_events, _agent_suffix,
                         )
+                        from app import telemetry as _tel_tc
+                        _tel_tc.set_tool_counts(_tool_call_counts)
                         raise InferenceClientError(
                             f"Stage '{stage_key}' stalled: `{_stalled_tools}` repeated with identical "
                             f"arguments across {_total_stall_events} stall events — aborting"
@@ -881,6 +884,7 @@ class InferenceClient:
                 )
 
                 for tc in response.tool_calls:
+                    _tool_call_counts[tc.name] = _tool_call_counts.get(tc.name, 0) + 1
                     if tc.name == "run_python":
                         script = tc.arguments.get("script", "")
                         script_result = await run_script(
@@ -1404,6 +1408,8 @@ class InferenceClient:
                 continue  # next round
 
             # No tool calls — model returned its final answer
+            from app import telemetry as _tel_tc
+            _tel_tc.set_tool_counts(_tool_call_counts)
             content = response.content.strip() if response.content else ""
             _preview = " ".join(content.split())[:120]
             logger.info("tools stage=%-20s round=%d → no tool calls: %r%s", stage_key, round_num, _preview, _agent_suffix)

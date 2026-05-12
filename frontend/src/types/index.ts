@@ -231,6 +231,18 @@ export interface TimeBucket {
   avg_duration_ms: number | null;
 }
 
+export interface ToolProjectStat {
+  tool: string;
+  avg_calls_per_project: number;
+  projects_used: number;
+}
+
+export interface ToolModelStat {
+  model: string;
+  avg_tool_calls_per_invocation: number;
+  invocations_with_tools: number;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   period_hours: number;
@@ -239,6 +251,8 @@ export interface TelemetrySummary {
   by_project: ProjectStat[];
   by_backend: BackendStat[];
   over_time: TimeBucket[];
+  avg_tools_per_project: ToolProjectStat[];
+  avg_tools_per_model: ToolModelStat[];
   available_models: string[];
   available_backends: string[];
   available_stages: string[];
