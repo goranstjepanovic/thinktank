@@ -1878,6 +1878,27 @@ class OrchestratorAgent:
             if last_result.get("success", True):
                 return last_result
 
+            # Fast-fail: if the backend server itself is unreachable, every
+            # remaining fallback will fail for the same reason — skip them all
+            # so we don't pollute telemetry with false model failures.
+            _blocker_lower = (last_result.get("blocker") or "").lower()
+            _CONN_ERRORS = (
+                "all connection attempts failed",
+                "connection refused",
+                "cannot connect to host",
+                "clientconnectorerror",
+                "serverdisconnectederror",
+                "no route to host",
+                "name or service not known",
+            )
+            if any(kw in _blocker_lower for kw in _CONN_ERRORS):
+                _remaining = len(models_to_try) - attempt - 1
+                logger.error(
+                    "sub_agent: task '%s' — backend '%s' unreachable, skipping %d fallback(s)",
+                    task_title, stage_cfg.backend, _remaining,
+                )
+                break
+
             prior_failures.append({
                 "attempt": attempt + 1,
                 "blocker": last_result.get("blocker") or "",
