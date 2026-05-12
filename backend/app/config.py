@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     implementations_dir: Path = data_dir / "implementations"
     models_yaml_path: Path = base_dir / "models.yaml"
     telemetry_log_path: Path = base_dir / "logs" / "model_telemetry.jsonl"
+    memory_db_path: Path = base_dir / "data" / "memory.db"
+
+    # Agent memory
+    embed_model: str = "nomic-embed-text"  # Ollama model for semantic search
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./data/thinktank.db"

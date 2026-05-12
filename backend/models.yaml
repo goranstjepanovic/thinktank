@@ -236,6 +236,11 @@ stages:
     supports_tools: true
     timeout_seconds: 180
 
+memory:
+  # Embedding model for semantic memory_search. Pull with: ollama pull nomic-embed-text
+  # Set to "" to disable embeddings and fall back to keyword search.
+  embed_model: "nomic-embed-text"
+
 resources:
   max_concurrent_branches: 4
   initial_branches_per_idea: 2

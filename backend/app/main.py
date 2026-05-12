@@ -30,6 +30,7 @@ from app.inference.client import InferenceClient
 from app.inference.model_registry import ModelRegistry
 from app.pipeline.orchestrator import orchestrator
 import app.telemetry as _telemetry
+import app.memory as _memory
 
 
 @asynccontextmanager
@@ -39,6 +40,13 @@ async def lifespan(app: FastAPI):
 
     # Configure model telemetry log (append-only JSONL, one record per LLM call)
     _telemetry.configure(settings.telemetry_log_path)
+
+    # Configure agent memory store (per-project file observations + semantic retrieval)
+    _memory.configure(
+        db_path=settings.memory_db_path,
+        embed_model=settings.embed_model,
+        ollama_base_url=settings.ollama_base_url,
+    )
 
     # Init DB tables
     await init_db()

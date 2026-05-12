@@ -769,10 +769,42 @@ def _sub_agent_extra_tools() -> list:
     """Return the extra tools list for sub-agents. generate_image is included only when ComfyUI is configured."""
     from app.config import settings
     from app.inference.client import READ_PRD_TOOL, GENERATE_IMAGE_TOOL
-    tools = [READ_PRD_TOOL]
+    from app.memory import MEMORY_STORE_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL
+    tools = [READ_PRD_TOOL, MEMORY_STORE_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL]
     if settings.comfyui_base_url:
         tools.append(GENERATE_IMAGE_TOOL)
     return tools
+
+
+def _memory_handlers(project_id: str) -> dict:
+    """Return custom tool handlers for the three memory tools, closed over project_id."""
+    import app.memory as _mem
+
+    async def _store(args: dict) -> dict:
+        fp = (args.get("file_path") or "").strip()
+        obs = (args.get("observation") or "").strip()
+        if not fp or not obs:
+            return {"error": "file_path and observation are required"}
+        await _mem.store(project_id, fp, obs)
+        return {"stored": True, "file_path": fp}
+
+    async def _search(args: dict) -> dict:
+        query = (args.get("query") or "").strip()
+        top_k = min(int(args.get("top_k") or 5), 10)
+        if not query:
+            return {"error": "query is required"}
+        results = await _mem.search(project_id, query, top_k)
+        return {"results": results, "count": len(results)}
+
+    async def _list(_args: dict) -> dict:
+        entries = await _mem.list_all(project_id)
+        return {"memories": entries, "count": len(entries)}
+
+    return {
+        "memory_store": _store,
+        "memory_search": _search,
+        "memory_list": _list,
+    }
 
 
 def _sub_agent_system_prompt() -> str:
@@ -785,15 +817,29 @@ def _sub_agent_system_prompt() -> str:
         "Returning `success: true` with empty `files_written` is ALWAYS wrong — "
         "unless the Nothing-to-fix rule (below) explicitly applies.\n\n"
         "## Workflow — follow this order every time\n\n"
-        "1. Call `read_prd` to read the Product Requirements Document\n"
-        "2. Read context — **maximum 2 rounds**: call `read_file` on the specific files named in your task, "
-        "or `list_files` once if you need to confirm a path. Do NOT browse directories repeatedly. "
-        "If your task names the file to write, skip `list_files` entirely and go straight to writing. "
+        "1. Call `memory_list()` to see what has already been analysed for this project\n"
+        "2. Call `read_prd` to read the Product Requirements Document\n"
+        "3. Read context — **maximum 2 rounds**: before each `read_file`, call `memory_search` first — "
+        "if a good observation exists, skip the read. Otherwise call `read_file` on the specific files "
+        "named in your task, or `list_files` once if you need to confirm a path. Do NOT browse directories "
+        "repeatedly. If your task names the file to write, skip `list_files` entirely and go straight to writing. "
         "`read_file` always returns `total_lines` — if the file is large, request specific ranges with "
         "`start_line`/`end_line` (e.g. `read_file(path='foo.py', start_line=200, end_line=400)`).\n"
-        "3. Write all files required for your task using `file_edit` — write complete, real implementations\n"
-        "4. Run any required commands (install dependencies, build, test) using `run_shell`\n"
-        "5. Return a JSON summary AFTER all files are written — not before\n\n"
+        "   After each `read_file`, call `memory_store` with your key findings.\n"
+        "4. Write all files required for your task using `file_edit` — write complete, real implementations\n"
+        "5. Run any required commands (install dependencies, build, test) using `run_shell`\n"
+        "6. Return a JSON summary AFTER all files are written — not before\n\n"
+        "## Memory tools\n\n"
+        "You have three memory tools that persist observations across all agents working on this project:\n\n"
+        "- `memory_list()` — see all files already analysed. **Call this once at the start** to orient yourself.\n"
+        "- `memory_search(query)` — semantic search over stored observations. "
+        "Call this BEFORE reading any file — if a useful observation exists you may not need to read the file.\n"
+        "- `memory_store(file_path, observation)` — store your analysis AFTER reading a file. "
+        "Write what the file does, key functions/classes, patterns, and anything non-obvious. "
+        "Do NOT store raw file content — store your own analysis (50–200 words).\n\n"
+        "**Rule:** After reading any file, call `memory_store` with your findings. "
+        "Before reading any file, call `memory_search` first.\n"
+        "Memory reduces redundant file reads and lets agents build on each other's work.\n\n"
         "## Web search\n\n"
         "You have `web_search` and `fetch_webpage` available. Use them when:\n"
         "- You are unsure of the correct API, import path, or configuration for a library\n"
@@ -1822,7 +1868,10 @@ class OrchestratorAgent:
                         on_text_response=_on_text_response,
                         model_override=model_override,
                         extra_tools=_sub_agent_extra_tools(),
-                        custom_tool_handlers={"read_prd": _handle_read_prd},
+                        custom_tool_handlers={
+                            "read_prd": _handle_read_prd,
+                            **_memory_handlers(idea.id),
+                        },
                         agent_id=agent_id,
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title)
