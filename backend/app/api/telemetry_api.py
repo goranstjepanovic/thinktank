@@ -135,6 +135,12 @@ async def get_summary(
     # per-model: list of total tool calls per invocation (to average)
     model_tool_totals: dict[str, list[int]] = defaultdict(list)
 
+    # per-type (fast/standard/large) aggregation
+    type_agg: dict[str, dict] = defaultdict(_new_agg)
+    type_tool_totals: dict[str, list[int]] = defaultdict(list)
+    # per-project: how many initial dispatches of each type (non-fallback only)
+    project_type_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
     all_models: set[str] = set()
     all_backends: set[str] = set()
     all_stages: set[str] = set()
@@ -150,6 +156,7 @@ async def get_summary(
         dur = rec.get("duration_ms")
         is_fb = bool(rec.get("is_fallback", False))
         tc = rec.get("tool_calls") or {}
+        mtype = rec.get("model_type") or ""
 
         all_models.add(m)
         all_backends.add(b)
@@ -171,6 +178,19 @@ async def get_summary(
             project_agg[pid]["success"] += int(ok)
             project_agg[pid]["fallbacks"] += int(is_fb)
             project_names[pid] = pname
+
+        # type aggregation
+        if mtype:
+            type_agg[mtype]["calls"] += 1
+            type_agg[mtype]["success"] += int(ok)
+            type_agg[mtype]["fallbacks"] += int(is_fb)
+            if dur is not None:
+                type_agg[mtype]["durations"].append(float(dur))
+            if tc:
+                type_tool_totals[mtype].append(sum(tc.values()))
+            # count initial dispatches per project per type (not fallbacks)
+            if pid and not is_fb:
+                project_type_counts[pid][mtype] += 1
 
         # tool-call stats
         if tc:
@@ -266,6 +286,8 @@ async def get_summary(
         key=lambda x: -x["avg_tool_calls_per_invocation"],
     )
 
+    _TYPE_ORDER = ["fast", "standard", "large"]
+
     by_model = sorted(
         [{"model": k, "backend": model_backend.get(k, ""), **_fmt(k, v)}
          for k, v in model_agg.items()],
@@ -284,6 +306,41 @@ async def get_summary(
         [{"backend": k, **_fmt(k, v)} for k, v in backend_agg.items()],
         key=lambda x: -x["calls"],
     )
+    by_type = sorted(
+        [
+            {
+                "model_type": k,
+                **_fmt(k, v),
+                "avg_tool_calls": round(statistics.mean(type_tool_totals[k]), 1) if type_tool_totals[k] else None,
+            }
+            for k, v in type_agg.items()
+            if k
+        ],
+        key=lambda x: _TYPE_ORDER.index(x["model_type"]) if x["model_type"] in _TYPE_ORDER else 99,
+    )
+
+    all_project_types: set[str] = {
+        mtype for pdata in project_type_counts.values() for mtype in pdata
+    }
+    avg_tasks_per_project_by_type = sorted(
+        [
+            {
+                "model_type": mtype,
+                "avg_tasks_per_project": round(
+                    statistics.mean(
+                        project_type_counts[pid][mtype]
+                        for pid in project_type_counts
+                        if mtype in project_type_counts[pid]
+                    ),
+                    1,
+                ) if any(mtype in project_type_counts[pid] for pid in project_type_counts) else 0,
+                "projects": sum(1 for pid in project_type_counts if mtype in project_type_counts[pid]),
+                "total_tasks": sum(project_type_counts[pid].get(mtype, 0) for pid in project_type_counts),
+            }
+            for mtype in all_project_types
+        ],
+        key=lambda x: _TYPE_ORDER.index(x["model_type"]) if x["model_type"] in _TYPE_ORDER else 99,
+    )
 
     return {
         "total_calls": len(records),
@@ -292,6 +349,8 @@ async def get_summary(
         "by_stage": by_stage,
         "by_project": by_project,
         "by_backend": by_backend,
+        "by_type": by_type,
+        "avg_tasks_per_project_by_type": avg_tasks_per_project_by_type,
         "over_time": over_time,
         "avg_tools_per_project": avg_tools_per_project,
         "avg_tools_per_model": avg_tools_per_model,

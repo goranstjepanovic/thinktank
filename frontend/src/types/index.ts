@@ -243,6 +243,24 @@ export interface ToolModelStat {
   invocations_with_tools: number;
 }
 
+export interface TaskTypeStat {
+  model_type: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  avg_tool_calls: number | null;
+}
+
+export interface TypeProjectStat {
+  model_type: string;
+  avg_tasks_per_project: number;
+  projects: number;
+  total_tasks: number;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   period_hours: number;
@@ -250,6 +268,8 @@ export interface TelemetrySummary {
   by_stage: StageStat[];
   by_project: ProjectStat[];
   by_backend: BackendStat[];
+  by_type: TaskTypeStat[];
+  avg_tasks_per_project_by_type: TypeProjectStat[];
   over_time: TimeBucket[];
   avg_tools_per_project: ToolProjectStat[];
   avg_tools_per_model: ToolModelStat[];

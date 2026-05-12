@@ -26,9 +26,19 @@ def set_project(project_id: str, project_name: str = "") -> None:
     _project_ctx.set({"id": project_id, "name": project_name})
 
 
-def set_call_context(is_fallback: bool = False, fallback_from: str | None = None) -> None:
-    """Tag the next model call with fallback metadata. Call before each attempt."""
-    _call_ctx.set({"is_fallback": is_fallback, "fallback_from": fallback_from})
+def set_call_context(
+    is_fallback: bool = False,
+    fallback_from: str | None = None,
+    model_type: str | None = None,
+    task_id: str | None = None,
+) -> None:
+    """Tag the next model call with fallback/task metadata. Call before each attempt."""
+    _call_ctx.set({
+        "is_fallback": is_fallback,
+        "fallback_from": fallback_from,
+        "model_type": model_type,
+        "task_id": task_id,
+    })
 
 
 def suppress_next_call() -> None:
@@ -105,6 +115,8 @@ def log_call(
         "success": success,
         "is_fallback": extra.get("is_fallback", False),
         "fallback_from": extra.get("fallback_from"),
+        "model_type": extra.get("model_type"),
+        "task_id": extra.get("task_id"),
         "tokens_prompt": tokens_prompt,
         "tokens_completion": tokens_completion,
         "error": error[:200] if error else None,

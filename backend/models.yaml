@@ -217,7 +217,7 @@ stages:
     timeout_seconds: 1200
 
   context_summarizer:  # Internal — called when a sub-agent's context hits 75% of num_ctx
-    model: "ducquoc/gemma4-fast-sonnet"
+    model: "qwen2.5-coder:7b"
     backend: "ollama"
     temperature: 0.1
     max_tokens: 400     # summaries must be concise

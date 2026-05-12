@@ -1783,6 +1783,8 @@ class OrchestratorAgent:
             _telemetry.set_call_context(
                 is_fallback=attempt > 0,
                 fallback_from=models_to_try[attempt - 1] if attempt > 0 else None,
+                model_type=model_hint or "fast",
+                task_id=task_id,
             )
             if attempt > 0:
                 logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_override)

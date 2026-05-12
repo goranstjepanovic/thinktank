@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../api/client';
-import type { BackendStat, ModelStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat } from '../types';
+import type { BackendStat, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -301,6 +301,53 @@ function ToolsPerModelChart({ data }: { data: ToolModelStat[] }) {
   );
 }
 
+const TYPE_COLORS: Record<string, string> = {
+  fast: '#34d399',
+  standard: '#60a5fa',
+  large: '#a78bfa',
+};
+
+function TaskTypeTable({ byType, avgByType }: { byType: TaskTypeStat[]; avgByType: TypeProjectStat[] }) {
+  const avgMap = Object.fromEntries(avgByType.map(t => [t.model_type, t]));
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {['Type', 'Calls', 'Success', 'Success Rate', 'Avg Duration', 'p95 Duration', 'Avg Tool Calls', 'Avg Tasks/Project'].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {byType.map((t, i) => {
+            const apx = avgMap[t.model_type];
+            const color = TYPE_COLORS[t.model_type] ?? MODEL_COLORS[i % MODEL_COLORS.length];
+            return (
+              <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '7px 10px' }}>
+                  <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: `${color}22`, color }}>{t.model_type}</span>
+                </td>
+                <td style={{ padding: '7px 10px', fontVariantNumeric: 'tabular-nums' }}>{t.calls}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{t.success}</td>
+                <td style={{ padding: '7px 10px', color: t.success_rate >= 0.9 ? 'var(--green)' : t.success_rate >= 0.7 ? 'var(--yellow)' : 'var(--red)' }}>
+                  {Math.round(t.success_rate * 100)}%
+                </td>
+                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(t.avg_duration_ms)}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(t.p95_duration_ms)}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{t.avg_tool_calls ?? '—'}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                  {apx ? `${apx.avg_tasks_per_project} (${apx.projects} project${apx.projects === 1 ? '' : 's'})` : '—'}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Recent calls table
 function CallsTable({ calls }: { calls: TelemetryCall[] }) {
   return (
@@ -524,6 +571,15 @@ export function OpsDashboard() {
               <ToolsPerModelChart data={data.avg_tools_per_model} />
             </ChartCard>
           )}
+        </div>
+      )}
+
+      {/* Task type breakdown */}
+      {data && data.by_type && data.by_type.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <ChartCard title="Task Type Breakdown  ·  fast / standard / large" minHeight={0}>
+            <TaskTypeTable byType={data.by_type} avgByType={data.avg_tasks_per_project_by_type ?? []} />
+          </ChartCard>
         </div>
       )}
 
