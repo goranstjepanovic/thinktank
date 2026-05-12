@@ -1626,24 +1626,51 @@ class InferenceClient:
         """Summarize old tool rounds to reclaim context window space.
 
         Keeps the system message, the first user message (task), and the last
-        4 messages verbatim. Everything in between is formatted as compact
+        4 messages (slimmed). Everything in between is formatted as compact
         tool-call lines and sent to the context_summarizer stage. The result
         replaces the middle with a single injected user message.
 
         Never raises — returns the original list on any failure.
         """
-        _KEEP_TAIL = 4   # last ~2 rounds kept verbatim so the model knows where it is
-        _MIN_MIDDLE = 6  # don't bother if there's not enough to compress
+        _KEEP_TAIL = 4    # last ~2 rounds kept so the model knows where it is
+        _MIN_MIDDLE = 6   # don't bother if there's not enough to compress
+        _TAIL_MAX_CHARS = 1200  # cap per tool-result in the tail (~300 tokens)
 
         if len(messages) < 2 + _MIN_MIDDLE + _KEEP_TAIL:
+            logger.debug(
+                "compress_context: stage=%s too few messages (%d) — skipping%s",
+                source_stage_key, len(messages), f"  agent={agent_id}" if agent_id else "",
+            )
             return messages
 
-        head = messages[:2]               # system + user task
-        tail = messages[-_KEEP_TAIL:]
+        head = messages[:2]                # system + user task
+        tail_raw = messages[-_KEEP_TAIL:]
         middle = messages[2:-_KEEP_TAIL]
+
+        # Slim large file-read results in the tail so they don't re-blow the
+        # context window immediately after compression.
+        tail: list[Message] = []
+        for msg in tail_raw:
+            if msg.role == "tool" and len(msg.content or "") > _TAIL_MAX_CHARS:
+                try:
+                    data = json.loads(msg.content)
+                    if "content" in data and not data.get("pruned"):
+                        lines = data["content"].splitlines()
+                        slimmed = {
+                            "path": data.get("path", "?"),
+                            "content": "\n".join(lines[:25]),
+                            "total_lines": data.get("total_lines"),
+                            "_slimmed": True,
+                        }
+                        tail.append(Message(role="tool", content=json.dumps(slimmed)))
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            tail.append(msg)
 
         formatted = _format_tool_history(middle)
 
+        summary: str = ""
         try:
             stage_cfg = self._registry.get_stage("context_summarizer")
             driver = self._get_driver(stage_cfg.backend)
@@ -1674,12 +1701,21 @@ class InferenceClient:
             summary = (resp.content or "").strip()
         except Exception as exc:
             logger.warning(
-                "compress_context: stage=%s summarizer failed (%s) — keeping full history%s",
+                "compress_context: stage=%s summarizer failed (%s) — using formatted fallback%s",
                 source_stage_key, exc, f"  agent={agent_id}" if agent_id else "",
             )
-            return messages
 
         if not summary:
+            # Summarizer returned empty — fall back to the compact formatted history
+            # rather than silently returning the original (uncompressed) messages.
+            summary = formatted[:2000]
+            logger.warning(
+                "compress_context: stage=%s summarizer returned empty — using formatted-history fallback%s",
+                source_stage_key, f"  agent={agent_id}" if agent_id else "",
+            )
+
+        if not summary:
+            # formatted was also empty (no tool calls recorded) — nothing to compress
             return messages
 
         summary_msg = Message(
