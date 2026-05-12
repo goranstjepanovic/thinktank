@@ -195,7 +195,7 @@ stages:
     # Orchestrator picks one of these per task; first entry is the default when no model is specified
     selectable_models:
       - name: "fast"
-        model: "qwen3.5:9B"
+        model: "ducquoc/gemma4-fast-sonnet"
         description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
       - name: "standard"
         model: "qwen2.5-coder:14b"
@@ -204,7 +204,7 @@ stages:
         model: "qwen3-coder:30b"
         description: "Complex algorithms, intricate cross-file wiring, large refactors"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - "ducquoc/gemma4-fast-sonnet"
+      - "qwen3.5:9B"
       - "mrthp/omnicoder2"
       - "gemma4:latest"
     backend: "ollama"

@@ -756,6 +756,8 @@ class InferenceClient:
         _stall_count = 0
         _total_stall_events = 0
         _tool_call_counts: dict[str, int] = {}
+        _reads_since_write: int = 0   # exploration calls without a file write
+        _read_nudge_sent: bool = False
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             if round_num > 0:
@@ -944,6 +946,35 @@ class InferenceClient:
                     _stall_sig = None
                     _stall_count = 0
 
+                # Read-loop budget: abort or nudge if model keeps exploring without writing
+                _READ_NUDGE_AT = 20
+                _READ_ABORT_AT = 40
+                if allowed_file_dir and not explore_only:
+                    if _reads_since_write >= _READ_ABORT_AT:
+                        from app import telemetry as _tel_rl
+                        _tel_rl.set_tool_counts(_tool_call_counts)
+                        raise InferenceClientError(
+                            f"Stage '{stage_key}' read-loop abort: {_reads_since_write} exploration "
+                            "calls (list_files/read_file/grep_files) without writing any files"
+                        )
+                    if _reads_since_write >= _READ_NUDGE_AT and not _read_nudge_sent:
+                        _read_nudge_sent = True
+                        logger.warning(
+                            "tools stage=%-20s read-loop: %d exploration calls without a write — nudging%s",
+                            stage_key, _reads_since_write, _agent_suffix,
+                        )
+                        working_messages.append(Message(
+                            role="user",
+                            content=(
+                                f"## Stop exploring — write your files now\n\n"
+                                f"You have called file exploration tools {_reads_since_write} times "
+                                "without writing any files. You have enough context.\n\n"
+                                "**Do not call list_files, read_file, or grep_files again.** "
+                                "Call `file_edit` immediately to write your assigned files. "
+                                "If you are unsure of exact content, write your best implementation now."
+                            ),
+                        ))
+
                 # Append the assistant's tool-call turn to the conversation
                 working_messages.append(
                     Message(role="assistant", content="", tool_calls=response.tool_calls)
@@ -951,6 +982,11 @@ class InferenceClient:
 
                 for tc in response.tool_calls:
                     _tool_call_counts[tc.name] = _tool_call_counts.get(tc.name, 0) + 1
+                    if tc.name in {"list_files", "read_file", "grep_files", "inspect_files"}:
+                        _reads_since_write += 1
+                    elif tc.name in {"file_edit", "run_shell", "delete_path"}:
+                        _reads_since_write = 0
+                        _read_nudge_sent = False
                     if tc.name == "run_python":
                         script = tc.arguments.get("script", "")
                         script_result = await run_script(

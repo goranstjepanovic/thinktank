@@ -1708,8 +1708,10 @@ class OrchestratorAgent:
         )
 
         _files_edited: list[str] = []  # reset each attempt to catch fabricated results
+        _tool_counts: dict[str, int] = {}  # reset each attempt; logged at task outcome
 
         async def _wrapped_on_tool(tool_name: str, result: dict) -> None:
+            _tool_counts[tool_name] = _tool_counts.get(tool_name, 0) + 1
             await on_tool_result(tool_name, result)
             if tool_name == "file_edit":
                 _files_edited.append(result.get("path", ""))
@@ -1759,6 +1761,7 @@ class OrchestratorAgent:
         try:
           for attempt, model_override in enumerate(models_to_try):
             _files_edited.clear()
+            _tool_counts.clear()
             # Kill any background processes left behind by the previous attempt
             # (e.g. a dev server started for build-checking that was never stopped).
             if attempt > 0:
@@ -1848,6 +1851,7 @@ class OrchestratorAgent:
             # Clear the suppress flag first: if call_with_tools threw before its own
             # log_call, the flag was never consumed and would silently drop this record.
             _telemetry.clear_suppress()
+            _telemetry.set_tool_counts(_tool_counts)
             _telemetry.log_call(
                 stage="phase3_sub_agent",
                 model=model_override,
