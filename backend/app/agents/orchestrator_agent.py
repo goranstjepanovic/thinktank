@@ -19,6 +19,7 @@ Flow:
 import asyncio
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Callable, Awaitable
@@ -842,6 +843,11 @@ def _sub_agent_system_prompt() -> str:
         "responsibility to exactly one task — if yours does not mention it, skip it.\n"
         "- If a command fails, read the error and fix the root cause before retrying\n"
         "- If the same command fails twice with the same error, stop and report as a blocker\n\n"
+        "## Nothing-to-fix rule\n\n"
+        "If your task asks you to fix a problem that does not exist — for example, "
+        "you read the file and find it already correct, or the reported line number is beyond the file's end — "
+        "do NOT rewrite the file. Output success immediately:\n"
+        '{"summary": "No issue found — file already correct", "files_written": [], "commands_run": [], "success": true, "blocker": null}\n\n'
         "## Output format\n\n"
         "When finished, output JSON only — no prose, no fences:\n"
         '{"summary": "what you built", "files_written": ["path1", "path2"], '
@@ -1580,6 +1586,38 @@ class OrchestratorAgent:
             )
             if verify["verified"]:
                 break
+
+            # Discard hallucinated issues: if the reported line number exceeds the
+            # actual file length, the verifier made it up.
+            real_issues = []
+            for issue in verify["issues"]:
+                _line_match = re.search(r"\bline[s]?\s+(\d+)", issue, re.IGNORECASE)
+                if _line_match:
+                    _claimed_line = int(_line_match.group(1))
+                    # Extract the file path (first token before ':')
+                    _issue_file = issue.split(":")[0].strip()
+                    _abs = Path(output_dir) / _issue_file
+                    if _abs.exists():
+                        try:
+                            _actual_lines = len(_abs.read_text(encoding="utf-8", errors="replace").splitlines())
+                            if _claimed_line > _actual_lines:
+                                logger.warning(
+                                    "verify_fix_loop: dropping hallucinated issue (line %d > file length %d): %s",
+                                    _claimed_line, _actual_lines, issue,
+                                )
+                                continue
+                        except OSError:
+                            pass
+                real_issues.append(issue)
+
+            if not real_issues:
+                logger.info(
+                    "verify_fix_loop: all %d reported issue(s) were hallucinated (invalid line numbers) — treating as verified",
+                    len(verify["issues"]),
+                )
+                break
+
+            verify["issues"] = real_issues
 
             if cycle >= max_fix_cycles:
                 logger.warning(

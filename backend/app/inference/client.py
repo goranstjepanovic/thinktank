@@ -711,6 +711,7 @@ class InferenceClient:
         round_num = 0
         _stall_sig: frozenset | None = None
         _stall_count = 0
+        _total_stall_events = 0
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             request = InferenceRequest(
@@ -836,21 +837,41 @@ class InferenceClient:
                     _stall_count = 1
                 if _stall_count >= 3:
                     _stalled_tools = ", ".join(tc.name for tc in response.tool_calls)
+                    _total_stall_events += 1
                     logger.warning(
-                        "tools stage=%-20s stall: same call (%s) repeated %d times — nudging%s",
-                        stage_key, _stalled_tools, _stall_count, _agent_suffix,
+                        "tools stage=%-20s stall: same call (%s) repeated %d times — nudging (stall_event=%d)%s",
+                        stage_key, _stalled_tools, _stall_count, _total_stall_events, _agent_suffix,
                     )
-                    working_messages.append(Message(
-                        role="user",
-                        content=(
+                    if _total_stall_events >= 3:
+                        logger.error(
+                            "tools stage=%-20s stall limit reached (%d events) — aborting loop%s",
+                            stage_key, _total_stall_events, _agent_suffix,
+                        )
+                        raise InferenceClientError(
+                            f"Stage '{stage_key}' stalled: `{_stalled_tools}` repeated with identical "
+                            f"arguments across {_total_stall_events} stall events — aborting"
+                        )
+                    _write_tools = {"file_edit", "write_file", "delete_path"}
+                    _is_write_stall = all(tc.name in _write_tools for tc in response.tool_calls)
+                    if _is_write_stall:
+                        _nudge_msg = (
+                            f"You have called `{_stalled_tools}` with identical arguments "
+                            f"{_stall_count} times in a row. Each call succeeded — the file is already saved. "
+                            "Do NOT call `file_edit` again for this file.\n\n"
+                            "If your task is complete, output your JSON summary now:\n"
+                            '{"summary": "...", "files_written": [...], "commands_run": [...], "success": true, "blocker": null}\n\n'
+                            "If you still have other files to write, write them now. Do not re-write files you have already written."
+                        )
+                    else:
+                        _nudge_msg = (
                             f"You have called `{_stalled_tools}` with identical arguments "
                             f"{_stall_count} times in a row and received the same result each time. "
                             "This loop is not making progress.\n\n"
                             "STOP all exploration now. Call `file_edit` to write your assigned files "
                             "immediately. If you are unsure of the exact content, write your best "
                             "implementation — do not call any listing or reading tools again."
-                        ),
-                    ))
+                        )
+                    working_messages.append(Message(role="user", content=_nudge_msg))
                     _stall_sig = None
                     _stall_count = 0
 
