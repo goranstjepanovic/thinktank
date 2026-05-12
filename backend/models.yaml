@@ -204,10 +204,9 @@ stages:
         model: "qwen3-coder:30b"
         description: "Complex algorithms, intricate cross-file wiring, large refactors"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
+      - "ducquoc/gemma4-fast-sonnet"
       - "mrthp/omnicoder2"
       - "gemma4:latest"
-      - "qwen2.5-coder:14b"
-      - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: null
@@ -215,6 +214,15 @@ stages:
     num_ctx: 16384
     supports_tools: true
     timeout_seconds: 1200
+
+  context_summarizer:  # Internal — called when a sub-agent's context hits 75% of num_ctx
+    model: "qwen2.5:7b"
+    backend: "ollama"
+    temperature: 0.1
+    max_tokens: 400     # summaries must be concise
+    format: ""          # plain text
+    num_ctx: 4096       # input is compact formatted history, not raw JSON
+    supports_tools: false
 
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
     model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above

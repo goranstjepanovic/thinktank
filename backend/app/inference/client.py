@@ -446,6 +446,49 @@ class InferenceClientError(Exception):
     pass
 
 
+def _format_tool_history(messages: list) -> str:
+    """Render tool-call/result pairs as compact readable lines for the summarizer."""
+    lines: list[str] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.role == "assistant" and msg.tool_calls:
+            for j, tc in enumerate(msg.tool_calls):
+                result_idx = i + 1 + j
+                result_summary = ""
+                if result_idx < len(messages) and messages[result_idx].role == "tool":
+                    try:
+                        res = json.loads(messages[result_idx].content)
+                        if res.get("pruned"):
+                            result_summary = "(already summarised)"
+                        elif "content" in res:
+                            result_summary = f"{res.get('total_lines', '?')} lines read"
+                        elif "entries" in res:
+                            result_summary = f"{len(res['entries'])} entries"
+                        elif "success" in res:
+                            result_summary = "ok" if res["success"] else f"FAILED: {res.get('detail') or res.get('error', '?')}"
+                        elif "stdout" in res:
+                            out = (res.get("stdout") or "").strip()[:80]
+                            result_summary = f"exit={res.get('exit_code')} {out}"
+                        elif "prd" in res:
+                            result_summary = f"{len(res['prd'])} chars"
+                        else:
+                            result_summary = str(res)[:80]
+                    except (json.JSONDecodeError, AttributeError):
+                        result_summary = messages[result_idx].content[:60]
+                path = tc.arguments.get("path") or tc.arguments.get("query") or tc.arguments.get("command") or ""
+                op = tc.arguments.get("operation", "")
+                suffix = f"({path!r}" + (f", {op}" if op else "") + f") → {result_summary}"
+                lines.append(f"- {tc.name}{suffix}")
+            i += 1 + len(msg.tool_calls)
+        elif msg.role == "user" and msg.content.startswith("## "):
+            # injected summary or nudge — skip, it's already context
+            i += 1
+        else:
+            i += 1
+    return "\n".join(lines) if lines else "(no tool calls recorded)"
+
+
 class InferenceClient:
     """
     The single entry point for all LLM calls in the system.
@@ -785,6 +828,26 @@ class InferenceClient:
                 stage_key=stage_key,
             )
             current_call_index += 1
+
+            # Context compression: when the model reports it consumed ≥75% of
+            # num_ctx, summarize old tool rounds before appending this round's
+            # results so the next model call has headroom. Only active for
+            # agentic (file-writing) stages — allowed_file_dir is the signal.
+            if allowed_file_dir:
+                _ctx_used = response.tokens_prompt
+                if _ctx_used is None:
+                    # Backend doesn't report tokens — estimate from char length
+                    _ctx_used = sum(len(m.content or "") for m in working_messages) // 3
+                if _ctx_used >= int(stage_cfg.num_ctx * 0.75):
+                    logger.info(
+                        "tools stage=%-20s context at %d/%d tokens (%.0f%%) — compressing%s",
+                        stage_key, _ctx_used, stage_cfg.num_ctx,
+                        _ctx_used / stage_cfg.num_ctx * 100,
+                        f"  agent={agent_id}" if agent_id else "",
+                    )
+                    working_messages = await self._compress_context(
+                        working_messages, stage_key, agent_id
+                    )
 
             # Some local models emit tool calls as plain-text JSON instead of
             # using the structured tool-call API. Detect and promote them so
@@ -1513,6 +1576,91 @@ class InferenceClient:
         raise InferenceClientError(
             f"Stage '{stage_key}' exceeded max tool rounds ({max_tool_rounds})"
         )
+
+    # ------------------------------------------------------------------
+    # Context compression
+    # ------------------------------------------------------------------
+
+    async def _compress_context(
+        self,
+        messages: list[Message],
+        source_stage_key: str,
+        agent_id: str | None,
+    ) -> list[Message]:
+        """Summarize old tool rounds to reclaim context window space.
+
+        Keeps the system message, the first user message (task), and the last
+        4 messages verbatim. Everything in between is formatted as compact
+        tool-call lines and sent to the context_summarizer stage. The result
+        replaces the middle with a single injected user message.
+
+        Never raises — returns the original list on any failure.
+        """
+        _KEEP_TAIL = 4   # last ~2 rounds kept verbatim so the model knows where it is
+        _MIN_MIDDLE = 6  # don't bother if there's not enough to compress
+
+        if len(messages) < 2 + _MIN_MIDDLE + _KEEP_TAIL:
+            return messages
+
+        head = messages[:2]               # system + user task
+        tail = messages[-_KEEP_TAIL:]
+        middle = messages[2:-_KEEP_TAIL]
+
+        formatted = _format_tool_history(middle)
+
+        try:
+            stage_cfg = self._registry.get_stage("context_summarizer")
+            driver = self._get_driver(stage_cfg.backend)
+            req = InferenceRequest(
+                model=stage_cfg.model,
+                messages=[
+                    Message(
+                        role="system",
+                        content="You summarize AI agent work logs concisely. Output only the summary, no preamble.",
+                    ),
+                    Message(
+                        role="user",
+                        content=(
+                            "Summarize what this agent has done so far. Include: which files were read "
+                            "and any key findings, which files were written and their purpose, "
+                            "commands run and their outcomes. Use exact file names. Under 250 words.\n\n"
+                            f"{formatted}"
+                        ),
+                    ),
+                ],
+                format="",
+                temperature=stage_cfg.temperature,
+                max_tokens=stage_cfg.max_tokens,
+                num_ctx=stage_cfg.num_ctx,
+                timeout_seconds=stage_cfg.timeout_seconds,
+            )
+            resp = await driver.complete(req)
+            summary = (resp.content or "").strip()
+        except Exception as exc:
+            logger.warning(
+                "compress_context: stage=%s summarizer failed (%s) — keeping full history%s",
+                source_stage_key, exc, f"  agent={agent_id}" if agent_id else "",
+            )
+            return messages
+
+        if not summary:
+            return messages
+
+        summary_msg = Message(
+            role="user",
+            content=(
+                "## Prior rounds summary (context compressed)\n\n"
+                f"{summary}\n\n"
+                "Continue your task from where you left off."
+            ),
+        )
+
+        logger.info(
+            "compress_context: stage=%s compressed %d messages → 1 summary (%d chars)%s",
+            source_stage_key, len(middle), len(summary),
+            f"  agent={agent_id}" if agent_id else "",
+        )
+        return list(head) + [summary_msg] + list(tail)
 
     # ------------------------------------------------------------------
     # Private helpers
