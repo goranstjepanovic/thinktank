@@ -227,7 +227,7 @@ stages:
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
     model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above
     backend: "openvino"
-    device: "AUTO:GPU,CPU"  # vpux (NPU compiler) may fail on this model; GPU/CPU is reliable
+    device: "CPU"  # GPU (OpenCL) throws ocl_memory error; CPU is reliable
     temperature: 0.1
     max_tokens: 1024
     format: "json"
