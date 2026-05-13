@@ -1786,7 +1786,9 @@ class InferenceClient:
     ) -> None:
         from app.db.models import ModelCall
 
-        prompt_json = json.dumps(self._serialize_messages_for_log(request.messages))
+        # STAGE calls accumulate the full tool-call history in every round (75 KB avg, 876 KB peak).
+        # The response, tokens, and duration are the useful audit data; skip the prompt for STAGE.
+        prompt_json = "[]" if call_type == "STAGE" else json.dumps(self._serialize_messages_for_log(request.messages))
         response_json = json.dumps(response.raw_response if response else {"error": error})
 
         call = ModelCall(
