@@ -205,7 +205,6 @@ stages:
         description: "Complex algorithms, intricate cross-file wiring, large refactors"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
       - "gemma4:latest"
-      - "deepseek-coder-v2:16b"
       - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
@@ -227,7 +226,7 @@ stages:
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
     model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above
     backend: "openvino"
-    device: "CPU"  # GPU (OpenCL) throws ocl_memory error; CPU is reliable
+    device: "AUTO:NPU,CPU"  # GPU (OpenCL) throws ocl_memory error; 3B int4 is NPU-capable
     temperature: 0.1
     max_tokens: 1024
     format: "json"
