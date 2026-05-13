@@ -261,6 +261,12 @@ export interface TypeProjectStat {
   total_tasks: number;
 }
 
+export interface ErrorCount {
+  error: string;
+  model: string;
+  count: number;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   period_hours: number;
@@ -273,6 +279,7 @@ export interface TelemetrySummary {
   over_time: TimeBucket[];
   avg_tools_per_project: ToolProjectStat[];
   avg_tools_per_model: ToolModelStat[];
+  by_error: ErrorCount[];
   available_models: string[];
   available_backends: string[];
   available_stages: string[];

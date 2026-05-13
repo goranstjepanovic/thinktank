@@ -146,6 +146,9 @@ async def get_summary(
     all_stages: set[str] = set()
     all_projects: dict[str, str] = {}
 
+    # error aggregation: (error_text, model) -> count
+    error_counts: dict[tuple[str, str], int] = defaultdict(int)
+
     for rec in records:
         m = rec.get("model") or "unknown"
         s = rec.get("stage") or "unknown"
@@ -172,6 +175,10 @@ async def get_summary(
                 agg[key]["durations"].append(float(dur))
 
         model_backend[m] = b
+
+        if not ok:
+            err_text = (rec.get("error") or "unknown error").strip()
+            error_counts[(err_text, m)] += 1
 
         if pid:
             project_agg[pid]["calls"] += 1
@@ -342,6 +349,11 @@ async def get_summary(
         key=lambda x: _TYPE_ORDER.index(x["model_type"]) if x["model_type"] in _TYPE_ORDER else 99,
     )
 
+    by_error = sorted(
+        [{"error": err, "model": mdl, "count": cnt} for (err, mdl), cnt in error_counts.items()],
+        key=lambda x: -x["count"],
+    )
+
     return {
         "total_calls": len(records),
         "period_hours": round(period_hours, 1),
@@ -354,6 +366,7 @@ async def get_summary(
         "over_time": over_time,
         "avg_tools_per_project": avg_tools_per_project,
         "avg_tools_per_model": avg_tools_per_model,
+        "by_error": by_error,
         "available_models": sorted(all_models),
         "available_backends": sorted(all_backends),
         "available_stages": sorted(all_stages),

@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../api/client';
-import type { BackendStat, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, ErrorCount, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -402,6 +402,31 @@ function CallsTable({ calls }: { calls: TelemetryCall[] }) {
   );
 }
 
+function ErrorCountTable({ data }: { data: ErrorCount[] }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {['Count', 'Model', 'Error'].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, i) => (
+            <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+              <td style={{ padding: '7px 10px', fontVariantNumeric: 'tabular-nums', color: 'var(--red)', fontWeight: 600, whiteSpace: 'nowrap' }}>{row.count}</td>
+              <td style={{ padding: '7px 10px', fontFamily: 'monospace', whiteSpace: 'nowrap', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={row.model}>{row.model}</td>
+              <td style={{ padding: '7px 10px', color: 'var(--text2)', maxWidth: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.error}>{row.error}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main dashboard
 // ---------------------------------------------------------------------------
@@ -615,6 +640,15 @@ export function OpsDashboard() {
                 </tbody>
               </table>
             </div>
+          </ChartCard>
+        </div>
+      )}
+
+      {/* Errors by model */}
+      {data && data.by_error && data.by_error.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <ChartCard title="Errors by Model" minHeight={0}>
+            <ErrorCountTable data={data.by_error} />
           </ChartCard>
         </div>
       )}
