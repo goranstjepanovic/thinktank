@@ -120,7 +120,7 @@ stages:
     num_ctx: 32768      # large window to hold full conversation + docs context
 
   phase3_plan:  # Phase 3 pass 0 — JSON file manifest (paths + descriptions only)
-    model: "phi4:14b"
+    model: "gemma4:latest"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 2048
