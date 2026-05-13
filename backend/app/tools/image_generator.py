@@ -166,6 +166,25 @@ async def generate_image(
     client_id = str(uuid.uuid4())
 
     discovered = await _discover_models(base_url)
+    all_known = discovered["checkpoint"] + discovered["unet"]
+
+    def _resolve_model(name: str) -> str:
+        """Return the exact ComfyUI filename that best matches *name*.
+
+        Handles common mismatches: missing .safetensors extension, hyphen/underscore
+        differences, and case variations so .env values don't need exact filenames.
+        """
+        if name in all_known:
+            return name
+        # Normalise: strip extension, replace hyphens with underscores, lowercase
+        def _norm(s: str) -> str:
+            return s.lower().replace("-", "_").removesuffix(".safetensors").removesuffix(".ckpt").removesuffix(".pt")
+        target = _norm(name)
+        for candidate in all_known:
+            if _norm(candidate) == target:
+                logger.info("image_generator: resolved %r → %r", name, candidate)
+                return candidate
+        return name  # return as-is and let ComfyUI report the error
 
     # Resolve model name and pick the right workflow
     if not model_name:
@@ -176,6 +195,8 @@ async def generate_image(
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
         logger.info("image_generator: auto-detected model %r", model_name)
+    else:
+        model_name = _resolve_model(model_name)
 
     is_unet = model_name in discovered["unet"] or model_name not in discovered["checkpoint"]
 
