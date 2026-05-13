@@ -1,6 +1,9 @@
 import logging
+import logging.handlers
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,9 +15,51 @@ from fastapi.middleware.cors import CORSMiddleware
 # ---------------------------------------------------------------------------
 _stream = open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)
 _handler = logging.StreamHandler(_stream)
-_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+_LOG_FMT = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+_handler.setFormatter(_LOG_FMT)
 logging.root.addHandler(_handler)
 logging.root.setLevel(logging.INFO)
+
+
+class _SizedDateRotatingHandler(logging.handlers.BaseRotatingHandler):
+    """Rotate log files by size; each new file gets a datetime name; prune oldest beyond max_files."""
+
+    def __init__(self, log_dir: Path, max_bytes: int = 10 * 1024 * 1024, max_files: int = 20):
+        self._log_dir = log_dir
+        self._max_bytes = max_bytes
+        self._max_files = max_files
+        log_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(self._new_path(), mode="a", encoding="utf-8")
+
+    def _new_path(self) -> str:
+        return str(self._log_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S.log"))
+
+    def shouldRollover(self, record) -> int:
+        if self.stream is None:
+            self.stream = self._open()
+        self.stream.seek(0, 2)
+        return 1 if self.stream.tell() >= self._max_bytes else 0
+
+    def doRollover(self) -> None:
+        if self.stream:
+            self.stream.flush()
+            self.stream.close()
+            self.stream = None
+        self.baseFilename = self._new_path()
+        self.stream = self._open()
+        self._prune()
+
+    def _prune(self) -> None:
+        files = sorted(self._log_dir.glob("????-??-??_??-??-??.log"), key=lambda p: p.name)
+        for p in files[: -self._max_files]:
+            p.unlink(missing_ok=True)
+
+
+_LOGS_DIR = Path(__file__).parent.parent / "logs"
+_file_handler = _SizedDateRotatingHandler(_LOGS_DIR)
+_file_handler.setFormatter(_LOG_FMT)
+logging.root.addHandler(_file_handler)
+
 # Quiet down noisy libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
