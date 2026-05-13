@@ -86,7 +86,7 @@ stages:
     supports_tools: true
 
   deep_review:
-    model: "phi4:14b"
+    model: "qwen2.5:7b"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 3072
@@ -201,12 +201,11 @@ stages:
         model: "qwen2.5-coder:7b"
         description: "Most implementation tasks — multi-file modules, straightforward logic"
       - name: "large"
-        model: "deepseek-coder-v2:16b"
+        model: "granite4.1:8b"
         description: "Complex algorithms, intricate cross-file wiring, large refactors"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - "qwen3.5:9B"
-      - "mrthp/omnicoder2"
       - "gemma4:latest"
+      - "deepseek-coder-v2:16b"
       - "qwen3-coder:30b"
     backend: "ollama"
     temperature: 0.3
@@ -228,7 +227,7 @@ stages:
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
     model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above
     backend: "openvino"
-    # device not set — inherits AUTO:NPU,GPU,CPU from backend default (NPU works for this model)
+    device: "AUTO:GPU,CPU"  # vpux (NPU compiler) may fail on this model; GPU/CPU is reliable
     temperature: 0.1
     max_tokens: 1024
     format: "json"

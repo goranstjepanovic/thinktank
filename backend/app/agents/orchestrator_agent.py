@@ -202,6 +202,7 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         )
         task_schema = (
             '{"id": "snake_case_id", "title": "short title ≤ 60 chars", "model": "fast", '
+            '"task_type": "implement", '
             '"instruction": "complete self-contained instructions — list all files to create, '
             'their purpose, cross-file dependencies, and commands to run"}'
         )
@@ -209,6 +210,7 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         model_section = ""
         task_schema = (
             '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
+            '"task_type": "implement", '
             '"instruction": "complete self-contained instructions — list all files to create, '
             'their purpose, cross-file dependencies, and commands to run"}'
         )
@@ -270,6 +272,12 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "You have a `run_build` tool that runs the project build command and returns compiler errors. "
         "Call it whenever you want to confirm the project compiles — especially before dispatching more "
         "feature tasks. Build error messages tell you exactly which file and line is broken and why.\n\n"
+        "## task_type field\n\n"
+        "Every task must include `\"task_type\": \"implement\"` (default) or `\"task_type\": \"inspect\"`.\n"
+        "Use `\"inspect\"` ONLY for pure assessment tasks where the sub-agent needs to READ files and report "
+        "findings — no file writes expected. Example: checking whether a module is complete, reading current "
+        "state to inform planning. Use `\"implement\"` (or omit) for all tasks that create or modify files.\n"
+        "Do NOT dispatch inspect tasks when you can use `inspect_files` or `grep_files` directly.\n\n"
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
         "- PRD-grounded: quote the exact rules, conditions, or state definitions from the PRD's "
@@ -418,12 +426,13 @@ def _parse_orchestrator_result(orch_result: dict) -> tuple[str | None, bool, lis
     return user_message, done, next_tasks
 
 
-def _normalize_sub_agent_result(raw_result: object, task_title: str) -> dict:
+def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: str = "implement") -> dict:
     """
     Normalize a sub-agent result into the execution schema the orchestrator expects.
 
     Treat missing or wrong-shaped payloads as failures so the orchestrator does not
     silently accept empty planning-style responses as successful implementation work.
+    For task_type="inspect", empty files_written/commands_run is valid and expected.
     """
     if not isinstance(raw_result, dict):
         return {
@@ -464,7 +473,7 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str) -> dict:
     if success and not summary:
         summary = f"Completed task '{task_title}'."
 
-    if success and not files_written and not commands_run:
+    if success and not files_written and not commands_run and task_type != "inspect":
         success = False
         blocker = blocker or "Sub-agent reported success but produced no files or commands"
         if not summary:
@@ -807,7 +816,28 @@ def _memory_handlers(project_id: str) -> dict:
     }
 
 
-def _sub_agent_system_prompt() -> str:
+def _sub_agent_system_prompt(task_type: str = "implement") -> str:
+    if task_type == "inspect":
+        mode_header = (
+            "You are an INSPECTOR agent. Your only job is to READ files and return a detailed analysis.\n\n"
+            "## INSPECTION MODE — read-only\n\n"
+            "DO NOT write any files. DO NOT call `file_edit` or `run_shell`.\n"
+            "Every response MUST contain tool calls (reads). A response with no tool calls is ALWAYS wrong.\n"
+            "Returning `success: true` with empty `files_written` is CORRECT for inspection tasks.\n\n"
+            "## Workflow — follow this order\n\n"
+            "1. Call `memory_list()` to see what has already been analysed for this project\n"
+            "2. Call `read_prd` to read the Product Requirements Document\n"
+            "3. Read every file mentioned in your task using `read_file`; call `memory_store` after each read\n"
+            "4. Return a JSON summary of your findings — no file writes required\n\n"
+            "## Output format\n\n"
+            "Output JSON ONLY after reading all relevant files:\n"
+            '{"summary": "detailed findings: what is implemented, what is missing, what needs attention", '
+            '"files_written": [], "commands_run": [], "success": true, "blocker": null}\n\n'
+            "If you cannot access a required file:\n"
+            '{"summary": "what you found so far", "files_written": [], "commands_run": [], '
+            '"success": false, "blocker": "specific reason you could not complete the inspection"}\n\n'
+        )
+        return mode_header
     return (
         "You are an EXECUTOR agent. Your only job is to call tools and write files.\n\n"
         "## You are NOT a planner\n\n"
@@ -931,6 +961,7 @@ def _sub_agent_user_prompt(
     task_instruction: str, output_dir: str, idea_name: str,
     prior_failures: list[dict] | None = None,
     source_root: str | None = None,
+    task_type: str = "implement",
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -943,7 +974,7 @@ def _sub_agent_user_prompt(
             + "\n\nAnalyse what went wrong, take a different approach, and resolve the blocker."
         )
     structure_hint = ""
-    if source_root:
+    if source_root and task_type != "inspect":
         structure_hint = (
             f"\n\n## Project structure constraint\n\n"
             f"This project uses `{source_root}/` as the source root. "
@@ -951,6 +982,20 @@ def _sub_agent_user_prompt(
             f"`{source_root}/`. Do NOT create source files at the project root or in a different directory. "
             f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
             f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
+        )
+    if task_type == "inspect":
+        closing = (
+            "Read the PRD for context, then read every file listed in your task. "
+            "Return a JSON summary describing the current implementation state, what is complete, "
+            "and what is missing or broken. Do NOT write any files."
+        )
+    else:
+        closing = (
+            "Start by reading the PRD (including the Module Interface Contract section) and any files "
+            "needed for context, then write all required files, run any specified commands. "
+            "Before returning, call `read_file` on everything you wrote and fix any file that contains "
+            "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
+            "Return the JSON summary only after all files pass self-verification."
         )
     return (
         f"PROJECT: {idea_name}\n"
@@ -963,11 +1008,7 @@ def _sub_agent_user_prompt(
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
-        "Start by reading the PRD (including the Module Interface Contract section) and any files "
-        "needed for context, then write all required files, run any specified commands. "
-        "Before returning, call `read_file` on everything you wrote and fix any file that contains "
-        "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
-        "Return the JSON summary only after all files pass self-verification."
+        f"{closing}"
     )
 
 
@@ -1293,10 +1334,12 @@ class OrchestratorAgent:
                 if not instruction:
                     logger.warning("orchestrator: task %r has empty instruction — skipping", t.get("id"))
                     continue
+                explicit_inspect = str(t.get("task_type") or "").strip() == "inspect"
                 title_lower = str(t.get("title") or "").lower().strip()
                 instruction_lower = instruction.lower()
                 is_explore_only = (
-                    any(title_lower.startswith(p) for p in _EXPLORE_PREFIXES)
+                    not explicit_inspect
+                    and any(title_lower.startswith(p) for p in _EXPLORE_PREFIXES)
                     and not any(kw in instruction_lower for kw in _IMPL_KEYWORDS)
                 )
                 if is_explore_only:
@@ -1346,19 +1389,7 @@ class OrchestratorAgent:
             )
 
             for t, sub_result in zip(valid_tasks, batch_results):
-                task_id = t["_id"]
-                task_title = t["_title"]
-                await on_orchestrator_event("sub_agent_complete", {
-                    "task_id": task_id,
-                    "title": task_title,
-                    "agent_id": t.get("_agent_id"),
-                    "summary": sub_result.get("summary", ""),
-                    "files_written": sub_result.get("files_written", []),
-                    "commands_run": sub_result.get("commands_run", []),
-                    "success": sub_result.get("success", True),
-                    "blocker": sub_result.get("blocker"),
-                })
-                completed_tasks.append({"id": task_id, "title": task_title, **sub_result})
+                completed_tasks.append({"id": t["_id"], "title": t["_title"], **sub_result})
 
             # Update living interface manifest and PROGRESS.md after every batch
             _manifest_path = write_interface_manifest(output_dir)
@@ -1401,6 +1432,7 @@ class OrchestratorAgent:
             agent_id = t.get("_agent_id", task_id)
             instruction = str(t.get("instruction") or "").strip()
             model_hint = str(t.get("model") or "").strip() or None
+            task_type = str(t.get("task_type") or "implement").strip() or "implement"
             await on_orchestrator_event("sub_agent_started", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
             try:
                 result = await self._run_sub_agent(
@@ -1411,8 +1443,9 @@ class OrchestratorAgent:
                     prd_content=prd_content,
                     agent_id=agent_id,
                     model_hint=model_hint,
+                    task_type=task_type,
                 )
-                if result.get("success") and max_verify_cycles > 0:
+                if result.get("success") and max_verify_cycles > 0 and task_type != "inspect":
                     result = await self._run_task_verify_fix_loop(
                         idea, branch, output_dir,
                         t, result,
@@ -1422,6 +1455,17 @@ class OrchestratorAgent:
                         max_fix_cycles=max_verify_cycles,
                         model_hint=model_hint,
                     )
+                # Persist completion immediately so a page refresh shows the correct state
+                await on_orchestrator_event("sub_agent_complete", {
+                    "task_id": task_id,
+                    "title": task_title,
+                    "agent_id": agent_id,
+                    "summary": result.get("summary", ""),
+                    "files_written": result.get("files_written", []),
+                    "commands_run": result.get("commands_run", []),
+                    "success": result.get("success", True),
+                    "blocker": result.get("blocker"),
+                })
                 return result
             except asyncio.CancelledError:
                 await on_orchestrator_event("sub_agent_complete", {
@@ -1453,13 +1497,21 @@ class OrchestratorAgent:
                 if isinstance(r, asyncio.CancelledError):
                     raise r
                 logger.error("sub_agent: task '%s' raised: %s", t["_id"], r)
-                out.append({
+                failure = {
                     "summary": f"Task failed: {r}",
                     "files_written": [],
                     "commands_run": [],
                     "success": False,
                     "blocker": str(r),
+                }
+                # sub_agent_complete wasn't emitted by _run_one — do it now
+                await on_orchestrator_event("sub_agent_complete", {
+                    "task_id": t["_id"],
+                    "title": t["_title"],
+                    "agent_id": t.get("_agent_id"),
+                    **failure,
                 })
+                out.append(failure)
             else:
                 out.append(r)
         return out
@@ -1758,6 +1810,7 @@ class OrchestratorAgent:
         prd_content: str | None = None,
         agent_id: str | None = None,
         model_hint: str | None = None,
+        task_type: str = "implement",
     ) -> dict:
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
 
@@ -1853,6 +1906,7 @@ class OrchestratorAgent:
                 task_instruction, output_dir, idea.name,
                 prior_failures=prior_failures,
                 source_root=source_root,
+                task_type=task_type,
             )
 
             _attempt_start = _time.monotonic()
@@ -1862,7 +1916,7 @@ class OrchestratorAgent:
                     last_result = await self._client.call_with_tools(
                         stage_key="phase3_sub_agent",
                         messages=[
-                            Message(role="system", content=_sub_agent_system_prompt()),
+                            Message(role="system", content=_sub_agent_system_prompt(task_type=task_type)),
                             Message(role="user", content=user_prompt),
                         ],
                         session=sub_db,
@@ -1883,7 +1937,7 @@ class OrchestratorAgent:
                         },
                         agent_id=agent_id,
                     )
-                    last_result = _normalize_sub_agent_result(last_result, task_title)
+                    last_result = _normalize_sub_agent_result(last_result, task_title, task_type=task_type)
 
                     # Verify the model actually wrote what it claimed
                     if last_result.get("success"):

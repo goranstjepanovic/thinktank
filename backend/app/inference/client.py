@@ -1713,6 +1713,7 @@ class InferenceClient:
                 success=True,
                 tokens_prompt=resp.tokens_prompt,
                 tokens_completion=resp.tokens_completion,
+                _ctx={},  # don't consume the outer sub-agent's fallback context
             )
         except Exception as exc:
             _telemetry.log_call(
@@ -1722,6 +1723,7 @@ class InferenceClient:
                 duration_ms=None,
                 success=False,
                 error=str(exc),
+                _ctx={},  # don't consume the outer sub-agent's fallback context
             )
             logger.warning(
                 "compress_context: stage=%s summarizer failed (%s) — using formatted fallback%s",

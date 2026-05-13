@@ -642,15 +642,19 @@ async def get_phase3_activity(idea_id: str, db: AsyncSession = Depends(get_sessi
         .order_by(Phase3ActivityEvent.created_at)
     )
     events = result.scalars().all()
-    return [
-        {
+    out = []
+    for e in events:
+        try:
+            payload = json.loads(e.payload_json)
+        except Exception:
+            payload = {}
+        out.append({
             "id": e.id,
             "event_type": e.event_type,
-            "payload": json.loads(e.payload_json),
+            "payload": payload,
             "created_at": e.created_at.isoformat(),
-        }
-        for e in events
-    ]
+        })
+    return out
 
 
 @router.get("/{idea_id}/phase3/files")

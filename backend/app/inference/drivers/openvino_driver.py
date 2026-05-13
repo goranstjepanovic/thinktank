@@ -152,7 +152,12 @@ class OpenVinoDriver(InferenceBackend):
 
         logger.info("Loading OpenVINO model '%s' on device '%s'...", model_name, device)
         t0 = time.monotonic()
-        pipeline = ov_genai.LLMPipeline(str(model_path), device)
+        try:
+            pipeline = ov_genai.LLMPipeline(str(model_path), device)
+        except Exception as exc:
+            raise InferenceBackendError(
+                f"OpenVINO model load failed (model={model_name}, device={device}): {exc}"
+            ) from exc
         logger.info("OpenVINO model '%s' loaded in %.1fs", model_name, time.monotonic() - t0)
         return pipeline
 

@@ -70,6 +70,7 @@ def log_call(
     error: str | None = None,
     tokens_prompt: int | None = None,
     tokens_completion: int | None = None,
+    _ctx: dict | None = None,
 ) -> None:
     """
     Append one JSONL record to the telemetry log.
@@ -99,8 +100,11 @@ def log_call(
         return
 
     proj = _project_ctx.get()
-    extra = _call_ctx.get()
-    _call_ctx.set({})  # consume — prevent bleed into subsequent calls in the same coroutine context
+    if _ctx is not None:
+        extra = _ctx  # caller supplies context explicitly; _call_ctx is left intact for the outer log_call
+    else:
+        extra = _call_ctx.get()
+        _call_ctx.set({})  # consume — prevent bleed into subsequent calls in the same coroutine context
     tool_counts = _tool_counts_ctx.get()
     _tool_counts_ctx.set({})  # consume
 
