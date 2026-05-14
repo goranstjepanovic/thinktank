@@ -12,6 +12,8 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showMovePrompt, setShowMovePrompt] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reloadResult, setReloadResult] = useState<string | null>(null);
   const pendingDirRef = useRef('');
 
   useEffect(() => {
@@ -62,6 +64,19 @@ export function SettingsPage() {
       } finally {
         setSaving(false);
       }
+    }
+  };
+
+  const handleReloadModels = async () => {
+    setReloading(true);
+    setReloadResult(null);
+    try {
+      const res = await api.reloadModels();
+      setReloadResult(`Reloaded — ${res.stages.length} stages active`);
+    } catch (e: unknown) {
+      setReloadResult(`Failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -124,6 +139,28 @@ export function SettingsPage() {
           </p>
         </div>
       )}
+
+      {/* Models config */}
+      <div className="card" style={{ padding: '24px', marginTop: 16 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Model configuration</h2>
+        <p style={{ color: 'var(--text2)', fontSize: 13, marginBottom: 16 }}>
+          Reload <code style={{ fontSize: 12 }}>models.yaml</code> without restarting the server.
+          Changes take effect on the next model call.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button className="btn-primary" onClick={handleReloadModels} disabled={reloading}>
+            {reloading ? 'Reloading…' : 'Reload models.yaml'}
+          </button>
+          {reloadResult && (
+            <span style={{
+              fontSize: 13,
+              color: reloadResult.startsWith('Failed') ? 'var(--red)' : 'var(--green, #4caf50)',
+            }}>
+              {reloadResult}
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Move prompt */}
       {showMovePrompt && (

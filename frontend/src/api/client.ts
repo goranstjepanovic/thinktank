@@ -124,6 +124,8 @@ export const api = {
   },
 
   // Settings
+  reloadModels: () =>
+    request<{ reloaded: boolean; stages: string[] }>('/system/models/reload', { method: 'POST' }),
   getSettings: () => request<{ implementations_dir: string }>('/settings'),
   updateSettings: (body: { implementations_dir: string }) =>
     request<{ implementations_dir: string }>('/settings', { method: 'POST', body: JSON.stringify(body) }),
