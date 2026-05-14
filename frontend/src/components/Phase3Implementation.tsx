@@ -745,8 +745,10 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   const [loadingFile, setLoadingFile] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [fileCount, setFileCount] = useState(0);
-  const [totalSize, setTotalSize] = useState(0);
+  const [dirFileCounts, setDirFileCounts] = useState<Map<string, number>>(new Map());
+  const [dirSizes, setDirSizes] = useState<Map<string, number>>(new Map());
+  const fileCount = Array.from(dirFileCounts.values()).reduce((a, b) => a + b, 0);
+  const totalSize = Array.from(dirSizes.values()).reduce((a, b) => a + b, 0);
   const [terminalOpening, setTerminalOpening] = useState(false);
   const [explorerOpening, setExplorerOpening] = useState(false);
   const loadedDirsRef = useRef<Set<string>>(new Set());
@@ -767,8 +769,8 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
       loadedDirsRef.current.add(dirPath);
 
       const newFiles = data.entries.filter(e => e.type === 'file');
-      setFileCount(prev => prev + newFiles.length);
-      setTotalSize(prev => prev + newFiles.reduce((s, e) => s + e.size, 0));
+      setDirFileCounts(prev => new Map(prev).set(dirPath, newFiles.length));
+      setDirSizes(prev => new Map(prev).set(dirPath, newFiles.reduce((s, e) => s + e.size, 0)));
 
       // Collapse new dirs that haven't been loaded yet
       setCollapsed(prev => {
@@ -794,8 +796,8 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   useEffect(() => {
     const prevLoaded = new Set(loadedDirsRef.current);
     setTree([]);
-    setFileCount(0);
-    setTotalSize(0);
+    setDirFileCounts(new Map());
+    setDirSizes(new Map());
     setCollapsed(new Set());
     loadedDirsRef.current = new Set();
 
@@ -1214,7 +1216,7 @@ function Phase3Sidebar({
     return { done, pending, total: done.length + pending.length };
   }, [progressMd]);
 
-  const fileCount = log.filter(e => e.kind === 'file').length;
+  const fileCount = new Set(log.filter(e => e.kind === 'file').map(e => (e as Extract<ActivityEntry, { kind: 'file' }>).path)).size;
   const shellCount = log.filter(e => e.kind === 'shell').length;
   const subAgentBlocks = log.filter(e => e.kind === 'sub_agent_block') as Extract<ActivityEntry, { kind: 'sub_agent_block' }>[];
   const doneTasks = subAgentBlocks.filter(b => b.status === 'done').length;
@@ -1997,7 +1999,7 @@ export function Phase3Implementation() {
     (isRunning && (isMultiAgent || log.some(e => e.kind === 'complete') || hasTimedOut)));
   const showRetryButton = isFailed && !wasCancelled && !hasActivity;
 
-  const fileCount = log.filter(e => e.kind === 'file').length;
+  const fileCount = new Set(log.filter(e => e.kind === 'file').map(e => (e as Extract<ActivityEntry, { kind: 'file' }>).path)).size;
   const shellCount = log.filter(e => e.kind === 'shell').length;
 
   return (

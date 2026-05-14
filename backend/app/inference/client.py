@@ -762,6 +762,8 @@ class InferenceClient:
         _tool_call_counts: dict[str, int] = {}
         _reads_since_write: int = 0   # exploration calls without a file write
         _read_nudge_sent: bool = False
+        _written_files: set[str] = set()       # paths successfully written this session
+        _path_write_counts: dict[str, int] = {}  # per-path write count for loop detection
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             if round_num > 0:
@@ -852,7 +854,8 @@ class InferenceClient:
                         f"  agent={agent_id}" if agent_id else "",
                     )
                     working_messages = await self._compress_context(
-                        working_messages, stage_key, agent_id
+                        working_messages, stage_key, agent_id,
+                        written_files=_written_files if _written_files else None,
                     )
 
             # Some local models emit tool calls as plain-text JSON instead of
@@ -1136,6 +1139,23 @@ class InferenceClient:
                                 duration_ms=_duration_ms,
                             )
                             current_call_index += 1
+                            if edit_result.success and tc.arguments.get("operation") == "write_file":
+                                _written_files.add(display_path)
+                                _path_write_counts[display_path] = _path_write_counts.get(display_path, 0) + 1
+                                if _path_write_counts[display_path] >= 3:
+                                    _rewrite_count = _path_write_counts[display_path]
+                                    logger.warning(
+                                        "tools stage=%-20s write-loop: '%s' written %d times — nudging%s",
+                                        stage_key, display_path, _rewrite_count, _agent_suffix,
+                                    )
+                                    working_messages.append(Message(
+                                        role="user",
+                                        content=(
+                                            f"You have written `{display_path}` {_rewrite_count} times already. "
+                                            "The file is saved — do NOT rewrite it again. "
+                                            "If all your assigned files are written, output your JSON summary now."
+                                        ),
+                                    ))
                             if on_tool_result:
                                 content_bytes = len((tc.arguments.get("content") or "").encode("utf-8"))
                                 await on_tool_result("file_edit", {
@@ -1626,6 +1646,7 @@ class InferenceClient:
         messages: list[Message],
         source_stage_key: str,
         agent_id: str | None,
+        written_files: set[str] | None = None,
     ) -> list[Message]:
         """Summarize old tool rounds to reclaim context window space.
 
@@ -1747,11 +1768,18 @@ class InferenceClient:
             # formatted was also empty (no tool calls recorded) — nothing to compress
             return messages
 
+        written_note = ""
+        if written_files:
+            written_note = (
+                "\n\nFiles already written to disk (do NOT re-read or rewrite these — "
+                f"they are complete): {', '.join(sorted(written_files))}"
+            )
+
         summary_msg = Message(
             role="user",
             content=(
                 "## Prior rounds summary (context compressed)\n\n"
-                f"{summary}\n\n"
+                f"{summary}{written_note}\n\n"
                 "Continue your task from where you left off."
             ),
         )
