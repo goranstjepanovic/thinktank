@@ -25,14 +25,26 @@ export function MermaidDiagram({ chart }: { chart: string }) {
     if (!ref.current) return;
     let cancelled = false;
     ref.current.innerHTML = '';
-    mermaid.render(`mermaid-${id}`, chart.trim()).then(({ svg }) => {
+
+    const renderId = `mermaid-${id}`;
+    // Remove any leftover temp element mermaid may have left from a previous render
+    document.getElementById(`d${renderId}`)?.remove();
+
+    mermaid.render(renderId, chart.trim()).then(({ svg }) => {
       if (!cancelled && ref.current) ref.current.innerHTML = svg;
     }).catch((err) => {
       if (!cancelled && ref.current) {
         ref.current.innerHTML = `<pre style="color:var(--red);font-size:11px">${String(err)}</pre>`;
       }
+    }).finally(() => {
+      // Mermaid appends a temp div to document.body on error and doesn't always remove it
+      document.getElementById(`d${renderId}`)?.remove();
     });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      document.getElementById(`d${renderId}`)?.remove();
+    };
   }, [chart, id]);
 
   return (
