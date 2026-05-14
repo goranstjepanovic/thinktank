@@ -393,6 +393,9 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "Think like an experienced developer: first make something that runs, then add features one by one.\n\n"
         "**Milestone 0 — Runnable shell (ALWAYS the first task batch, no exceptions)**\n"
         "Your very first task must produce a minimal project that builds and can be started:\n"
+        "- **Declare the folder layout first** — state in the task instruction whether source files go under "
+        "`src/` or at the project root. The sub-agent must pick ONE and use it for every source file. "
+        "Record this as `Source layout: src/` or `Source layout: project root` in `TECH_DECISIONS.md`.\n"
         "- Entry point (main.py, src/index.ts, App.svelte, etc.) — bare minimum, just enough to start\n"
         "- Build/dependency config (package.json / pyproject.toml / Cargo.toml) with top-level deps listed\n"
         "- Required config files (vite.config.ts, tsconfig.json, .env.example, etc.)\n"
@@ -451,8 +454,10 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         f"- Shell environment: {shell_environment_context()}\n\n"
         "## Technology lock — decide once, enforce always\n\n"
         "In your FIRST or SECOND task batch, include a task to write `TECH_DECISIONS.md` at the project root. "
-        "It must record the chosen backend framework (e.g. FastAPI, Flask, Express), frontend framework "
-        "(e.g. React, Svelte, Vue), database, and any other stack-level choices. "
+        "It must record: chosen backend framework (e.g. FastAPI, Flask, Express), frontend framework "
+        "(e.g. React, Svelte, Vue), database, any other stack-level choices, AND the source layout — "
+        "write exactly `Source layout: src/` or `Source layout: project root` so the build system can "
+        "read it and enforce the layout in every subsequent task. "
         "Every subsequent task instruction MUST state the chosen stack explicitly — "
         "sub-agents must not make independent technology choices. "
         "Never dispatch two tasks that could independently pick conflicting frameworks "
@@ -536,9 +541,27 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
     )
 
 
-def _detect_project_structure(completed_tasks: list[dict]) -> dict:
+def _read_declared_source_root(output_dir: str) -> str | None:
+    """Read the source layout explicitly declared in TECH_DECISIONS.md, if present."""
+    try:
+        td = Path(output_dir) / "TECH_DECISIONS.md"
+        if td.exists():
+            text = td.read_text(encoding="utf-8")
+            m = re.search(r'source\s+(?:layout|root)\s*:\s*`?([\w/]+)`?', text, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip().rstrip("/").lower()
+                # "root" / "project root" / "." mean no src sub-directory
+                return val if val not in ("root", "project", "projectroot", ".", "") else None
+    except Exception:
+        pass
+    return None
+
+
+def _detect_project_structure(completed_tasks: list[dict], output_dir: str | None = None) -> dict:
     """
-    Scan files_written from completed tasks to detect established structural conventions.
+    Detect established folder layout. Priority:
+    1. Declared in TECH_DECISIONS.md (authoritative — written by the scaffold task)
+    2. Inferred from files_written in completed tasks (heuristic fallback)
     Returns {'source_root': 'src' | None, 'top_dirs': [...sorted top-level dirs...]}.
     """
     all_written: list[str] = []
@@ -553,8 +576,9 @@ def _detect_project_structure(completed_tasks: list[dict]) -> dict:
         if len(parts) > 1:
             top_dirs.add(parts[0])
 
+    declared = _read_declared_source_root(output_dir) if output_dir else None
     return {
-        "source_root": "src" if src_count >= 2 else None,
+        "source_root": declared if declared is not None else ("src" if src_count >= 2 else None),
         "top_dirs": sorted(top_dirs),
     }
 
@@ -946,7 +970,7 @@ def _orchestrator_user_prompt(
 
     structure_block = ""
     if completed_tasks:
-        structure = _detect_project_structure(completed_tasks)
+        structure = _detect_project_structure(completed_tasks, output_dir)
         constraints: list[str] = []
         if structure["source_root"]:
             constraints.append(
@@ -1199,6 +1223,17 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "Write a detailed, specific prompt — style, colours, mood, subject. "
         "Use the exact path the HTML/CSS already references. "
         "Never use `file_edit` to write content to `.png`, `.jpg`, or `.webp` paths — it will be rejected.\n\n"
+        "## Folder layout — pick once, never mix\n\n"
+        "Before writing your first file, determine the source layout this project uses:\n"
+        "- Check for `TECH_DECISIONS.md` — it records the layout under `Source layout:`\n"
+        "- If not present yet, pick based on the framework: Vite/React/Vue/Svelte → `src/`; "
+        "Flask/FastAPI/Django → project root or a named package; .NET → whatever `dotnet new` creates\n\n"
+        "**CRITICAL**: Once you decide, every source file in this task uses the SAME layout. "
+        "If you write `src/main.py`, ALL other source files must also go under `src/`. "
+        "If you write `main.py` at the root, do NOT also create `src/utils.py`. "
+        "Config/build files (`package.json`, `tsconfig.json`, `.env`, `pyproject.toml`, `.gitignore`) "
+        "always stay at the project root regardless of the source layout choice. "
+        "Mixed layouts (some files under `src/`, some at root) are a hard failure.\n\n"
         "## File writing rules\n\n"
         "- Write complete file content — never truncate, use ellipsis, or leave TODO/FIXME/placeholder text\n"
         "- Returning `success: true` with any stub, TODO, FIXME, `raise NotImplementedError`, "
@@ -1715,7 +1750,7 @@ class OrchestratorAgent:
                 await on_orchestrator_event("sub_agent_queued", {"task_id": task_id, "title": task_title, "agent_id": agent_id})
 
             # Detect established source layout so sub-agents stay consistent
-            _structure = _detect_project_structure(completed_tasks)
+            _structure = _detect_project_structure(completed_tasks, output_dir or None)
 
             # Run all tasks in this batch concurrently
             batch_results = await self._run_task_batch(
