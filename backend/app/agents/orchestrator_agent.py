@@ -430,10 +430,14 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "(c) whenever the build status is unknown. Build errors tell you exactly which file and line "
         "is broken — every error is a concrete task to add.\n\n"
         "## task_type field\n\n"
-        "Every task must include `\"task_type\": \"implement\"` (default) or `\"task_type\": \"inspect\"`.\n"
-        "Use `\"inspect\"` ONLY for pure assessment tasks where the sub-agent needs to READ files and report "
-        "findings — no file writes expected. Example: checking whether a module is complete, reading current "
-        "state to inform planning. Use `\"implement\"` (or omit) for all tasks that create or modify files.\n"
+        "Every task must include one of:\n"
+        "- `\"task_type\": \"implement\"` (default) — task creates or modifies source files\n"
+        "- `\"task_type\": \"inspect\"` — pure read/assess task, no file writes\n"
+        "- `\"task_type\": \"scaffold\"` — task runs CLI commands ONLY to set up project structure "
+        "(e.g. `dotnet new sln`, `npm init`, `cargo new`). The sub-agent will NOT read the PRD, "
+        "will NOT write any source files, and will ONLY run the commands listed in the instruction. "
+        "**Use this for ALL .NET solution/project creation tasks and any task whose sole job is "
+        "running framework CLI commands.**\n"
         "Do NOT dispatch inspect tasks when you can use `inspect_files` or `grep_files` directly.\n\n"
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
@@ -468,6 +472,8 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "The scaffold task MUST use the correct CLI tooling to create project structure. "
         "Never hand-write build config files that the framework's CLI is supposed to generate.\n\n"
         "### .NET (any project with .csproj / .sln)\n"
+        "ALL .NET scaffold tasks MUST use `\"task_type\": \"scaffold\"` — the sub-agent will run only "
+        "CLI commands and will not be distracted by the PRD or source files.\n"
         "NEVER write .csproj or .sln files by hand — always create them with the dotnet CLI:\n"
         "1. `dotnet new sln -n <SolutionName>` — creates the .sln file at the project root\n"
         "2. For each project: `dotnet new <template> -n <ProjectName> --framework net9.0`\n"
@@ -1362,6 +1368,18 @@ def _sub_agent_user_prompt(
             "Return a JSON summary describing the current implementation state, what is complete, "
             "and what is missing or broken. Do NOT write any files."
         )
+        prd_line = (
+            f"REQUIREMENTS: call `read_prd` to read the Product Requirements Document for context.\n"
+        )
+    elif task_type == "scaffold":
+        closing = (
+            "Run ONLY the shell commands listed in your task instruction using `run_shell`. "
+            "Do NOT read the PRD. Do NOT write any source files (.cs, .py, .ts, .js, etc.). "
+            "Do NOT implement any application logic.\n"
+            "After running all commands, verify the result (e.g. `dotnet build`, `ls`) and return success.\n"
+            "If a command fails, read the error and fix the root cause — do not skip steps."
+        )
+        prd_line = ""  # scaffold tasks must not be distracted by the PRD
     else:
         closing = (
             "Start by reading the PRD (including the Module Interface Contract section) and any files "
@@ -1379,14 +1397,17 @@ def _sub_agent_user_prompt(
             "4. After writing each file, call `memory_store` with the file's purpose and exported names.\n"
             "Return the JSON summary only after all files pass self-verification and the build is clean."
         )
+        prd_line = (
+            f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document — "
+            f"do this before implementing and again after to verify compliance.\n"
+            f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
+            f"exports, prop names, and function signatures every module must implement. "
+            f"Your files MUST match the contract — do not rename exports or change prop names.\n"
+        )
     return (
         f"PROJECT: {idea_name}\n"
         f"OUTPUT DIRECTORY: {output_dir}\n"
-        f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document — "
-        f"do this before implementing and again after to verify compliance.\n"
-        f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
-        f"exports, prop names, and function signatures every module must implement. "
-        f"Your files MUST match the contract — do not rename exports or change prop names.\n"
+        f"{prd_line}"
         f"{ownership_block}"
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
