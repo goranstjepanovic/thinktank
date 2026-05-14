@@ -132,3 +132,29 @@ def log_call(
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:
         logger.debug("telemetry write error: %s", exc)
+
+
+def delete_project_records(project_id: str) -> int:
+    """Remove all telemetry records for a project. Returns the count deleted."""
+    if _log_path is None or not _log_path.exists():
+        return 0
+    kept: list[str] = []
+    deleted = 0
+    try:
+        with open(_log_path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    if json.loads(line).get("project_id") == project_id:
+                        deleted += 1
+                        continue
+                except json.JSONDecodeError:
+                    pass
+                kept.append(raw if raw.endswith("\n") else raw + "\n")
+        with open(_log_path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    except Exception as exc:
+        logger.warning("telemetry: failed to delete records for %s: %s", project_id, exc)
+    return deleted

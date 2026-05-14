@@ -478,12 +478,16 @@ async def reset_phase2(
     if phase3:
         await db.delete(phase3)
 
-    # ── Optionally remove generated files from disk ──
+    # ── Optionally remove generated files from disk + telemetry ──
     if body.delete_output_dir and output_dir:
         try:
             shutil.rmtree(output_dir, ignore_errors=True)
         except Exception as exc:
             logger.warning("reset: failed to remove output dir %r: %s", output_dir, exc)
+        import app.telemetry as _telemetry
+        n = _telemetry.delete_project_records(str(idea_id))
+        if n:
+            logger.info("reset: deleted %d telemetry records for idea %s", n, idea_id)
 
     # ── Reset Phase 2 state according to depth ──
     if body.depth == "phase3_only":
