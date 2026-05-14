@@ -295,6 +295,16 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "- Command-aware: list any post-write commands (build, test) to run; if this task should run `npm install` "
         "or equivalent, say so explicitly — sub-agents will NOT install packages unless told to\n"
         f"- Shell environment: {shell_environment_context()}\n\n"
+        "## Technology lock — decide once, enforce always\n\n"
+        "In your FIRST or SECOND task batch, include a task to write `TECH_DECISIONS.md` at the project root. "
+        "It must record the chosen backend framework (e.g. FastAPI, Flask, Express), frontend framework "
+        "(e.g. React, Svelte, Vue), database, and any other stack-level choices. "
+        "Every subsequent task instruction MUST state the chosen stack explicitly — "
+        "sub-agents must not make independent technology choices. "
+        "Never dispatch two tasks that could independently pick conflicting frameworks "
+        "(e.g. one task creates a Flask app while another creates a FastAPI app). "
+        "If you detect conflicting files (two different framework entry points), dispatch a consolidation task "
+        "that deletes the wrong one before any further implementation.\n\n"
         "## Project structure rules\n\n"
         "- There must be exactly ONE app structure with ONE build tool at the project root. "
         "Never create both a root app and a nested sub-app with a competing build tool "
@@ -584,7 +594,14 @@ def _orchestrator_user_prompt(
     history_block = ""
     if completed_tasks:
         lines = []
-        for t in completed_tasks:
+        # Verification rounds already have a large PRD-sections checklist; cap the history
+        # so the combined prompt stays within the model's context window.
+        show_tasks = completed_tasks
+        if verify_prd and len(completed_tasks) > 15:
+            omitted = len(completed_tasks) - 15
+            lines.append(f"*(…{omitted} earlier tasks omitted — showing last 15)*")
+            show_tasks = completed_tasks[-15:]
+        for t in show_tasks:
             icon = "✓" if t.get("success") else "⚠"
             lines.append(f"{icon} **{t['title']}**: {t.get('summary', '')}")
             fw = t.get("files_written", [])
@@ -900,7 +917,12 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "- All paths passed to `file_edit` must be relative to the OUTPUT DIRECTORY — never prefix them with the project name or any parent folder\n"
         "- Parent directories are created automatically; never use mkdir\n"
         "- For other binary files (fonts, videos, etc.) skip them and note it in your summary\n"
-        "- Use `delete_path` to remove deprecated or unused files/directories — do not leave dead code\n\n"
+        "- Use `delete_path` to remove deprecated or unused files/directories — do not leave dead code\n"
+        "- **Never import from the file you are currently writing** — this creates a circular self-import "
+        "that crashes at runtime (a module must not import itself)\n"
+        "- **Before writing any cross-file import**, call `grep_files` to confirm the imported name is "
+        "actually defined/exported in the target module. Do not assume a name exists — verify it. "
+        "If it does not exist, create the symbol in the target file first, then import it.\n\n"
         "## Service registration — SERVICES.json\n\n"
         "If your task creates any runnable process a user needs to start — an HTTP server, API, "
         "frontend dev server, CLI entry point, WebSocket server, etc. — you MUST write or update "
@@ -995,6 +1017,9 @@ def _sub_agent_user_prompt(
             "needed for context, then write all required files, run any specified commands. "
             "Before returning, call `read_file` on everything you wrote and fix any file that contains "
             "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
+            "Then use `run_shell` to run the language's syntax or compile check on each file you wrote "
+            "(use whatever checker the project's language and toolchain provide — the agent knows the stack "
+            "from the PRD). Fix any errors before returning. "
             "Return the JSON summary only after all files pass self-verification."
         )
     return (
@@ -1610,56 +1635,79 @@ class OrchestratorAgent:
             "files": files_written,
         })
 
+        # Pre-read each file and verify in 120-line chunks so the model always knows the
+        # total file size and can report accurate absolute line numbers.  Small models (3B)
+        # routinely skip tool calls and hallucinate issues when asked to call read_file
+        # themselves, so embedding content directly is the only reliable approach.
+        _CHUNK_SIZE = 120
+        _MAX_FILES = 8
+
         system_prompt = (
-            "You are a code verification agent. Your only job is to read files and report problems — "
-            "you do NOT write, modify, or delete any files.\n\n"
-            "## What to check in every file\n\n"
+            "You are a code verification agent. Review the file chunk below and report problems.\n\n"
+            "## What to check\n\n"
             "1. Stub markers: TODO, FIXME, placeholder comments, `raise NotImplementedError`, "
-            "ellipsis (`...`), or any function body that contains only a comment or `pass`\n"
-            "2. Broken imports: for every `import { X } from './mod'` or `from mod import X`, "
-            "call `read_file` on that module and confirm X is actually exported/defined there\n"
-            "3. Completeness: the file must implement what the task instruction requires — "
-            "not just a skeleton but real, working logic\n\n"
+            "ellipsis (`...`), or any function body that contains only `pass` or a comment\n"
+            "2. Completeness: each function must have real, working logic — not just a skeleton\n\n"
             "## Output format — JSON only, no prose\n\n"
             '{"verified": true, "issues": []}\n'
             "If problems found:\n"
-            '{"verified": false, "issues": ["path/file.py: TODO stub at line 42 — function not implemented", ...]}\n\n'
-            "Be specific: include file path, what is wrong, and where."
+            '{"verified": false, "issues": ["path/file.py: line 42: TODO stub — function not implemented", ...]}\n\n'
+            "Use absolute line numbers (1-indexed from the start of the file)."
         )
 
-        files_list = "\n".join(f"  - {f}" for f in files_written)
-        user_prompt = (
-            f"Task that was implemented:\n{task_instruction}\n\n"
-            f"Files written:\n{files_list}\n\n"
-            "Call `read_file` on each file above, then verify it matches the task requirements. "
-            "Report every stub, incomplete section, or unresolved import."
-        )
-
+        all_issues: list[str] = []
         result: dict = {"verified": True, "issues": []}
         try:
-            async with AsyncSessionLocal() as sub_db:
-                raw = await self._client.call_with_tools(
-                    stage_key="phase3_task_verify",
-                    messages=[
-                        Message(role="system", content=system_prompt),
-                        Message(role="user", content=user_prompt),
-                    ],
-                    session=sub_db,
-                    idea_id=idea.id,
-                    branch_id=branch.id,
-                    allowed_file_dir=output_dir,
-                    explore_only=True,
-                    max_tool_rounds=15,
-                    return_json=True,
-                    call_index=0,
-                    on_tool_result=on_tool_result,
-                    agent_id=verify_agent_id,
-                )
-            if isinstance(raw, dict):
-                result = {
-                    "verified": bool(raw.get("verified", True)),
-                    "issues": list(raw.get("issues") or []),
-                }
+            for rel_path in files_written[:_MAX_FILES]:
+                abs_path = Path(output_dir) / rel_path
+                try:
+                    raw_bytes = abs_path.read_bytes()
+                    if b"\x00" in raw_bytes[:512]:
+                        continue  # skip binary files
+                    all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                except Exception as _e:
+                    logger.warning("verification_agent: could not read %s: %s", rel_path, _e)
+                    continue
+
+                total_lines = len(all_lines)
+                if not total_lines:
+                    continue
+
+                for chunk_start in range(0, total_lines, _CHUNK_SIZE):
+                    chunk_end = min(chunk_start + _CHUNK_SIZE, total_lines)
+                    chunk_content = "\n".join(all_lines[chunk_start:chunk_end])
+                    is_last = chunk_end >= total_lines
+                    chunk_note = (
+                        f"lines {chunk_start + 1}–{chunk_end} of {total_lines} (final chunk)"
+                        if is_last
+                        else f"lines {chunk_start + 1}–{chunk_end} of {total_lines} — more chunks follow"
+                    )
+                    user_prompt = (
+                        f"Task: {task_instruction}\n\n"
+                        f"## {rel_path} ({chunk_note})\n\n"
+                        f"```\n{chunk_content}\n```\n\n"
+                        "Report stub markers and incomplete logic in this chunk. "
+                        "Use absolute line numbers. Return JSON only."
+                    )
+                    async with AsyncSessionLocal() as sub_db:
+                        raw = await self._client.call(
+                            stage_key="phase3_task_verify",
+                            messages=[
+                                Message(role="system", content=system_prompt),
+                                Message(role="user", content=user_prompt),
+                            ],
+                            session=sub_db,
+                            idea_id=idea.id,
+                            branch_id=branch.id,
+                            call_index=0,
+                        )
+                    if isinstance(raw, dict):
+                        all_issues.extend(raw.get("issues") or [])
+
+            result = {
+                "verified": len(all_issues) == 0,
+                "issues": all_issues,
+            }
         except Exception as exc:
             logger.warning("verification_agent: task '%s' failed — skipping: %s", task_title, exc)
 
@@ -1757,7 +1805,8 @@ class OrchestratorAgent:
                 f"Original task:\n{instruction}\n\n"
                 f"Files that need fixing:\n" + "\n".join(f"- {f}" for f in files_written) + "\n\n"
                 f"Issues found by verification (fix cycle {cycle + 1}):\n{issues_text}\n\n"
-                "Read each file listed above, fix every issue, and write the corrected file. "
+                "Read each file listed above, fix every issue, and write the corrected file back to the SAME path. "
+                "Do NOT create any new files or rename existing ones — only overwrite the exact paths listed above. "
                 "Do NOT introduce new TODOs, stubs, or placeholders — write complete working code."
             )
             fix_id = f"{task_id}_fix{cycle + 1}"

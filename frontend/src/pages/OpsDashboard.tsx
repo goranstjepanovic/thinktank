@@ -14,7 +14,8 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../api/client';
-import type { BackendStat, ErrorCount, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import { useIdeaStore } from '../store/ideaStore';
+import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -431,7 +432,36 @@ function ErrorCountTable({ data }: { data: ErrorCount[] }) {
 // Main dashboard
 // ---------------------------------------------------------------------------
 
+function buildForkTagMap(ideas: IdeaSummary[]): Map<string, string> {
+  const ideaIds = new Set(ideas.map(i => i.id));
+  const byParent = new Map<string, IdeaSummary[]>();
+  for (const idea of ideas) {
+    if (idea.parent_idea_id) {
+      if (!byParent.has(idea.parent_idea_id)) byParent.set(idea.parent_idea_id, []);
+      byParent.get(idea.parent_idea_id)!.push(idea);
+    }
+  }
+  for (const children of byParent.values()) {
+    children.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+  const tags = new Map<string, string>();
+  const roots = ideas.filter(i => !i.parent_idea_id).map(i => i.id);
+  const deletedParents = [...byParent.keys()].filter(pid => !ideaIds.has(pid));
+  const queue = [...roots, ...deletedParents];
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    const children = byParent.get(parentId) ?? [];
+    children.forEach((child, i) => {
+      const parentTag = tags.get(parentId);
+      tags.set(child.id, parentTag ? `${parentTag}-${i + 1}` : `F-${i + 1}`);
+      queue.push(child.id);
+    });
+  }
+  return tags;
+}
+
 export function OpsDashboard() {
+  const ideas = useIdeaStore(s => s.ideas);
   const [rangeHours, setRangeHours] = useState(168); // 7d default
   const [filterModel, setFilterModel] = useState('');
   const [filterBackend, setFilterBackend] = useState('');
@@ -483,9 +513,14 @@ export function OpsDashboard() {
     ? Math.round(data!.by_model.reduce((sum, m) => sum + m.fallbacks, 0) / totalCalls * 100)
     : 0;
 
+  const forkTags = useMemo(() => buildForkTagMap(ideas), [ideas]);
+
   const availableModels = (data?.available_models ?? []).map(m => ({ value: m, label: m }));
   const availableBackends = (data?.available_backends ?? []).map(b => ({ value: b, label: b }));
-  const availableProjects = (data?.available_projects ?? []).map(p => ({ value: p.id, label: p.name || p.id }));
+  const availableProjects = (data?.available_projects ?? []).map(p => {
+    const tag = forkTags.get(p.id);
+    return { value: p.id, label: tag ? `${p.name || p.id} (${tag})` : (p.name || p.id) };
+  });
   const availableStages = (data?.available_stages ?? []).map(s => ({ value: s, label: s }));
 
   const resetFilters = () => {
