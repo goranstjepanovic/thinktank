@@ -38,7 +38,7 @@ from app.tools.interface_extractor import write_interface_manifest, format_manif
 logger = logging.getLogger(__name__)
 
 _MAX_ORCHESTRATOR_ROUNDS = 100  # safety ceiling — real stops are done=true or consecutive empty rounds
-_BUILD_CHECK_INTERVAL = 10  # run a build check every N implementation rounds
+_BUILD_CHECK_INTERVAL = 3  # run a build check every N implementation rounds
 
 _RUN_BUILD_TOOL = ToolDefinition(
     name="run_build",
@@ -269,29 +269,43 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "When you need the user to make a decision before you can proceed:\n"
         '{"analysis": "...", "next_tasks": [], "done": false, '
         '"user_message": "the specific question or decision you need from the user"}\n\n'
-        "## Implementation order — logic before UI\n\n"
-        "If the PRD contains a `Logic Specification` section, you MUST implement it before any UI.\n"
-        "The first task batch must produce logic-only files: pure functions or classes with no DOM, "
-        "no framework imports, no rendering. These files take state as input and return new state.\n"
-        "Only after the logic layer is complete may you assign tasks that touch UI, components, or rendering.\n"
-        "A task that mixes logic and UI in the same file is a bug — split it.\n\n"
+        "## Build-first development methodology — mandatory ordering\n\n"
+        "Think like an experienced developer: first make something that runs, then add features one by one.\n\n"
+        "**Milestone 0 — Runnable shell (ALWAYS the first task batch, no exceptions)**\n"
+        "Your very first task must produce a minimal project that builds and can be started:\n"
+        "- Entry point (main.py, src/index.ts, App.svelte, etc.) — bare minimum, just enough to start\n"
+        "- Build/dependency config (package.json / pyproject.toml / Cargo.toml) with top-level deps listed\n"
+        "- Required config files (vite.config.ts, tsconfig.json, .env.example, etc.)\n"
+        "- Run install (npm install / pip install -r requirements.txt) in the same task\n"
+        "After this task: call `run_build`. If it fails, dispatch ONE fix task and call `run_build` again. "
+        "Repeat until the build is clean. Do NOT move to Milestone 1 until the shell builds.\n\n"
+        "**Milestone 1+ — One feature at a time, end to end**\n"
+        "Once the shell builds, implement features from the PRD one at a time:\n"
+        "- Pick ONE feature — not a layer ('all routes', 'all models'), but one complete user-facing capability\n"
+        "- Implement it in sequential tasks: data model → business logic → API/route → UI (if applicable)\n"
+        "- After the feature's last task: call `run_build`\n"
+        "- If it fails: fix the build before touching the next feature\n"
+        "- Only after a passing build may you begin the next feature\n\n"
+        "**Build gate — hard rule**: A failing build blocks ALL feature work. "
+        "Never dispatch a feature task when the last `run_build` result was non-zero. "
+        "If you have not yet called `run_build` this session, do it now before dispatching anything.\n\n"
+        "**Logic before UI within each feature**: for features that have both logic and UI, implement "
+        "the logic (pure functions, data models) before the UI (components, rendering). "
+        "Never mix logic and UI in the same file — that is a task split.\n\n"
         "## Integration wiring — mandatory checkpoints\n\n"
-        "After every 5 implementation batches, you MUST dispatch one 'Integration Wiring' task before "
-        "assigning new features. This task must:\n"
-        "1. Read the app entry point (App.jsx, main.py, index.js, etc.) and every file it imports directly\n"
-        "2. For every `import { X } from './module'` — read that module and verify X is actually exported. "
-        "If X is not exported, add the missing export or fix the import name.\n"
-        "3. For React: for every `<Component prop={val} />` usage, read Component and verify it accepts "
-        "`prop` with that exact name. Fix mismatches in the caller or the component.\n"
-        "4. For function/method calls: verify the argument count and order match the called function's signature.\n"
+        "After every 3 implementation batches (not counting scaffold), dispatch one 'Integration Wiring' task:\n"
+        "1. Read the app entry point and every file it imports directly\n"
+        "2. For every `import { X } from './module'` — verify X is actually exported from that module\n"
+        "3. For React: verify every `<Component prop={val} />` matches the component's actual prop names\n"
+        "4. For function calls: verify argument count and order match the called signature\n"
         "This task WRITES real fixes — it is not exploration. Dispatch it as a real sub-agent task.\n"
-        "Common wiring failures to catch: a hook file that exports plain functions instead of a React hook "
-        "(missing useState/useEffect); a parent passing `config={{...}}` when a child expects `cards` and "
-        "`onCardClick` as separate props; a service called with one argument when it requires two.\n\n"
+        "Common failures: hook file exports plain functions instead of a React hook; parent passes "
+        "`config={{...}}` when child expects separate props; service called with wrong argument count.\n\n"
         "## Build verification — use run_build\n\n"
         "You have a `run_build` tool that runs the project build command and returns compiler errors. "
-        "Call it whenever you want to confirm the project compiles — especially before dispatching more "
-        "feature tasks. Build error messages tell you exactly which file and line is broken and why.\n\n"
+        "Call it: (a) after every scaffold task, (b) after completing each feature, "
+        "(c) whenever the build status is unknown. Build errors tell you exactly which file and line "
+        "is broken — every error is a concrete task to add.\n\n"
         "## task_type field\n\n"
         "Every task must include `\"task_type\": \"implement\"` (default) or `\"task_type\": \"inspect\"`.\n"
         "Use `\"inspect\"` ONLY for pure assessment tasks where the sub-agent needs to READ files and report "
@@ -401,6 +415,43 @@ def _detect_project_structure(completed_tasks: list[dict]) -> dict:
     return {
         "source_root": "src" if src_count >= 2 else None,
         "top_dirs": sorted(top_dirs),
+    }
+
+
+def _detect_build_state(completed_tasks: list[dict]) -> dict:
+    """
+    Derive build health from completed tasks.
+    Returns: {has_scaffold, build_passed, build_failed, impl_batches}.
+    """
+    all_files: list[str] = []
+    for t in completed_tasks:
+        all_files.extend(t.get("files_written") or [])
+
+    # Scaffold: at least one config file exists
+    _CONFIG = {"package.json", "pyproject.toml", "Cargo.toml", "requirements.txt", "go.mod"}
+    has_scaffold = any(Path(f).name in _CONFIG for f in all_files)
+
+    # Build check history
+    build_tasks = [t for t in completed_tasks if t.get("id", "").startswith("_build_check_")]
+    last_build_passed = False
+    last_build_failed = False
+    if build_tasks:
+        last_build_passed = bool(build_tasks[-1].get("success"))
+        last_build_failed = not last_build_passed
+
+    # Count real implementation batches (not scaffold, not build checks, not user inputs)
+    impl_batches = sum(
+        1 for t in completed_tasks
+        if not t.get("id", "").startswith("_")
+        and not t.get("id", "").startswith("user_input_")
+    )
+
+    return {
+        "has_scaffold": has_scaffold,
+        "build_passed": last_build_passed,
+        "build_failed": last_build_failed,
+        "build_checked": bool(build_tasks),
+        "impl_batches": impl_batches,
     }
 
 
@@ -653,6 +704,29 @@ def _orchestrator_user_prompt(
                 lines.append(f"   ⚠ Blocker: {t['blocker']}")
         history_block = "\n\n## Completed Tasks\n\n" + "\n".join(lines)
 
+    build_state = _detect_build_state(completed_tasks)
+
+    # Build-state banner — injected on every round so the model cannot ignore it
+    build_banner = ""
+    if not follow_up_message:
+        if build_state["build_failed"]:
+            build_banner = (
+                "\n\n## 🚨 BUILD IS FAILING — ALL FEATURE WORK IS BLOCKED\n\n"
+                "The last `run_build` returned errors. You MUST fix the build before dispatching any "
+                "new feature or content task. Dispatch ONE build-fix task now, then call `run_build` again."
+            )
+        elif build_state["has_scaffold"] and not build_state["build_checked"]:
+            build_banner = (
+                "\n\n## ⚠ Build not verified yet\n\n"
+                "Files exist but `run_build` has not been called. Call it NOW before dispatching "
+                "the next feature — a broken build blocks all forward progress."
+            )
+        elif build_state["build_passed"] and build_state["impl_batches"] > 0 and build_state["impl_batches"] % 3 == 0:
+            build_banner = (
+                "\n\n## Build check due\n\n"
+                "Call `run_build` to verify the project still compiles before adding more features."
+            )
+
     if follow_up_message:
         start_hint = (
             f"## User follow-up request\n\n"
@@ -666,13 +740,22 @@ def _orchestrator_user_prompt(
         )
     elif not completed_tasks:
         start_hint = (
-            "## Project is empty — start building immediately\n\n"
-            "The output directory is empty (or contains only docs/). "
-            "Do NOT call `list_files` or `inspect_files` — there is nothing to explore yet.\n\n"
-            "Read the PRD in your system prompt and return a JSON object with 1–2 scaffold tasks right now. "
-            "Start with the root config files (package.json / pyproject.toml / Cargo.toml, README.md, "
-            ".gitignore, .env.example) and the entry point. "
-            "Dispatch tasks immediately — no exploration first."
+            "## Project is empty — Milestone 0: build the runnable shell first\n\n"
+            "Your ONLY goal right now is a minimal project that builds and can be started. "
+            "Do NOT implement any PRD features yet — not data models, not routes, not UI components.\n\n"
+            "DO NOT call `list_files` or `inspect_files` — there is nothing to explore yet.\n\n"
+            "Dispatch ONE scaffold task that writes:\n"
+            "- The entry point (main.py, src/index.ts, App.svelte, etc.) — bare minimum, just enough to start\n"
+            "- The build/dependency config (package.json / pyproject.toml / Cargo.toml) with all top-level deps\n"
+            "- Required config files (vite.config.ts, tsconfig.json, .gitignore, .env.example, etc.)\n"
+            "- Runs the install command (npm install / pip install) in the same task\n"
+            "After this task: call `run_build`. Fix any errors before moving to features."
+        )
+    elif not build_state["has_scaffold"]:
+        start_hint = (
+            "## Milestone 0 incomplete — scaffold must come first\n\n"
+            "The project has no build config yet. Dispatch a scaffold task before any feature work. "
+            "The scaffold must produce: entry point + build config + install command run."
         )
     else:
         start_hint = (
@@ -820,6 +903,7 @@ def _orchestrator_user_prompt(
         f"DESCRIPTION: {idea.description}\n\n"
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
         f"{history_block}"
+        f"{build_banner}"
         f"{structure_block}"
         f"{tree_block}"
         f"{interface_block}"
@@ -1072,16 +1156,19 @@ def _sub_agent_user_prompt(
     else:
         closing = (
             "Start by reading the PRD (including the Module Interface Contract section) and any files "
-            "needed for context, then write all required files, run any specified commands. "
-            "Before returning, call `read_file` on everything you wrote and fix any file that contains "
+            "needed for context, then write all required files, run any specified commands.\n"
+            "Before returning:\n"
+            "1. Call `read_file` on everything you wrote and fix any file that contains "
             "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
-            "IMPORTANT: every function body must contain real logic — `pass`, `return None`, `return {}`, "
-            "`return []`, or `...` as the ONLY body statement means the function is a stub and must be fixed. "
-            "Then use `run_shell` to run the language's syntax or compile check on each file you wrote "
-            "(use whatever checker the project's language and toolchain provide — the agent knows the stack "
-            "from the PRD). Fix any errors before returning. "
-            "After writing each file, call `memory_store` with the file's purpose and exported names. "
-            "Return the JSON summary only after all files pass self-verification."
+            "Every function body must contain real logic — `pass`, `return None`, `return {}`, "
+            "`return []`, or `...` as the ONLY body statement is a stub and must be fixed.\n"
+            "2. Run the language's per-file syntax check on each file you wrote "
+            "(the checker the project's language and toolchain provide). Fix any errors.\n"
+            "3. Run the project build command (`npm run build`, `cargo check`, `python -c 'import <module>'`, "
+            "etc.) to confirm your changes integrate cleanly with the rest of the project. "
+            "If the build fails, read the errors and fix the root cause — do NOT return until the build passes.\n"
+            "4. After writing each file, call `memory_store` with the file's purpose and exported names.\n"
+            "Return the JSON summary only after all files pass self-verification and the build is clean."
         )
     return (
         f"PROJECT: {idea_name}\n"
