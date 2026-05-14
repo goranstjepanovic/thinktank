@@ -182,5 +182,12 @@ async def health():
 
 @app.get("/api/v1/system/models")
 async def system_models():
-    registry = ModelRegistry(settings.models_yaml_path)
-    return {stage: vars(cfg) for stage, cfg in registry.all_stages().items()}
+    return {stage: vars(cfg) for stage, cfg in app.state.inference_client.registry.all_stages().items()}
+
+
+@app.post("/api/v1/system/models/reload")
+async def reload_models():
+    """Re-read models.yaml without restarting. Safe to call while pipelines are running."""
+    app.state.inference_client.registry.reload()
+    stages = app.state.inference_client.registry.all_stages()
+    return {"reloaded": True, "stages": list(stages.keys())}

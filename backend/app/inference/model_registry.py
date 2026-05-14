@@ -65,28 +65,40 @@ def apply_quant_suffix(model: str, quant_level: str) -> str:
 
 class ModelRegistry:
     def __init__(self, yaml_path: Path) -> None:
-        with open(yaml_path) as f:
+        self._yaml_path = yaml_path
+        self._defaults: dict = {}
+        self._backends: dict[str, BackendConfig] = {}
+        self._stages: dict[str, StageConfig] = {}
+        self._quant: QuantizationConfig | None = None
+        self.resources = ResourceConfig(
+            max_concurrent_branches=4,
+            initial_branches_per_idea=2,
+        )
+        self._load()
+
+    def _load(self) -> None:
+        with open(self._yaml_path) as f:
             data = yaml.safe_load(f)
 
         self._defaults = data.get("defaults", {})
-        self._backends: dict[str, BackendConfig] = {}
-        self._stages: dict[str, StageConfig] = {}
 
+        backends: dict[str, BackendConfig] = {}
         for name, cfg in data.get("backends", {}).items():
-            self._backends[name] = BackendConfig(
+            backends[name] = BackendConfig(
                 base_url=cfg.get("base_url"),
                 timeout_seconds=cfg.get("timeout_seconds", 120),
                 extra={k: v for k, v in cfg.items() if k not in ("base_url", "timeout_seconds")},
             )
 
         qcfg = data.get("quantization") or {}
-        self._quant = QuantizationConfig(
+        quant = QuantizationConfig(
             large_model_min_b=qcfg.get("large_model_min_b", 14),
             large_model_quant=qcfg.get("large_model_quant", "q4_K_M"),
         ) if qcfg else None
 
         _KNOWN = {"model", "backend", "temperature", "max_tokens", "format",
                   "num_ctx", "supports_tools", "fallback_models", "selectable_models", "timeout_seconds"}
+        stages: dict[str, StageConfig] = {}
         for stage_key, cfg in data.get("stages", {}).items():
             backend = cfg["backend"]
             selectable = [
@@ -97,7 +109,7 @@ class ModelRegistry:
             model = cfg.get("model") or (selectable[0].model if selectable else None)
             if not model:
                 raise ValueError(f"Stage '{stage_key}' must define either 'model' or 'selectable_models'")
-            self._stages[stage_key] = StageConfig(
+            stages[stage_key] = StageConfig(
                 model=model,
                 backend=backend,
                 temperature=cfg.get("temperature", self._defaults.get("temperature", 0.2)),
@@ -112,12 +124,22 @@ class ModelRegistry:
             )
 
         res = data.get("resources", {})
-        self.resources = ResourceConfig(
+        resources = ResourceConfig(
             max_concurrent_branches=res.get("max_concurrent_branches", 4),
             initial_branches_per_idea=res.get("initial_branches_per_idea", 2),
             max_parallel_sub_agents=res.get("max_parallel_sub_agents", 1),
             max_verify_fix_cycles=res.get("max_verify_fix_cycles", 3),
         )
+
+        # Atomic swap — callers mid-flight see either old or new, never partial
+        self._backends = backends
+        self._stages = stages
+        self._quant = quant
+        self.resources = resources
+
+    def reload(self) -> None:
+        """Re-parse models.yaml in place. Live calls pick up the new config immediately."""
+        self._load()
 
     def get_stage(self, stage_key: str) -> StageConfig:
         if stage_key not in self._stages:

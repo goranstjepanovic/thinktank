@@ -504,6 +504,10 @@ class InferenceClient:
         self._registry = registry
         self._drivers = drivers
 
+    @property
+    def registry(self) -> ModelRegistry:
+        return self._registry
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
