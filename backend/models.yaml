@@ -143,7 +143,7 @@ stages:
       - "ssfdre38/gemma4-turbo:e4b"
       - "qwen3-coder:30b"
     backend: "ollama"
-    temperature: 0.3
+    temperature: 0.1    # code correctness > creativity
     max_tokens: 8192
     format: ""            # free-form — output written directly to disk
     num_ctx: 32768
@@ -171,18 +171,18 @@ stages:
     model: "qwen3-8b"
     backend: "openvino"
     device: "AUTO:CPU"  # NPU compiler (vpux) fails on Qwen3-8B; skip it
-    temperature: 0.2
+    temperature: 0.1    # thinking handles exploration; final JSON should be focused
     max_tokens: 4096
     format: "json"
     num_ctx: 32768      # ignored by OpenVINO (uses model's compiled max)
     supports_tools: true
     timeout_seconds: 900
-    think: false
+    think: true         # orchestrator makes high-stakes batch decisions — CoT pays off
 
   phase3_verification:  # PRD compliance verification pass — needs deeper reasoning
     model: "qwen3.5:9b"
     backend: "ollama"
-    temperature: 0.6
+    temperature: 0.1    # verification must be precise — high temp hallucinates issues
     max_tokens: 4096
     format: "json"
     num_ctx: 32768
@@ -204,7 +204,7 @@ stages:
       - "AliBilge/Huihui-Devstral-Small-2-24B-Instruct-2512-abliterated:q3_k_l"
       - "qwen3-coder:30b"
     backend: "ollama"
-    temperature: 0.3
+    temperature: 0.1    # code correctness > creativity
     max_tokens: null
     format: "json"
     num_ctx: 16384
