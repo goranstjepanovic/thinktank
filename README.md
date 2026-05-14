@@ -16,6 +16,10 @@ A local AI system that takes a raw idea through structured analysis, interactive
 
 **Config-only model routing.** All stage → model → backend assignments live in `models.yaml`. Swap any model without touching application code.
 
+**Build-first development.** Phase 3 follows a milestone discipline: scaffold first (entry point + build config + install), verify the build passes, then add features one at a time with a build check after each. Agents can't skip ahead to feature work while the build is broken.
+
+**Per-project agent memory.** Sub-agents store observations about files they read or write into a semantic memory (aiosqlite + Ollama embeddings). Before touching a file, agents search memory to find what already exists — reducing duplicate implementations across parallel workers.
+
 **Live model telemetry.** An Ops dashboard tracks inference call counts, success rates, average duration, p95 latency, and fallback rates per model across all pipeline runs.
 
 ![Ops dashboard](docs/ops_dashboard.png)
@@ -57,6 +61,8 @@ The orchestrator reads the full Phase 1 document package and Phase 2 resolution 
 4. **Iterate** — chat with the agent after completion to request changes, add features, or fix issues
 
 Sub-agents can use different models per task — a config file tweak, not a code change.
+
+Supported project types include Node.js, Python, and .NET — the orchestrator detects the framework and applies the correct scaffold tooling (e.g. `dotnet new sln` for .NET, `npm install` for Node).
 
 ---
 
