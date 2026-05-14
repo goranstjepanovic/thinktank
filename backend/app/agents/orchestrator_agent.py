@@ -222,13 +222,29 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "to a sub-agent. YOU do NOT write files or run commands — you only read the project state to "
         "understand what is done and what remains.\n\n"
         "## Available tools\n\n"
-        "You may call `list_files`, `inspect_files`, and `grep_files` to inspect the project. "
+        "You may call `list_files`, `inspect_files`, `grep_files`, `memory_search`, and `memory_list` "
+        "to inspect the project.\n"
         "- `list_files`: list directory contents to understand project layout\n"
         "- `inspect_files`: read up to 10 files at once and return their content (truncated) plus "
         "stub-detection markers. Use this to inspect multiple files in ONE round — far more efficient "
         "than individual file reads. Pass up to 10 file paths at a time.\n"
         "- `grep_files`: search across files for a pattern\n"
+        "- `memory_list()`: list all files that sub-agents have already read and analysed. **Call this "
+        "at the start of every round** — it tells you which files have stored observations so you do "
+        "not dispatch redundant inspection tasks.\n"
+        "- `memory_search(query)`: semantic search over stored file observations. Call this BEFORE "
+        "dispatching a task for feature X to check whether any agent has already implemented it. "
+        "Returns file paths and brief observations. Use it to avoid duplicate implementations.\n"
         "Do NOT call `file_edit`, `read_file`, or `run_shell` — those are reserved for sub-agents.\n\n"
+        "## Deduplication — search memory before assigning\n\n"
+        "Before dispatching a task that creates a new utility or module, call `memory_search('X')` "
+        "where X is the feature or concept (e.g. 'authentication', 'API client', 'database connection'). "
+        "If memory returns an observation for an existing file that covers it, the new task must IMPORT "
+        "from that file — never create a duplicate implementation.\n"
+        "Common duplication traps to prevent: auth helpers in both `utils/auth.py` and `services/auth.py`; "
+        "API clients in `api/client.ts` and `utils/api.ts`; config loaders in multiple files. "
+        "When your task instruction references an existing module, quote the file path explicitly: "
+        "'import from `src/utils/auth.py` — do NOT recreate its functions in this file.'\n\n"
         "## Product Requirements Document\n\n"
         f"{prd_excerpt}\n\n"
         f"{model_section}"
@@ -244,6 +260,10 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "A large feature should be split across multiple sequential batches, not crammed into one task. "
         "Tasks in the same batch MUST target completely independent files — no two tasks in a batch "
         "may write to the same file.\n\n"
+        "**Task scope limit**: if a feature requires more than ~3 new functions or classes, split it "
+        "into separate sequential tasks (e.g. 'Implement data models', then 'Implement business logic', "
+        "then 'Implement API routes'). Smaller scope = smaller model output = complete implementations. "
+        "A task instruction that names more than 3 functions is too large — split it.\n\n"
         "When all PRD sections are implemented:\n"
         '{"analysis": "all tasks complete", "next_tasks": [], "done": true, "user_message": null}\n\n'
         "When you need the user to make a decision before you can proceed:\n"
@@ -555,6 +575,26 @@ def _expand_inspection_paths(output_dir: str, paths: list[str], max_files: int =
             _add_file(child)
 
     return out
+
+
+_PY_STUB_RE = re.compile(
+    r"\n[ \t]*(?:async\s+)?def\s+\w+[^\n]*:\n"
+    r"(?:[ \t]*(?:\"\"\"[^\n]+\"\"\"|'''[^\n]+'''|#[^\n]*)?\n)*"
+    r"[ \t]+(?:pass|return\s*None|return\s*\{\}|return\s*\[\]|return\s*\(\)|\.\.\.)\s*(?:\n|$)",
+    re.MULTILINE,
+)
+_TS_STUB_RE = re.compile(
+    r"=\s*(?:async\s+)?\([^)]{0,120}\)\s*(?::\s*[\w<>\[\]|&,\s]+?)?\s*=>\s*\{\s*\}",
+)
+
+
+def _has_semantic_stubs(text: str, suffix: str) -> bool:
+    """Detect hollow function bodies not caught by text-marker search."""
+    if suffix == ".py":
+        return bool(_PY_STUB_RE.search(text))
+    if suffix in (".ts", ".tsx", ".js", ".jsx"):
+        return bool(_TS_STUB_RE.search(text))
+    return False
 
 
 def _build_file_tree(output_dir: str, max_files: int = 120) -> str | None:
@@ -881,12 +921,20 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "- `memory_list()` — see all files already analysed. **Call this once at the start** to orient yourself.\n"
         "- `memory_search(query)` — semantic search over stored observations. "
         "Call this BEFORE reading any file — if a useful observation exists you may not need to read the file.\n"
-        "- `memory_store(file_path, observation)` — store your analysis AFTER reading a file. "
-        "Write what the file does, key functions/classes, patterns, and anything non-obvious. "
+        "- `memory_store(file_path, observation)` — store your analysis AFTER reading OR WRITING a file. "
+        "Write what the file does, key exported function/class names, patterns, and anything non-obvious. "
         "Do NOT store raw file content — store your own analysis (50–200 words).\n\n"
-        "**Rule:** After reading any file, call `memory_store` with your findings. "
-        "Before reading any file, call `memory_search` first.\n"
-        "Memory reduces redundant file reads and lets agents build on each other's work.\n\n"
+        "**Read rule:** Before reading any file, call `memory_search` first. "
+        "If a good observation already exists, skip the read.\n"
+        "**Write rule:** After writing any file, call `memory_store` immediately with: the file's purpose, "
+        "every exported function/class name, what it owns (e.g. 'owns all authentication logic'), "
+        "and what files it imports from. This is how future agents find and reuse your work.\n"
+        "**Anti-duplication rule:** Before creating any new module or utility, call "
+        "`memory_search('[functionality]')` to check if an existing file already implements it. "
+        "If memory returns a relevant observation, IMPORT from that file — never reimplement. "
+        "Example: before writing auth helpers, search 'authentication tokens'; before writing API "
+        "client code, search 'HTTP requests API client'. If you find an existing implementation, "
+        "your task instruction should say 'use `path/to/existing.py` — do NOT recreate its functions.'\n\n"
         "## Web search\n\n"
         "You have `web_search` and `fetch_webpage` available. Use them when:\n"
         "- You are unsure of the correct API, import path, or configuration for a library\n"
@@ -984,6 +1032,7 @@ def _sub_agent_user_prompt(
     prior_failures: list[dict] | None = None,
     source_root: str | None = None,
     task_type: str = "implement",
+    interface_summary: str | None = None,
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -1005,6 +1054,15 @@ def _sub_agent_user_prompt(
             f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
             f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
         )
+    ownership_block = ""
+    if interface_summary and task_type != "inspect":
+        ownership_block = (
+            f"\n\n## Existing module map — DO NOT REIMPLEMENT\n\n"
+            f"{interface_summary}\n\n"
+            "These modules already exist. Before creating any new file, search memory for its topic. "
+            "If memory or the map above shows a module that covers what you need, IMPORT from it "
+            "instead of recreating the same logic. Writing a duplicate implementation is a hard failure."
+        )
     if task_type == "inspect":
         closing = (
             "Read the PRD for context, then read every file listed in your task. "
@@ -1017,9 +1075,12 @@ def _sub_agent_user_prompt(
             "needed for context, then write all required files, run any specified commands. "
             "Before returning, call `read_file` on everything you wrote and fix any file that contains "
             "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
+            "IMPORTANT: every function body must contain real logic — `pass`, `return None`, `return {}`, "
+            "`return []`, or `...` as the ONLY body statement means the function is a stub and must be fixed. "
             "Then use `run_shell` to run the language's syntax or compile check on each file you wrote "
             "(use whatever checker the project's language and toolchain provide — the agent knows the stack "
             "from the PRD). Fix any errors before returning. "
+            "After writing each file, call `memory_store` with the file's purpose and exported names. "
             "Return the JSON summary only after all files pass self-verification."
         )
     return (
@@ -1030,6 +1091,7 @@ def _sub_agent_user_prompt(
         f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
         f"exports, prop names, and function signatures every module must implement. "
         f"Your files MUST match the contract — do not rename exports or change prop names.\n"
+        f"{ownership_block}"
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
@@ -1201,6 +1263,7 @@ class OrchestratorAgent:
                 return {"path": req_path, "entries": sorted(set(entries)), "count": len(entries)}
 
             try:
+                from app.memory import MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL
                 orch_result = await self._client.call_with_tools(
                     stage_key="phase3_verification" if _verification_pending else "phase3_orchestrator",
                     messages=orch_messages,
@@ -1216,10 +1279,11 @@ class OrchestratorAgent:
                     return_json=True,
                     call_index=0,
                     on_tool_result=_orch_tool_cb,
-                    extra_tools=[INSPECT_FILES_TOOL, _RUN_BUILD_TOOL],
+                    extra_tools=[INSPECT_FILES_TOOL, _RUN_BUILD_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL],
                     custom_tool_handlers={
                         "inspect_files": _handle_inspect_files,
                         "run_build": _handle_run_build,
+                        **_memory_handlers(idea.id),
                     },
                 )
             except Exception as e:
@@ -1411,10 +1475,23 @@ class OrchestratorAgent:
                 on_tool_result, on_orchestrator_event,
                 source_root=_structure["source_root"],
                 prd_content=prd_content,
+                interface_summary=_interface_summary,
             )
 
             for t, sub_result in zip(valid_tasks, batch_results):
                 completed_tasks.append({"id": t["_id"], "title": t["_title"], **sub_result})
+
+            # Auto-store file ownership in memory so agents can find existing implementations
+            import app.memory as _mem
+            _ownership_stores = []
+            for t, sub_result in zip(valid_tasks, batch_results):
+                summary_snippet = (sub_result.get("summary") or "")[:300]
+                for fp in (sub_result.get("files_written") or [])[:15]:
+                    if fp:
+                        obs = f"Written by task '{t.get('_title', '')}'. {summary_snippet}"
+                        _ownership_stores.append(_mem.store(idea.id, fp, obs.strip()))
+            if _ownership_stores:
+                await asyncio.gather(*_ownership_stores, return_exceptions=True)
 
             # Update living interface manifest and PROGRESS.md after every batch
             _manifest_path = write_interface_manifest(output_dir)
@@ -1446,6 +1523,7 @@ class OrchestratorAgent:
         on_orchestrator_event: OnOrchestratorEvent,
         source_root: str | None = None,
         prd_content: str | None = None,
+        interface_summary: str | None = None,
     ) -> list[dict]:
         """Run a batch of tasks concurrently. Each task gets its own DB session."""
 
@@ -1469,6 +1547,7 @@ class OrchestratorAgent:
                     agent_id=agent_id,
                     model_hint=model_hint,
                     task_type=task_type,
+                    interface_summary=interface_summary,
                 )
                 if result.get("success") and max_verify_cycles > 0 and task_type != "inspect":
                     result = await self._run_task_verify_fix_loop(
@@ -1479,6 +1558,7 @@ class OrchestratorAgent:
                         agent_id=agent_id,
                         max_fix_cycles=max_verify_cycles,
                         model_hint=model_hint,
+                        interface_summary=interface_summary,
                     )
                 # Persist completion immediately so a page refresh shows the correct state
                 await on_orchestrator_event("sub_agent_complete", {
@@ -1588,7 +1668,10 @@ class OrchestratorAgent:
                 truncated = len(raw) > _MAX_FILE_CHARS
                 suffix = full_path.suffix.lower()
                 language = _LANG_MAP.get(suffix, suffix.lstrip(".") or "text")
-                has_stubs = any(m.lower() in text.lower() for m in _STUB_MARKERS)
+                has_stubs = (
+                    any(m.lower() in text.lower() for m in _STUB_MARKERS)
+                    or _has_semantic_stubs(text, suffix)
+                )
 
                 files.append({
                     "path": rel_path,
@@ -1645,13 +1728,20 @@ class OrchestratorAgent:
         system_prompt = (
             "You are a code verification agent. Review the file chunk below and report problems.\n\n"
             "## What to check\n\n"
-            "1. Stub markers: TODO, FIXME, placeholder comments, `raise NotImplementedError`, "
-            "ellipsis (`...`), or any function body that contains only `pass` or a comment\n"
-            "2. Completeness: each function must have real, working logic — not just a skeleton\n\n"
+            "1. Text-marker stubs: TODO, FIXME, placeholder comments, `raise NotImplementedError`, "
+            "or any function body that is ONLY a comment with no code\n"
+            "2. Semantic stubs — hollow function bodies. Flag any function/method whose ENTIRE body is:\n"
+            "   - `pass` (Python)\n"
+            "   - `return None` or bare `return` with no meaningful value\n"
+            "   - `return {}` / `return []` / `return ()` when the function is supposed to return data\n"
+            "   - `...` (ellipsis) as the sole statement\n"
+            "   - An empty block `{}` in TypeScript/JavaScript\n"
+            "   These are stubs even when no TODO comment is present.\n"
+            "3. Completeness: each function must have real, working logic — not just a skeleton\n\n"
             "## Output format — JSON only, no prose\n\n"
             '{"verified": true, "issues": []}\n'
             "If problems found:\n"
-            '{"verified": false, "issues": ["path/file.py: line 42: TODO stub — function not implemented", ...]}\n\n'
+            '{"verified": false, "issues": ["path/file.py: line 42: hollow body — function returns None but must return user data", ...]}\n\n'
             "Use absolute line numbers (1-indexed from the start of the file)."
         )
 
@@ -1737,6 +1827,7 @@ class OrchestratorAgent:
         agent_id: str | None = None,
         max_fix_cycles: int = 3,
         model_hint: str | None = None,
+        interface_summary: str | None = None,
     ) -> dict:
         """Verify the implementation, then fix+re-verify until passing or max_fix_cycles reached."""
         task_id = task["_id"]
@@ -1828,6 +1919,7 @@ class OrchestratorAgent:
                 prd_content=prd_content,
                 agent_id=fix_agent_id,
                 model_hint=model_hint,
+                interface_summary=interface_summary,
             )
             await on_orchestrator_event("sub_agent_fix_complete", {
                 "task_id": fix_id,
@@ -1860,6 +1952,7 @@ class OrchestratorAgent:
         agent_id: str | None = None,
         model_hint: str | None = None,
         task_type: str = "implement",
+        interface_summary: str | None = None,
     ) -> dict:
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
 
@@ -1956,6 +2049,7 @@ class OrchestratorAgent:
                 prior_failures=prior_failures,
                 source_root=source_root,
                 task_type=task_type,
+                interface_summary=interface_summary,
             )
 
             _attempt_start = _time.monotonic()
