@@ -201,8 +201,6 @@ stages:
         description: "Most implementation tasks — multi-file modules, algorithms, cross-file wiring"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
       - "deepseek-coder:6.7b"
-      - "ssfdre38/gemma4-turbo:e4b"
-      - "granite4.1:8b"
       - "AliBilge/Huihui-Devstral-Small-2-24B-Instruct-2512-abliterated:q3_k_l"
       - "qwen3-coder:30b"
     backend: "ollama"
