@@ -1315,13 +1315,27 @@ def _sub_agent_user_prompt(
 ) -> str:
     prior_block = ""
     if prior_failures:
-        lines = []
+        sections = []
         for f in prior_failures:
-            lines.append(f"  Attempt {f['attempt']}: {f['blocker'] or f['summary']}")
+            handoff = (f.get("handoff") or "").strip()
+            files = f.get("files_written") or []
+            section = f"### Attempt {f['attempt']}\n\n{handoff}" if handoff else (
+                f"### Attempt {f['attempt']}\n\n"
+                f"FAILED BECAUSE: {f['blocker'] or f['summary'] or 'unknown'}"
+            )
+            if files:
+                file_list = "\n".join(f"  - {fp}" for fp in files)
+                section += (
+                    f"\n\nFiles already written to disk by this attempt — "
+                    f"read them before deciding what to do; do NOT rewrite them unless they are broken:\n{file_list}"
+                )
+            sections.append(section)
         prior_block = (
-            "\n\n## Previous attempts (all failed — do NOT repeat the same approach)\n\n"
-            + "\n".join(lines)
-            + "\n\nAnalyse what went wrong, take a different approach, and resolve the blocker."
+            "\n\n## Previous attempts — partial progress\n\n"
+            + "\n\n---\n\n".join(sections)
+            + "\n\n**Your job**: continue from where the last attempt left off. "
+            "Read the files already on disk first. Only rewrite a file if it is broken or incomplete. "
+            "Do not repeat the same failing approach."
         )
     structure_hint = ""
     if source_root and task_type != "inspect":
@@ -2439,10 +2453,13 @@ class OrchestratorAgent:
                 )
                 break
 
+            handoff = await self._generate_retry_handoff(task_instruction, last_result, attempt + 1)
             prior_failures.append({
                 "attempt": attempt + 1,
                 "blocker": last_result.get("blocker") or "",
                 "summary": last_result.get("summary") or "",
+                "handoff": handoff,
+                "files_written": list(last_result.get("files_written") or []),
             })
             logger.info("sub_agent: task '%s' attempt %d unsuccessful — blocker=%r summary=%r — %s",
                         task_title, attempt,
@@ -2455,3 +2472,88 @@ class OrchestratorAgent:
             # Always clean up any background processes the sub-agent left running
             # (dev servers, watchers, etc.) so they don't hold ports across tasks.
             _bg_procs.cleanup_dir(output_dir)
+
+    async def _generate_retry_handoff(
+        self,
+        task_instruction: str,
+        failed_result: dict,
+        attempt: int,
+    ) -> str:
+        """
+        Call context_summarizer to produce a structured handoff note for the retry agent.
+        Returns a plain-text note on success, falls back to raw summary/blocker on any error.
+        """
+        from app.inference.base import InferenceRequest, Message
+        from app import telemetry as _telemetry
+
+        files_written = failed_result.get("files_written") or []
+        commands_run = failed_result.get("commands_run") or []
+        summary = (failed_result.get("summary") or "").strip()
+        blocker = (failed_result.get("blocker") or "").strip()
+
+        files_str = "\n".join(f"  - {f}" for f in files_written) if files_written else "  (none)"
+        cmds_str = "\n".join(f"  - {c}" for c in commands_run) if commands_run else "  (none)"
+
+        user_content = (
+            f"An agent (attempt {attempt}) was given this task:\n{task_instruction}\n\n"
+            f"Files it wrote to disk:\n{files_str}\n\n"
+            f"Commands it ran:\n{cmds_str}\n\n"
+            f"Its final report: {summary or '(none)'}\n"
+            f"It stopped because: {blocker or '(no explicit blocker reported)'}\n\n"
+            "Write a handoff note for the retry agent using exactly this format:\n"
+            "GOAL: <one sentence — what the task must accomplish>\n"
+            "DONE: <what was written and is working, or 'nothing'>\n"
+            "NOT DONE: <what still needs to be implemented>\n"
+            "FAILED BECAUSE: <the specific technical reason>\n"
+            "START FROM: <the exact file or step the retry should begin at>"
+        )
+
+        _model = "unknown"
+        _backend = "unknown"
+        try:
+            stage_cfg = self._client._registry.get_stage("context_summarizer")
+            _model = stage_cfg.model
+            _backend = stage_cfg.backend
+            driver = self._client._get_driver(stage_cfg.backend)
+            req = InferenceRequest(
+                model=stage_cfg.model,
+                messages=[
+                    Message(role="system", content=(
+                        "You write concise agent handoff notes. "
+                        "Output only the note in the requested format, no preamble."
+                    )),
+                    Message(role="user", content=user_content),
+                ],
+                format="",
+                temperature=stage_cfg.temperature,
+                max_tokens=stage_cfg.max_tokens,
+                num_ctx=stage_cfg.num_ctx,
+                timeout_seconds=stage_cfg.timeout_seconds,
+            )
+            import time as _time
+            _t = _time.monotonic()
+            resp = await driver.complete(req)
+            _telemetry.log_call(
+                stage="context_summarizer",
+                model=stage_cfg.model,
+                backend=stage_cfg.backend,
+                duration_ms=int((_time.monotonic() - _t) * 1000),
+                success=True,
+                tokens_prompt=resp.tokens_prompt,
+                tokens_completion=resp.tokens_completion,
+                _ctx={},
+            )
+            return (resp.content or "").strip()
+        except Exception as exc:
+            logger.debug("retry_handoff: summarizer failed (%s) — using raw failure info", exc)
+            _telemetry.log_call(
+                stage="context_summarizer", model=_model, backend=_backend,
+                duration_ms=None, success=False, error=str(exc), _ctx={},
+            )
+            # Fallback: construct a minimal handoff from raw fields
+            parts = []
+            if summary:
+                parts.append(f"DONE: {summary[:300]}")
+            if blocker:
+                parts.append(f"FAILED BECAUSE: {blocker[:300]}")
+            return "\n".join(parts) if parts else "No handoff information available."
