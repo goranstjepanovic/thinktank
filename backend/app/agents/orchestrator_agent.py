@@ -2406,7 +2406,9 @@ class OrchestratorAgent:
                     # Verify the model actually wrote what it claimed
                     if last_result.get("success"):
                         claimed = [f for f in (last_result.get("files_written") or []) if f]
-                        if claimed and not _files_edited:
+                        if claimed and not _files_edited and task_type != "scaffold":
+                            # Scaffold tasks legitimately create files via CLI commands (dotnet new,
+                            # npm init, cargo new, etc.) without calling file_edit — check disk instead.
                             last_result["success"] = False
                             last_result["blocker"] = (
                                 f"Model claimed {len(claimed)} file(s) written but never called "
