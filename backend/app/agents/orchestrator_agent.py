@@ -433,11 +433,13 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "Every task must include one of:\n"
         "- `\"task_type\": \"implement\"` (default) — task creates or modifies source files\n"
         "- `\"task_type\": \"inspect\"` — pure read/assess task, no file writes\n"
-        "- `\"task_type\": \"scaffold\"` — task runs CLI commands ONLY to set up project structure "
-        "(e.g. `dotnet new sln`, `npm init`, `cargo new`). The sub-agent will NOT read the PRD, "
-        "will NOT write any source files, and will ONLY run the commands listed in the instruction. "
-        "**Use this for ALL .NET solution/project creation tasks and any task whose sole job is "
-        "running framework CLI commands.**\n"
+        "- `\"task_type\": \"scaffold\"` — task sets up the initial project structure so the build passes. "
+        "May include CLI commands (`dotnet new sln`, `npm init`, `cargo new`, `vite create`) AND "
+        "writing minimal entry-point or config files (main.py, index.ts, App.svelte, etc.). "
+        "The sub-agent will NOT read the PRD for feature requirements and will NOT implement any "
+        "business logic — only the skeleton needed to get a clean build. "
+        "**Use this for Milestone 0 and any task whose sole goal is project structure / build health, "
+        "not feature implementation.**\n"
         "Do NOT dispatch inspect tasks when you can use `inspect_files` or `grep_files` directly.\n\n"
         "## Task instruction guidelines\n\n"
         "The sub-agent receives only the `instruction` field, the output directory path, and the full PRD. Make it:\n"
@@ -472,8 +474,7 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "The scaffold task MUST use the correct CLI tooling to create project structure. "
         "Never hand-write build config files that the framework's CLI is supposed to generate.\n\n"
         "### .NET (any project with .csproj / .sln)\n"
-        "ALL .NET scaffold tasks MUST use `\"task_type\": \"scaffold\"` — the sub-agent will run only "
-        "CLI commands and will not be distracted by the PRD or source files.\n"
+        "Use `\"task_type\": \"scaffold\"` for solution/project creation tasks.\n"
         "NEVER write .csproj or .sln files by hand — always create them with the dotnet CLI:\n"
         "1. `dotnet new sln -n <SolutionName>` — creates the .sln file at the project root\n"
         "2. For each project: `dotnet new <template> -n <ProjectName> --framework net9.0`\n"
@@ -1373,13 +1374,15 @@ def _sub_agent_user_prompt(
         )
     elif task_type == "scaffold":
         closing = (
-            "Run ONLY the shell commands listed in your task instruction using `run_shell`. "
-            "Do NOT read the PRD. Do NOT write any source files (.cs, .py, .ts, .js, etc.). "
-            "Do NOT implement any application logic.\n"
-            "After running all commands, verify the result (e.g. `dotnet build`, `ls`) and return success.\n"
-            "If a command fails, read the error and fix the root cause — do not skip steps."
+            "Your goal is a project skeleton that builds — not a feature implementation.\n"
+            "Run any framework CLI commands listed in your task, then write only the minimal files "
+            "needed for the build to pass (entry point, top-level config, dependency manifest). "
+            "Do NOT implement business logic, domain models, or application features — "
+            "those belong in later implement tasks.\n"
+            "After completing, run the build command and confirm it exits cleanly. "
+            "If it fails, fix the root cause before returning."
         )
-        prd_line = ""  # scaffold tasks must not be distracted by the PRD
+        prd_line = ""  # scaffold tasks must not be pulled into PRD feature implementation
     else:
         closing = (
             "Start by reading the PRD (including the Module Interface Contract section) and any files "
