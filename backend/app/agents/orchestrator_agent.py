@@ -65,42 +65,162 @@ _RUN_BUILD_TOOL = ToolDefinition(
 )
 
 
-async def _run_build(output_dir: str, command: str | None = None) -> dict:
-    """Run the project build in output_dir and return structured results."""
+def _node_check_command(pkg_dir: Path) -> str | None:
+    """Return the best build-check command for a Node.js project directory."""
     import json as _json
+    try:
+        data = _json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    scripts = data.get("scripts", {})
+    deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
 
-    if not command:
-        pkg_path = Path(output_dir) / "package.json"
-        pyproject_path = Path(output_dir) / "pyproject.toml"
-        cargo_path = Path(output_dir) / "Cargo.toml"
+    pm = "pnpm" if (pkg_dir / "pnpm-lock.yaml").exists() else \
+         "yarn" if (pkg_dir / "yarn.lock").exists() else "npm"
 
-        if pkg_path.exists():
-            try:
-                pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
-                scripts = pkg.get("scripts", {})
-                command = "npm run build" if "build" in scripts else "npm run build"
-            except Exception:
-                command = "npm run build"
-        elif pyproject_path.exists():
-            command = "python -m pytest --tb=short -q"
-        elif cargo_path.exists():
-            command = "cargo build"
-        else:
-            return {
-                "success": None,
-                "output": "No recognized build system found (package.json / pyproject.toml / Cargo.toml)",
-            }
+    # Prefer fast type/lint checks over full bundle builds
+    for script in ("typecheck", "type-check", "check", "lint", "build"):
+        if script in scripts:
+            return f"{pm} run {script}"
+    # TypeScript project with no explicit script
+    if "typescript" in deps or "@types/node" in deps:
+        return "npx tsc --noEmit"
+    return None
 
-    result = await run_shell_command(command, output_dir, timeout_seconds=180)
-    combined = (result.stdout + "\n" + result.stderr).strip()
-    if len(combined) > 5000:
-        combined = "…(truncated — showing last 5000 chars)\n" + combined[-5000:]
+
+def _python_check_command(py_dir: Path) -> str:
+    """Return a syntax-check command for a Python project directory."""
+    # compileall is a stdlib module — always available, no imports executed,
+    # recursively checks every .py file for syntax errors.
+    exclude = r"(\.venv|venv|__pycache__|node_modules|\.git|dist|build)"
+    return f'python -m compileall -q -x "{exclude}" .'
+
+
+def _detect_build_commands(root: Path) -> list[tuple[Path, str]]:
+    """
+    Walk root and immediate subdirectories looking for build systems.
+    Returns [(directory, command)] for every system found.
+    Handles monorepos with separate frontend/backend directories.
+    """
+    _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv",
+             "dist", "build", ".next", ".nuxt", "coverage", "target", "bin", "obj"}
+
+    checks: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def _probe(d: Path) -> None:
+        if d in seen or not d.is_dir():
+            return
+        seen.add(d)
+
+        # Node.js
+        if (d / "package.json").exists():
+            cmd = _node_check_command(d)
+            if cmd:
+                checks.append((d, cmd))
+            return  # don't recurse into node sub-packages
+
+        # Python
+        if (d / "pyproject.toml").exists() or (d / "requirements.txt").exists() or (d / "setup.py").exists():
+            checks.append((d, _python_check_command(d)))
+            return
+
+        # .NET
+        csproj = next(d.glob("*.csproj"), None) or next(d.glob("*.sln"), None) or next(d.glob("*.fsproj"), None)
+        if csproj:
+            checks.append((d, "dotnet build --nologo -v q"))
+            return
+
+        # Go
+        if (d / "go.mod").exists():
+            checks.append((d, "go build ./..."))
+            return
+
+        # Rust
+        if (d / "Cargo.toml").exists():
+            checks.append((d, "cargo check"))
+            return
+
+        # Java — Maven
+        if (d / "pom.xml").exists():
+            checks.append((d, "mvn compile -q"))
+            return
+
+        # Java — Gradle
+        if (d / "build.gradle").exists() or (d / "build.gradle.kts").exists():
+            gradle = "./gradlew" if (d / "gradlew").exists() else "gradle"
+            checks.append((d, f"{gradle} compileJava -q"))
+            return
+
+    # Probe root first, then immediate subdirectories (monorepo layout)
+    _probe(root)
+    if not checks:
+        for sub in sorted(root.iterdir()):
+            if sub.is_dir() and sub.name not in _SKIP:
+                _probe(sub)
+
+    return checks
+
+
+async def _run_build(output_dir: str, command: str | None = None) -> dict:
+    """
+    Auto-detect the build system(s) in output_dir and run the appropriate
+    check command. Handles Node/Python/.NET/Go/Rust/Java and monorepos
+    with separate frontend+backend directories.
+    """
+    root = Path(output_dir)
+
+    if command:
+        # Explicit override — run exactly what was requested
+        result = await run_shell_command(command, output_dir, timeout_seconds=180)
+        combined = (result.stdout + "\n" + result.stderr).strip()
+        if len(combined) > 5000:
+            combined = "…(truncated)\n" + combined[-5000:]
+        return {
+            "success": result.exit_code == 0,
+            "exit_code": result.exit_code,
+            "command": command,
+            "output": combined,
+            "timed_out": result.timed_out,
+        }
+
+    checks = _detect_build_commands(root)
+    if not checks:
+        return {
+            "success": None,
+            "output": (
+                "No recognized build system found. Looked for: package.json, pyproject.toml, "
+                "requirements.txt, *.csproj, *.sln, go.mod, Cargo.toml, pom.xml, build.gradle"
+            ),
+        }
+
+    all_output: list[str] = []
+    overall_success = True
+
+    for check_dir, cmd in checks:
+        try:
+            rel = check_dir.relative_to(root).as_posix()
+        except ValueError:
+            rel = str(check_dir)
+        label = rel if rel != "." else "project root"
+
+        result = await run_shell_command(cmd, str(check_dir), timeout_seconds=180)
+        combined = (result.stdout + "\n" + result.stderr).strip()
+        if len(combined) > 3000:
+            combined = "…(truncated)\n" + combined[-3000:]
+        status = "✓ passed" if result.exit_code == 0 else f"✗ exit {result.exit_code}"
+        all_output.append(f"[{label}] $ {cmd}  →  {status}\n{combined}".rstrip())
+        if result.exit_code != 0:
+            overall_success = False
+
+    full_output = "\n\n".join(all_output)
+    if len(full_output) > 6000:
+        full_output = "…(truncated — showing last 6000 chars)\n" + full_output[-6000:]
+
     return {
-        "success": result.exit_code == 0,
-        "exit_code": result.exit_code,
-        "command": command,
-        "output": combined,
-        "timed_out": result.timed_out,
+        "success": overall_success,
+        "checks": [{"dir": str(d.relative_to(root)), "command": c} for d, c in checks],
+        "output": full_output,
     }
 def _write_progress_md(
     output_dir: str,
@@ -418,7 +538,7 @@ def _detect_project_structure(completed_tasks: list[dict]) -> dict:
     }
 
 
-def _detect_build_state(completed_tasks: list[dict]) -> dict:
+def _detect_build_state(completed_tasks: list[dict], output_dir: str | None = None) -> dict:
     """
     Derive build health from completed tasks.
     Returns: {has_scaffold, build_passed, build_failed, impl_batches}.
@@ -427,9 +547,23 @@ def _detect_build_state(completed_tasks: list[dict]) -> dict:
     for t in completed_tasks:
         all_files.extend(t.get("files_written") or [])
 
-    # Scaffold: at least one config file exists
-    _CONFIG = {"package.json", "pyproject.toml", "Cargo.toml", "requirements.txt", "go.mod"}
-    has_scaffold = any(Path(f).name in _CONFIG for f in all_files)
+    # Scaffold: detect from files_written (before output_dir exists on disk)
+    _CONFIG = {"package.json", "pyproject.toml", "Cargo.toml", "requirements.txt",
+               "go.mod", "pom.xml", "build.gradle", "build.gradle.kts"}
+    has_scaffold = any(Path(f).name in _CONFIG or f.endswith(".csproj") or f.endswith(".sln")
+                       for f in all_files)
+
+    # Also check disk if output_dir provided — more reliable once files are written
+    detected_systems: list[str] = []
+    if output_dir and Path(output_dir).exists():
+        for d, cmd in _detect_build_commands(Path(output_dir)):
+            try:
+                label = d.relative_to(Path(output_dir)).as_posix() or "."
+            except ValueError:
+                label = str(d)
+            detected_systems.append(f"{label}: {cmd}")
+        if detected_systems:
+            has_scaffold = True
 
     # Build check history
     build_tasks = [t for t in completed_tasks if t.get("id", "").startswith("_build_check_")]
@@ -452,6 +586,7 @@ def _detect_build_state(completed_tasks: list[dict]) -> dict:
         "build_failed": last_build_failed,
         "build_checked": bool(build_tasks),
         "impl_batches": impl_batches,
+        "detected_systems": detected_systems,
     }
 
 
@@ -681,6 +816,7 @@ def _orchestrator_user_prompt(
     interface_summary: str | None = None,
     file_tree: str | None = None,
     services_json: dict | None = None,
+    output_dir: str | None = None,
 ) -> str:
     history_block = ""
     if completed_tasks:
@@ -704,7 +840,7 @@ def _orchestrator_user_prompt(
                 lines.append(f"   ⚠ Blocker: {t['blocker']}")
         history_block = "\n\n## Completed Tasks\n\n" + "\n".join(lines)
 
-    build_state = _detect_build_state(completed_tasks)
+    build_state = _detect_build_state(completed_tasks, output_dir=output_dir)
 
     # Build-state banner — injected on every round so the model cannot ignore it
     build_banner = ""
@@ -716,10 +852,13 @@ def _orchestrator_user_prompt(
                 "new feature or content task. Dispatch ONE build-fix task now, then call `run_build` again."
             )
         elif build_state["has_scaffold"] and not build_state["build_checked"]:
+            systems_hint = ""
+            if build_state.get("detected_systems"):
+                systems_hint = " Detected: " + "; ".join(build_state["detected_systems"]) + "."
             build_banner = (
                 "\n\n## ⚠ Build not verified yet\n\n"
-                "Files exist but `run_build` has not been called. Call it NOW before dispatching "
-                "the next feature — a broken build blocks all forward progress."
+                f"Files exist but `run_build` has not been called.{systems_hint} "
+                "Call it NOW before dispatching the next feature — a broken build blocks all forward progress."
             )
         elif build_state["build_passed"] and build_state["impl_batches"] > 0 and build_state["impl_batches"] % 3 == 0:
             build_banner = (
@@ -1260,6 +1399,7 @@ class OrchestratorAgent:
                     interface_summary=_interface_summary,
                     file_tree=_file_tree,
                     services_json=_services_json,
+                    output_dir=output_dir or None,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
