@@ -210,9 +210,6 @@ stages:
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 900
         num_ctx: 32768
-      - model: "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
-        timeout_seconds: 1200
-        num_ctx: 32768
     backend: "ollama"
     temperature: 0.1    # code correctness > creativity
     max_tokens: null
