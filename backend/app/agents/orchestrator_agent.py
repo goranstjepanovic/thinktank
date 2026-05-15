@@ -19,8 +19,10 @@ Flow:
 import asyncio
 import json
 import logging
+import platform
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -304,6 +306,27 @@ def _read_services_json(output_dir: str) -> dict | None:
 _MAX_PRD_CHARS = 24_000
 
 
+def _runtime_context() -> str:
+    """Return a short environment block injected at the top of every agent system prompt."""
+    now = datetime.now()
+    system = platform.system()          # "Windows" | "Linux" | "Darwin"
+    shell = "PowerShell" if system == "Windows" else "bash"
+    shell_note = (
+        "Use PowerShell syntax for shell commands: `dir` (not `ls`), `type` (not `cat`), "
+        "backslash path separators, `$env:VAR` for environment variables. "
+        "Do NOT use bash-only syntax (`&&`, `||` pipeline chaining, `export VAR=x`, backtick substitution)."
+        if system == "Windows"
+        else "Use bash syntax for shell commands."
+    )
+    return (
+        f"## Runtime environment\n\n"
+        f"Date/time: {now.strftime('%Y-%m-%d %H:%M')} (local)\n"
+        f"OS: {system}\n"
+        f"Shell: {shell}\n"
+        f"{shell_note}\n\n"
+    )
+
+
 def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None = None) -> str:
     prd_excerpt = prd_content[:_MAX_PRD_CHARS]
     if len(prd_content) > _MAX_PRD_CHARS:
@@ -336,7 +359,8 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         )
 
     return (
-        "You are an orchestrator agent for a software implementation pipeline.\n\n"
+        _runtime_context()
+        + "You are an orchestrator agent for a software implementation pipeline.\n\n"
         "## Your role\n\n"
         "You read the PRD, check what has already been built, and delegate one concrete task at a time "
         "to a sub-agent. YOU do NOT write files or run commands — you only read the project state to "
@@ -1155,9 +1179,11 @@ def _memory_handlers(project_id: str) -> dict:
 
 
 def _sub_agent_system_prompt(task_type: str = "implement") -> str:
+    ctx = _runtime_context()
     if task_type == "inspect":
         mode_header = (
-            "You are an INSPECTOR agent. Your only job is to READ files and return a detailed analysis.\n\n"
+            ctx
+            + "You are an INSPECTOR agent. Your only job is to READ files and return a detailed analysis.\n\n"
             "## INSPECTION MODE — read-only\n\n"
             "DO NOT write any files. DO NOT call `file_edit` or `run_shell`.\n"
             "Every response MUST contain tool calls (reads). A response with no tool calls is ALWAYS wrong.\n"
@@ -1177,7 +1203,8 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         )
         return mode_header
     return (
-        "You are an EXECUTOR agent. Your only job is to call tools and write files.\n\n"
+        ctx
+        + "You are an EXECUTOR agent. Your only job is to call tools and write files.\n\n"
         "## You are NOT a planner\n\n"
         "Do NOT describe what you intend to do. Do NOT summarise the task. Do NOT explain your approach.\n"
         "Do NOT output the final JSON before you have written all required files.\n"
@@ -2576,6 +2603,38 @@ class OrchestratorAgent:
                                     "sub_agent: task '%s' attempt %d — claimed files missing on disk: %s",
                                     task_title, attempt, missing,
                                 )
+                            else:
+                                # Detect fake binary assets: audio/image files written as text stubs
+                                # (real audio is typically >10 KB; real images >1 KB)
+                                _AUDIO_EXTS = frozenset({".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus"})
+                                _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
+                                _MIN_AUDIO_BYTES = 10_000
+                                _MIN_IMAGE_BYTES = 1_000
+                                fake_assets = []
+                                for f in claimed:
+                                    p = Path(output_dir) / f
+                                    ext = p.suffix.lower()
+                                    if ext in _AUDIO_EXTS and p.stat().st_size < _MIN_AUDIO_BYTES:
+                                        fake_assets.append(f)
+                                    elif ext in _IMAGE_EXTS and p.stat().st_size < _MIN_IMAGE_BYTES:
+                                        fake_assets.append(f)
+                                if fake_assets:
+                                    # Remove the stub files so they don't pollute the project
+                                    for f in fake_assets:
+                                        try:
+                                            (Path(output_dir) / f).unlink()
+                                        except OSError:
+                                            pass
+                                    last_result["success"] = False
+                                    last_result["blocker"] = (
+                                        f"Fake asset stubs detected and removed: {', '.join(fake_assets[:5])}. "
+                                        "Use generate_audio_music / generate_audio_sfx / generate_audio_speech "
+                                        "for audio, or generate_image for images."
+                                    )
+                                    logger.warning(
+                                        "sub_agent: task '%s' attempt %d — fake asset stubs: %s",
+                                        task_title, attempt, fake_assets,
+                                    )
 
             except Exception as e:
                 logger.error("sub_agent: task '%s' attempt %d failed: %s", task_title, attempt, e)

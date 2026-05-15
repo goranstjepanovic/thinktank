@@ -75,8 +75,28 @@ async def edit_file(
         return FileEditResult(success=False, operation=operation, path=path, detail=msg)
 
     abs_path = str(resolved)
+    _AUDIO_EXTS = frozenset({".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus"})
+    _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 
     if operation == "write_file":
+        ext = Path(abs_path).suffix.lower()
+        if ext in _AUDIO_EXTS:
+            return FileEditResult(
+                success=False, operation=operation, path=abs_path,
+                detail=(
+                    f"Cannot create audio files via file_edit — use the appropriate tool: "
+                    f"generate_audio_music (background music), generate_audio_sfx (sound effects), "
+                    f"or generate_audio_speech (voice/narration). Pass output_path='{path}'."
+                ),
+            )
+        if ext in _IMAGE_EXTS:
+            return FileEditResult(
+                success=False, operation=operation, path=abs_path,
+                detail=(
+                    f"Cannot create image files via file_edit — use generate_image instead. "
+                    f"Pass output_path='{path}'."
+                ),
+            )
         if not content:
             return FileEditResult(
                 success=False, operation=operation, path=abs_path,
@@ -87,6 +107,13 @@ async def edit_file(
         return FileEditResult(success=result["success"], operation=operation, path=abs_path, detail=detail)
 
     elif operation == "search_replace":
+        ext = Path(abs_path).suffix.lower()
+        if ext in _AUDIO_EXTS or ext in _IMAGE_EXTS:
+            kind = "audio" if ext in _AUDIO_EXTS else "image"
+            return FileEditResult(
+                success=False, operation=operation, path=abs_path,
+                detail=f"Cannot edit binary {kind} files via search_replace. Regenerate the file using the appropriate generation tool.",
+            )
         if not search_text:
             return FileEditResult(success=False, operation=operation, path=abs_path, detail="search_text is required")
         result = await file_manager.search_replace(abs_path, search_text, replace_text, replace_all=replace_all)
