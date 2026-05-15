@@ -1497,7 +1497,7 @@ export function Phase3Implementation() {
         const completedTaskIds = new Set<string>();
         const startedTaskIds = new Set<string>();
         for (const e of events) {
-          if (e.event_type === 'sub_agent_complete' || e.event_type === 'sub_agent_fix_complete') completedTaskIds.add(e.payload.task_id as string);
+          if (e.event_type === 'sub_agent_complete' || e.event_type === 'sub_agent_fix_complete' || e.event_type === 'sub_agent_cancelled') completedTaskIds.add(e.payload.task_id as string);
           if (e.event_type === 'sub_agent_started' || e.event_type === 'sub_agent_fix_started') startedTaskIds.add(e.payload.task_id as string);
         }
 
@@ -1529,6 +1529,9 @@ export function Phase3Implementation() {
             const taskId = e.payload.task_id as string;
             if (completedTaskIds.has(taskId)) return [];
             return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
+          } else if (e.event_type === 'sub_agent_cancelled') {
+            const taskId = e.payload.task_id as string;
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'cancelled', summary: 'Cancelled by user', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
           } else {
             return [];
           }
