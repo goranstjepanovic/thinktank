@@ -204,7 +204,7 @@ stages:
         timeout_seconds: 600
         num_ctx: 32768
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - model: "ALIENTELLIGENCE/deepseekcoder16kcontextv2:latest"
+      - model: "starcoder2:15b-instruct"
         timeout_seconds: 600
         num_ctx: 16384
       - model: "Omoeba/gpt-oss-coder:20b"
