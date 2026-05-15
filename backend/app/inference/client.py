@@ -698,6 +698,8 @@ class InferenceClient:
         custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
         model_override: str | None = None,
         agent_id: str | None = None,
+        num_ctx_override: int | None = None,
+        timeout_override: int | None = None,
     ) -> dict | str:
         """
         Multi-turn tool-use call. The model may invoke `run_python` zero or more times
@@ -775,9 +777,9 @@ class InferenceClient:
                 format=stage_cfg.format,
                 temperature=stage_cfg.temperature,
                 max_tokens=stage_cfg.max_tokens,
-                num_ctx=stage_cfg.num_ctx,
+                num_ctx=num_ctx_override if num_ctx_override is not None else stage_cfg.num_ctx,
                 tools=available_tools,
-                timeout_seconds=stage_cfg.timeout_seconds,
+                timeout_seconds=timeout_override if timeout_override is not None else stage_cfg.timeout_seconds,
                 extra=stage_cfg.extra,
             )
 
@@ -804,10 +806,13 @@ class InferenceClient:
                 # For any other error, preserve the original plain-call fallback so
                 # non-sub-agent stages can still recover gracefully.
                 if round_num == 0:
-                    if "does not support tools" in error_str.lower():
+                    _is_tool_rejection = "does not support tools" in error_str.lower()
+                    _is_timeout = "timed out" in error_str.lower()
+                    if _is_tool_rejection or _is_timeout:
                         logger.warning(
-                            "tools stage=%-20s model=%s explicitly rejects tools — skipping to next fallback",
+                            "tools stage=%-20s model=%s %s — skipping to next fallback",
                             stage_key, effective_model,
+                            "explicitly rejects tools" if _is_tool_rejection else "timed out",
                         )
                         raise InferenceClientError(
                             f"Backend '{stage_cfg.backend}' failed for stage '{stage_key}': {e}"
@@ -1706,6 +1711,12 @@ class InferenceClient:
             tail.append(msg)
 
         formatted = _format_tool_history(middle)
+        # Cap input to summarizer: keep the most recent lines if history is very long.
+        # Each line is ~60-80 chars; 150 lines ≈ 2500 tokens, leaving room for prompt + output.
+        _MAX_SUMMARY_LINES = 150
+        _lines = formatted.splitlines()
+        if len(_lines) > _MAX_SUMMARY_LINES:
+            formatted = "(earlier rounds omitted)\n" + "\n".join(_lines[-_MAX_SUMMARY_LINES:])
 
         from app import telemetry as _telemetry
 

@@ -1560,6 +1560,13 @@ class OrchestratorAgent:
                 cmd = str(args.get("command") or "").strip() or None
                 return await _run_build(output_dir, cmd)
 
+            async def _handle_scaffold_misuse(_args: dict) -> dict:
+                return {"error": (
+                    "scaffold is not a tool. To dispatch a scaffold task, return a JSON response "
+                    "with {\"tasks\": [{\"task_type\": \"scaffold\", \"id\": \"...\", \"title\": \"...\", "
+                    "\"instruction\": \"...\"}]}."
+                )}
+
             async def _handle_list_files(args: dict) -> dict:
                 # Serve list_files from the pre-built tree — no filesystem round-trips,
                 # no subdirectory drilling. The model gets exactly what it asked for
@@ -1616,6 +1623,7 @@ class OrchestratorAgent:
                     custom_tool_handlers={
                         "inspect_files": _handle_inspect_files,
                         "run_build": _handle_run_build,
+                        "scaffold": _handle_scaffold_misuse,
                         **_memory_handlers(idea.id),
                     },
                 )
@@ -2322,18 +2330,21 @@ class OrchestratorAgent:
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
 
         # Resolve the primary model: orchestrator hint → first selectable (fast) → stage default
-        selectable_map = {m.name: m.model for m in stage_cfg.selectable_models}
+        from app.inference.model_registry import SelectableModel as _SelectableModel
+        selectable_map = {m.name: m for m in stage_cfg.selectable_models}
         if model_hint and model_hint in selectable_map:
-            primary_model = selectable_map[model_hint]
+            primary_sm = selectable_map[model_hint]
         elif stage_cfg.selectable_models:
-            primary_model = stage_cfg.selectable_models[0].model  # default: fast
+            primary_sm = stage_cfg.selectable_models[0]
         else:
-            primary_model = stage_cfg.model
+            primary_sm = _SelectableModel(name=stage_cfg.model, model=stage_cfg.model)
 
-        models_to_try = [primary_model] + [m for m in stage_cfg.fallback_models if m != primary_model]
+        models_to_try: list[_SelectableModel] = [primary_sm] + [
+            m for m in stage_cfg.fallback_models if m.model != primary_sm.model
+        ]
         logger.info(
             "sub_agent: starting task '%s' (%s) agent=%s model=%s (hint=%r)",
-            task_title, task_id, agent_id or "?", primary_model, model_hint,
+            task_title, task_id, agent_id or "?", primary_sm.model, model_hint,
         )
 
         _files_edited: list[str] = []  # reset each attempt to catch fabricated results
@@ -2400,7 +2411,7 @@ class OrchestratorAgent:
                 )
 
         try:
-          for attempt, model_override in enumerate(models_to_try):
+          for attempt, model_sm in enumerate(models_to_try):
             _files_edited.clear()
             _tool_counts.clear()
             # Kill any background processes left behind by the previous attempt
@@ -2409,15 +2420,15 @@ class OrchestratorAgent:
                 _bg_procs.cleanup_dir(output_dir)
             _telemetry.set_call_context(
                 is_fallback=attempt > 0,
-                fallback_from=models_to_try[attempt - 1] if attempt > 0 else None,
+                fallback_from=models_to_try[attempt - 1].model if attempt > 0 else None,
                 model_type=model_hint or "fast",
                 task_id=task_id,
             )
             if attempt > 0:
-                logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_override)
+                logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_sm.model)
                 await on_orchestrator_event("sub_agent_model_fallback", {
                     "task_id": task_id,
-                    "model": model_override,
+                    "model": model_sm.model,
                     "attempt": attempt,
                 })
 
@@ -2430,6 +2441,17 @@ class OrchestratorAgent:
                 memory_context=_memory_context,
             )
 
+            # Skip this model if the prompt is too large for its context window.
+            effective_num_ctx = model_sm.num_ctx or stage_cfg.num_ctx
+            sys_prompt = _sub_agent_system_prompt(task_type=task_type)
+            est_tokens = (len(sys_prompt) + len(user_prompt)) // 3
+            if est_tokens > int(effective_num_ctx * 0.85):
+                logger.warning(
+                    "sub_agent: task '%s' — skipping model %s (est %d tokens > %d ctx limit)",
+                    task_title, model_sm.model, est_tokens, effective_num_ctx,
+                )
+                continue
+
             _attempt_start = _time.monotonic()
             _telemetry.suppress_next_call()  # orchestrator logs task-level outcome below
             try:
@@ -2437,7 +2459,7 @@ class OrchestratorAgent:
                     last_result = await self._client.call_with_tools(
                         stage_key="phase3_sub_agent",
                         messages=[
-                            Message(role="system", content=_sub_agent_system_prompt(task_type=task_type)),
+                            Message(role="system", content=sys_prompt),
                             Message(role="user", content=user_prompt),
                         ],
                         session=sub_db,
@@ -2450,7 +2472,9 @@ class OrchestratorAgent:
                         call_index=0,
                         on_tool_result=_wrapped_on_tool,
                         on_text_response=_on_text_response,
-                        model_override=model_override,
+                        model_override=model_sm.model,
+                        num_ctx_override=model_sm.num_ctx,
+                        timeout_override=model_sm.timeout_seconds,
                         extra_tools=_sub_agent_extra_tools(),
                         custom_tool_handlers={
                             "read_prd": _handle_read_prd,
@@ -2505,7 +2529,7 @@ class OrchestratorAgent:
             _telemetry.set_tool_counts(_tool_counts)
             _telemetry.log_call(
                 stage="phase3_sub_agent",
-                model=model_override,
+                model=model_sm.model,
                 backend=stage_cfg.backend,
                 duration_ms=int((_time.monotonic() - _attempt_start) * 1000),
                 success=bool(last_result.get("success", True)) and not last_result.get("blocker"),
@@ -2548,7 +2572,7 @@ class OrchestratorAgent:
                         task_title, attempt,
                         last_result.get("blocker") or "",
                         (last_result.get("summary") or "")[:120],
-                        f"retrying with {models_to_try[attempt + 1]}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
+                        f"retrying with {models_to_try[attempt + 1].model}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
 
           return last_result
         finally:

@@ -10,6 +10,8 @@ class SelectableModel:
     name: str
     model: str
     description: str = ""
+    timeout_seconds: int | None = None
+    num_ctx: int | None = None
 
 
 @dataclass
@@ -21,7 +23,7 @@ class StageConfig:
     format: str
     num_ctx: int = 8192
     supports_tools: bool = False
-    fallback_models: list[str] = field(default_factory=list)
+    fallback_models: list["SelectableModel"] = field(default_factory=list)
     selectable_models: list[SelectableModel] = field(default_factory=list)
     timeout_seconds: int | None = None  # overrides backend default when set
     extra: dict = field(default_factory=dict)  # passed verbatim to the backend payload
@@ -102,8 +104,21 @@ class ModelRegistry:
         for stage_key, cfg in data.get("stages", {}).items():
             backend = cfg["backend"]
             selectable = [
-                SelectableModel(name=s["name"], model=s["model"], description=s.get("description", ""))
+                SelectableModel(
+                    name=s["name"], model=s["model"], description=s.get("description", ""),
+                    timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
+                )
                 for s in (cfg.get("selectable_models") or [])
+            ]
+            raw_fallbacks = cfg.get("fallback_models") or []
+            fallbacks = [
+                SelectableModel(
+                    name=f if isinstance(f, str) else f["model"],
+                    model=f if isinstance(f, str) else f["model"],
+                    timeout_seconds=None if isinstance(f, str) else f.get("timeout_seconds"),
+                    num_ctx=None if isinstance(f, str) else f.get("num_ctx"),
+                )
+                for f in raw_fallbacks
             ]
             # When selectable_models is present, derive the primary model from the first entry
             model = cfg.get("model") or (selectable[0].model if selectable else None)
@@ -117,7 +132,7 @@ class ModelRegistry:
                 format=cfg.get("format", self._defaults.get("format", "json")),
                 num_ctx=cfg.get("num_ctx", self._defaults.get("num_ctx", 8192)),
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
-                fallback_models=list(cfg.get("fallback_models") or []),
+                fallback_models=fallbacks,
                 selectable_models=selectable,
                 timeout_seconds=cfg.get("timeout_seconds"),
                 extra={k: v for k, v in cfg.items() if k not in _KNOWN},

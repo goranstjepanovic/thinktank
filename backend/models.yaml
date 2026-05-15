@@ -196,20 +196,30 @@ stages:
       - name: "fast"
         model: "ducquoc/gemma4-fast-sonnet"
         description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
+        timeout_seconds: 180
+        num_ctx: 8192
       - name: "standard"
         model: "sorc/qwen3.5-claude-4.6-opus:9b"
         description: "Most implementation tasks — multi-file modules, algorithms, cross-file wiring"
+        timeout_seconds: 600
+        num_ctx: 32768
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - "ALIENTELLIGENCE/deepseekcoder16kcontextv2:latest"
-      - "Omoeba/gpt-oss-coder:20b"
-      - "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
+      - model: "ALIENTELLIGENCE/deepseekcoder16kcontextv2:latest"
+        timeout_seconds: 600
+        num_ctx: 16384
+      - model: "Omoeba/gpt-oss-coder:20b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
+        timeout_seconds: 1200
+        num_ctx: 32768
     backend: "ollama"
     temperature: 0.1    # code correctness > creativity
     max_tokens: null
     format: "json"
-    num_ctx: 16384
+    num_ctx: 16384      # default if per-model num_ctx is not set
     supports_tools: true
-    timeout_seconds: 1200
+    timeout_seconds: 1200  # default if per-model timeout_seconds is not set
 
   context_summarizer:  # Internal — called when a sub-agent's context hits 75% of num_ctx
     model: "qwen2.5-coder:7b"
@@ -217,7 +227,7 @@ stages:
     temperature: 0.1
     max_tokens: 400     # summaries must be concise
     format: ""          # plain text
-    num_ctx: 4096       # input is compact formatted history, not raw JSON
+    num_ctx: 8192       # compact history can reach ~3k tokens for long runs; 8k gives safe headroom
     supports_tools: false
 
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
