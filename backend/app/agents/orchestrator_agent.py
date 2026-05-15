@@ -1525,6 +1525,9 @@ class OrchestratorAgent:
                 and round_idx % _BUILD_CHECK_INTERVAL == 0
             ):
                 logger.info("orchestrator: running periodic build check at round %d", round_idx + 1)
+                await on_orchestrator_event("orchestrator_message", {
+                    "content": f"🔨 Build check (round {round_idx + 1}): running…"
+                })
                 build_result = await _run_build(output_dir)
                 if build_result.get("success") is False:
                     build_out = build_result.get("output", "")[:2000]
@@ -1564,6 +1567,9 @@ class OrchestratorAgent:
 
             async def _handle_run_build(args: dict) -> dict:
                 cmd = str(args.get("command") or "").strip() or None
+                await on_orchestrator_event("orchestrator_message", {
+                    "content": f"🔨 Running build{f': `{cmd}`' if cmd else ''}…"
+                })
                 return await _run_build(output_dir, cmd)
 
             async def _handle_scaffold_misuse(_args: dict) -> dict:
