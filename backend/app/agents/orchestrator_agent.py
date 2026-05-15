@@ -1775,10 +1775,37 @@ class OrchestratorAgent:
                     if _empty_task_rounds <= 3:
                         logger.warning("orchestrator: round %d produced done=false with no tasks (empty #%d) — nudging",
                                        round_idx + 1, _empty_task_rounds)
+                        from app import telemetry as _tel_orch
+                        _stage_used = "phase3_verification" if _verification_pending else "phase3_orchestrator"
+                        _stage_cfg_orch = self._client._registry.get_stage(_stage_used)
+                        _tel_orch.log_call(
+                            stage=_stage_used,
+                            model=_stage_cfg_orch.model,
+                            backend=_stage_cfg_orch.backend,
+                            duration_ms=None,
+                            success=False,
+                            error=f"no tasks returned (empty #{_empty_task_rounds})",
+                            _ctx={},
+                        )
+                        if _impl_rounds == 0:
+                            # Nothing has been written yet — project is empty or very early.
+                            # Don't tell the model to call list_files again; that just wastes
+                            # another round. Force it to dispatch a concrete task immediately.
+                            _nudge_summary = (
+                                "You returned done=false but produced no tasks, and no files have been written yet. "
+                                "Do NOT call list_files, inspect_files, or any other tool. "
+                                "Output a JSON object RIGHT NOW with at least one concrete task in next_tasks. "
+                                "If the project is empty, your first task must be a scaffold task that creates the initial project structure."
+                            )
+                        else:
+                            _nudge_summary = (
+                                "You returned done=false but gave no next_tasks. "
+                                "Inspect any files you haven't reviewed yet, then output concrete implementation tasks."
+                            )
                         completed_tasks.append({
                             "id": f"_nudge_{round_idx}",
                             "title": "(no tasks produced)",
-                            "summary": "You returned done=false but gave no next_tasks. Call list_files/inspect_files now, then output concrete implementation tasks.",
+                            "summary": _nudge_summary,
                             "success": False,
                             "files_written": [],
                             "commands_run": [],
