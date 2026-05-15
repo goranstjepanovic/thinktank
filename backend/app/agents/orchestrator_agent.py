@@ -355,7 +355,10 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "- `memory_search(query)`: semantic search over stored file observations. Call this BEFORE "
         "dispatching a task for feature X to check whether any agent has already implemented it. "
         "Returns file paths and brief observations. Use it to avoid duplicate implementations.\n"
-        "Do NOT call `file_edit`, `read_file`, or `run_shell` — those are reserved for sub-agents.\n\n"
+        "Do NOT call `file_edit`, `read_file`, or `run_shell` — those are reserved for sub-agents.\n"
+        "If you need a shell command run (e.g. `poetry install`, `npm install`, `dotnet restore`), "
+        "dispatch a task with that command in the instruction — sub-agents have `run_shell`. "
+        "NEVER set `user_message` because a tool is unavailable; dispatch a task instead.\n\n"
         "## Deduplication — search memory before assigning\n\n"
         "Before dispatching a task that creates a new utility or module, call `memory_search('X')` "
         "where X is the feature or concept (e.g. 'authentication', 'API client', 'database connection'). "
@@ -1677,6 +1680,33 @@ class OrchestratorAgent:
             # Orchestrator needs blocking user input before it can continue
             if user_message:
                 content = str(user_message).strip()
+                # Intercept capability complaints — these are orchestrator bugs, not genuine questions.
+                # The model realised it lacks a tool and punted to the user instead of dispatching a task.
+                _CAPABILITY_PHRASES = (
+                    "not available in this environment",
+                    "run_shell is not available",
+                    "cannot run shell",
+                    "tool is not available",
+                    "don't have access to",
+                    "do not have access to",
+                    "unable to run",
+                    "need to handle",
+                    "manually",
+                )
+                if any(p in content.lower() for p in _CAPABILITY_PHRASES):
+                    logger.warning(
+                        "orchestrator: user_message looks like a capability complaint — nudging to dispatch a task instead: %r",
+                        content[:120],
+                    )
+                    working_messages.append(Message(
+                        role="user",
+                        content=(
+                            "You must not ask the user to run commands. "
+                            "Sub-agents have `run_shell` — dispatch a task with the shell command in its instruction. "
+                            "Issue a JSON response with next_tasks now."
+                        ),
+                    ))
+                    continue
                 await on_orchestrator_event("orchestrator_message", {"content": content})
                 await on_orchestrator_event("waiting", {})
                 try:
