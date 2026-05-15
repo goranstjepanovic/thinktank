@@ -32,10 +32,14 @@ class Settings(BaseSettings):
 
     # Image generation (ComfyUI — local, free)
     # Start ComfyUI first, then set these in .env.
-    # COMFYUI_MODEL: checkpoint filename as it appears in ComfyUI (e.g. "sd_xl_base_1.0.safetensors").
+    # COMFYUI_MODEL: checkpoint or UNET filename as it appears in ComfyUI.
+    # COMFYUI_CLIP / COMFYUI_VAE: required when using a UNET model — set to the
+    #   matching CLIP and VAE filenames (auto-pick of first available often mismatches).
     # Leave empty to auto-detect the first available model.
     comfyui_base_url: str = "http://localhost:8188"
     comfyui_model: str = ""
+    comfyui_clip: str = ""
+    comfyui_vae: str = ""
 
     # Pipeline
     max_concurrent_branches: int = 4

@@ -201,14 +201,17 @@ async def generate_image(
     is_unet = model_name in discovered["unet"] or model_name not in discovered["checkpoint"]
 
     if is_unet:
-        clip_name = (discovered["clip"] or [None])[0]
-        vae_name = (discovered["vae"] or [None])[0]
+        from app.config import settings as _settings
+        # Prefer explicitly configured CLIP/VAE over auto-detected first entry —
+        # CLIP/UNET dimensions must match (e.g. ACE 1.5 CLIP is 1024-dim; Lumina2 needs 2560-dim).
+        clip_name = _settings.comfyui_clip or (discovered["clip"] or [None])[0]
+        vae_name = _settings.comfyui_vae or (discovered["vae"] or [None])[0]
         if not clip_name or not vae_name:
             return ImageGenerationResult(
                 error=(
                     f"UNET model {model_name!r} requires separate CLIP and VAE models. "
                     f"Found CLIP: {clip_name!r}, VAE: {vae_name!r}. "
-                    "Download the required CLIP/VAE models into ComfyUI."
+                    "Set COMFYUI_CLIP and COMFYUI_VAE in .env to pin the correct models."
                 ),
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
