@@ -103,7 +103,6 @@ async def lifespan(app: FastAPI):
     from sqlalchemy import select, update
     from app.db.models import Phase3ActivityEvent, Phase3Session
     async with AsyncSessionLocal() as _db:
-        # Collect session IDs being reset before the update runs
         stale_r = await _db.execute(
             select(Phase3Session.id)
             .where(Phase3Session.status.in_(["PLANNING", "RUNNING", "WAITING"]))
@@ -116,22 +115,27 @@ async def lifespan(app: FastAPI):
             .values(status="FAILED")
         )
 
-        # For each reset session, cancel any tasks that were started or queued
-        # but never received a terminal event (sub_agent_complete / sub_agent_cancelled).
-        # Without this, the UI reconstructs those tasks as permanently "running".
+        # Cancel any tasks that were started or queued but never received a terminal
+        # event. Scan ALL non-complete sessions — not just those reset right now —
+        # so previously-stuck FAILED sessions also get cleaned up on restart.
+        all_sessions_r = await _db.execute(
+            select(Phase3Session.id).where(Phase3Session.status != "COMPLETE")
+        )
+        all_non_complete_ids = [row[0] for row in all_sessions_r.all()]
+
         orphaned: dict[tuple[str, str], str] = {}
-        if stale_ids:
+        if all_non_complete_ids:
             events_r = await _db.execute(
                 select(Phase3ActivityEvent.session_id, Phase3ActivityEvent.event_type, Phase3ActivityEvent.payload_json)
-                .where(Phase3ActivityEvent.session_id.in_(stale_ids))
+                .where(Phase3ActivityEvent.session_id.in_(all_non_complete_ids))
                 .where(Phase3ActivityEvent.event_type.in_([
                     "sub_agent_queued", "sub_agent_started", "sub_agent_fix_started",
                     "sub_agent_complete", "sub_agent_cancelled", "sub_agent_fix_complete",
                 ]))
             )
-            started: dict[tuple[str, str], str] = {}   # (session_id, task_id) → title
+            started: dict[tuple[str, str], str] = {}
             finished: set[tuple[str, str]] = set()
-            for session_id, event_type, payload_json in events_r.all():
+            for sid, event_type, payload_json in events_r.all():
                 try:
                     payload = _json.loads(payload_json)
                 except Exception:
@@ -139,26 +143,25 @@ async def lifespan(app: FastAPI):
                 task_id = payload.get("task_id", "")
                 if not task_id:
                     continue
-                key = (session_id, task_id)
+                key = (sid, task_id)
                 if event_type in ("sub_agent_complete", "sub_agent_cancelled", "sub_agent_fix_complete"):
                     finished.add(key)
                 else:
                     started.setdefault(key, payload.get("title", task_id))
 
-            orphaned.update({k: v for k, v in started.items() if k not in finished})
-            for (session_id, task_id), title in orphaned.items():
+            orphaned = {k: v for k, v in started.items() if k not in finished}
+            for (sid, task_id), title in orphaned.items():
                 _db.add(Phase3ActivityEvent(
-                    session_id=session_id,
+                    session_id=sid,
                     event_type="sub_agent_cancelled",
                     payload_json=_json.dumps({"task_id": task_id, "title": title}),
                 ))
 
         await _db.commit()
 
-    cancelled_count = len(orphaned) if stale_ids else 0
     logging.getLogger(__name__).info(
         "startup: reset %d stale session(s) to FAILED, cancelled %d orphaned task(s)",
-        len(stale_ids), cancelled_count,
+        len(stale_ids), len(orphaned),
     )
 
     # Load model registry
