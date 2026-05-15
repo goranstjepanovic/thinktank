@@ -678,8 +678,8 @@ def _parse_orchestrator_result(orch_result: dict) -> tuple[str | None, bool, lis
     user_message = orch_result.get("user_message")
     done = bool(orch_result.get("done", False))
 
-    # Accept both next_tasks (new) and next_task (legacy single-task format)
-    raw_tasks = orch_result.get("next_tasks")
+    # Accept next_tasks (canonical), tasks (model non-compliance alias), and next_task (legacy single)
+    raw_tasks = orch_result.get("next_tasks") or orch_result.get("tasks")
     if not raw_tasks and orch_result.get("next_task"):
         raw_tasks = [orch_result["next_task"]]
     next_tasks: list[dict] = [t for t in (raw_tasks or []) if isinstance(t, dict)]
