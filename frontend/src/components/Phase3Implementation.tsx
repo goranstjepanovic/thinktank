@@ -716,11 +716,26 @@ function HighlightedCode({ content, filename }: { content: string; filename: str
   const highlighted = lang && hljs.getLanguage(lang)
     ? hljs.highlight(content, { language: lang }).value
     : hljs.highlightAuto(content, Object.keys(hljs.listLanguages())).value;
+
+  const lines = content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
+  const lineCount = lines.length;
+  const gutterWidth = `${String(lineCount).length + 1}ch`;
+  const lineNums = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
+
   return (
-    <pre style={{ margin: 0, padding: 0, background: 'transparent', overflowX: 'auto' }}>
+    <pre style={{ margin: 0, padding: 0, background: 'transparent', overflowX: 'auto', display: 'flex' }}>
+      <div style={{
+        padding: '14px 10px 14px 14px',
+        fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace',
+        color: 'var(--text3)', userSelect: 'none', textAlign: 'right',
+        minWidth: gutterWidth, whiteSpace: 'pre', flexShrink: 0,
+        borderRight: '1px solid var(--border)',
+      }}>
+        {lineNums}
+      </div>
       <code
         className={`hljs language-${lang ?? 'plaintext'}`}
-        style={{ display: 'block', padding: '14px', fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace' }}
+        style={{ display: 'block', padding: '14px', fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace', flex: 1, minWidth: 0 }}
         dangerouslySetInnerHTML={{ __html: highlighted }}
       />
     </pre>
