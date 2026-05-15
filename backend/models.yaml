@@ -197,7 +197,7 @@ stages:
         model: "ducquoc/gemma4-fast-sonnet"
         description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
         timeout_seconds: 180
-        num_ctx: 8192
+        num_ctx: 16384
       - name: "standard"
         model: "sorc/qwen3.5-claude-4.6-opus:9b"
         description: "Most implementation tasks — multi-file modules, algorithms, cross-file wiring"

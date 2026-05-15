@@ -954,11 +954,12 @@ class InferenceClient:
                 if _ctx_used is None:
                     # Backend doesn't report tokens — estimate from char length
                     _ctx_used = sum(len(m.content or "") for m in working_messages) // 3
-                if _ctx_used >= int(stage_cfg.num_ctx * 0.75):
+                _effective_num_ctx = num_ctx_override if num_ctx_override is not None else stage_cfg.num_ctx
+                if _ctx_used >= int(_effective_num_ctx * 0.75):
                     logger.info(
                         "tools stage=%-20s context at %d/%d tokens (%.0f%%) — compressing%s",
-                        stage_key, _ctx_used, stage_cfg.num_ctx,
-                        _ctx_used / stage_cfg.num_ctx * 100,
+                        stage_key, _ctx_used, _effective_num_ctx,
+                        _ctx_used / _effective_num_ctx * 100,
                         f"  agent={agent_id}" if agent_id else "",
                     )
                     working_messages = await self._compress_context(
