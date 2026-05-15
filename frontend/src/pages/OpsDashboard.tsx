@@ -45,6 +45,13 @@ function fmtMs(ms: number | null | undefined): string {
   return `${ms}ms`;
 }
 
+function fmtTokens(n: number | null | undefined): string {
+  if (n == null || n === 0) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
 function fmtBucket(iso: string, periodHours: number): string {
   const d = new Date(iso);
   if (periodHours <= 24) {
@@ -221,6 +228,53 @@ function ModelDurationChart({ data }: { data: ModelStat[] }) {
           ))}
         </Bar>
       </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Stacked bar chart: tokens by model (prompt + completion)
+function ModelTokensChart({ data }: { data: ModelStat[] }) {
+  const top = data.filter(d => d.tokens_total > 0).slice(0, 12).map(d => ({
+    ...d,
+    label: truncate(d.model),
+  }));
+  if (top.length === 0) return <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>No token data recorded yet</div>;
+  const barH = Math.max(200, top.length * 32);
+  return (
+    <ResponsiveContainer width="100%" height={barH}>
+      <BarChart data={top} layout="vertical" style={CHART_STYLE} barCategoryGap="20%">
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+        <XAxis type="number" tick={AXIS_STYLE} tickFormatter={v => fmtTokens(v)} />
+        <YAxis type="category" dataKey="label" tick={AXIS_STYLE} width={130} />
+        <Tooltip
+          {...TOOLTIP_PROPS}
+          formatter={(v, name) => [fmtTokens(v as number), name]}
+        />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Bar dataKey="tokens_prompt" name="Prompt" stackId="a" fill="#60a5fa" />
+        <Bar dataKey="tokens_completion" name="Completion" stackId="a" fill="#34d399" radius={[0, 3, 3, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Tokens over time line chart
+function TokensTimelineChart({ data, periodHours }: { data: TimeBucket[]; periodHours: number }) {
+  const formatted = data.map(d => ({
+    ...d,
+    label: fmtBucket(d.bucket, periodHours),
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <LineChart data={formatted} style={CHART_STYLE}>
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+        <XAxis dataKey="label" tick={AXIS_STYLE} interval="preserveStartEnd" />
+        <YAxis tick={AXIS_STYLE} tickFormatter={v => fmtTokens(v)} allowDecimals={false} />
+        <Tooltip {...TOOLTIP_PROPS} formatter={(v, name) => [fmtTokens(v as number), name]} />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Line type="monotone" dataKey="tokens_prompt" name="Prompt" stroke="#60a5fa" dot={false} strokeWidth={2} />
+        <Line type="monotone" dataKey="tokens_completion" name="Completion" stroke="#34d399" dot={false} strokeWidth={2} />
+      </LineChart>
     </ResponsiveContainer>
   );
 }
@@ -500,6 +554,7 @@ export function OpsDashboard() {
 
   // Aggregate stats for cards
   const totalCalls = data?.total_calls ?? 0;
+  const totalTokens = data?.total_tokens ?? 0;
   const successRate = totalCalls > 0
     ? Math.round(data!.by_model.reduce((sum, m) => sum + m.success, 0) / totalCalls * 100)
     : 0;
@@ -585,6 +640,7 @@ export function OpsDashboard() {
         <StatCard label="Success Rate" value={totalCalls ? `${successRate}%` : '—'} color={successRate >= 90 ? 'var(--green)' : successRate >= 70 ? 'var(--yellow)' : 'var(--red)'} />
         <StatCard label="Avg Duration" value={fmtMs(avgDuration)} sub="weighted by calls" />
         <StatCard label="Fallback Rate" value={totalCalls ? `${fallbackRate}%` : '—'} color={fallbackRate > 10 ? 'var(--red)' : fallbackRate > 3 ? 'var(--yellow)' : 'var(--green)'} sub="calls served by a rescue model" />
+        <StatCard label="Total Tokens" value={fmtTokens(totalTokens)} sub={totalTokens ? `${fmtTokens(data?.total_tokens_prompt)} prompt · ${fmtTokens(data?.total_tokens_completion)} completion` : undefined} />
         <StatCard label="Backends" value={String(data?.by_backend.length ?? 0)} sub={data?.by_backend.map(b => b.backend).join(', ') || '—'} />
       </div>
 
@@ -606,6 +662,20 @@ export function OpsDashboard() {
           <ChartCard title="Model Avg Duration" minHeight={280}>
             <ModelDurationChart data={data.by_model} />
           </ChartCard>
+        </div>
+      )}
+
+      {/* Token charts */}
+      {data && data.by_model.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+          <ChartCard title="Tokens by Model" minHeight={280}>
+            <ModelTokensChart data={data.by_model} />
+          </ChartCard>
+          {data.over_time.some(b => b.tokens_total > 0) && (
+            <ChartCard title="Tokens Over Time" minHeight={280}>
+              <TokensTimelineChart data={data.over_time} periodHours={data.period_hours} />
+            </ChartCard>
+          )}
         </div>
       )}
 
@@ -651,8 +721,8 @@ export function OpsDashboard() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                    {['Model', 'Backend', 'Calls', 'Success', 'Failures', 'Recv as fallback', 'Rate', 'Avg', 'p95'].map(h => (
-                      <th key={h} title={h === 'Recv as fallback' ? 'Times this model was called because another model failed (not a failure of this model)' : h === 'Failures' ? 'Calls where this model itself failed' : undefined} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap', cursor: h === 'Recv as fallback' || h === 'Failures' ? 'help' : undefined }}>{h}</th>
+                    {['Model', 'Backend', 'Calls', 'Success', 'Failures', 'Recv as fallback', 'Rate', 'Avg', 'p95', 'Prompt tkns', 'Compl tkns'].map(h => (
+                      <th key={h} title={h === 'Recv as fallback' ? 'Times this model was called because another model failed (not a failure of this model)' : h === 'Failures' ? 'Calls where this model itself failed' : h === 'Prompt tkns' ? 'Total prompt tokens' : h === 'Compl tkns' ? 'Total completion tokens' : undefined} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap', cursor: ['Recv as fallback', 'Failures', 'Prompt tkns', 'Compl tkns'].includes(h) ? 'help' : undefined }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -670,6 +740,8 @@ export function OpsDashboard() {
                       </td>
                       <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(m.avg_duration_ms)}</td>
                       <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(m.p95_duration_ms)}</td>
+                      <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtTokens(m.tokens_prompt)}</td>
+                      <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtTokens(m.tokens_completion)}</td>
                     </tr>
                   ))}
                 </tbody>

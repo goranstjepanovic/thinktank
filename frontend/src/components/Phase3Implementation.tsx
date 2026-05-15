@@ -1176,6 +1176,13 @@ function fmtMs(ms: number | null | undefined): string {
   return `${ms}ms`;
 }
 
+function fmtTokens(n: number | null | undefined): string {
+  if (n == null || n === 0) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
 function SidebarLabel({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
@@ -1334,6 +1341,11 @@ function Phase3Sidebar({
                 const wavg = Math.round(all.reduce((s, m) => s + (m.avg_duration_ms ?? 0) * m.calls, 0) / all.reduce((s, m) => s + m.calls, 0));
                 return <span style={{ ...sidebarPill, color: 'var(--text2)' }}>{fmtMs(wavg)} avg</span>;
               })()}
+              {telemetry.total_tokens > 0 && (
+                <span style={{ ...sidebarPill, color: 'var(--text2)' }} title={`${fmtTokens(telemetry.total_tokens_prompt)} prompt / ${fmtTokens(telemetry.total_tokens_completion)} completion`}>
+                  {fmtTokens(telemetry.total_tokens)} tokens
+                </span>
+              )}
             </div>
             {/* All models */}
             {telemetry.by_model.length > 0 && (

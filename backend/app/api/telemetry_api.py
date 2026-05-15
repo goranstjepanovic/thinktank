@@ -120,7 +120,7 @@ async def get_summary(
 
     # -- aggregation buckets ------------------------------------------------
     def _new_agg():
-        return {"calls": 0, "success": 0, "durations": [], "fallbacks": 0}
+        return {"calls": 0, "success": 0, "durations": [], "fallbacks": 0, "tokens_prompt": 0, "tokens_completion": 0}
 
     model_agg: dict[str, dict] = defaultdict(_new_agg)
     model_backend: dict[str, str] = {}
@@ -167,10 +167,15 @@ async def get_summary(
         if pid:
             all_projects[pid] = pname
 
+        tp = rec.get("tokens_prompt") or 0
+        tcomp = rec.get("tokens_completion") or 0
+
         for agg, key in ((model_agg, m), (stage_agg, s), (backend_agg, b)):
             agg[key]["calls"] += 1
             agg[key]["success"] += int(ok)
             agg[key]["fallbacks"] += int(is_fb)
+            agg[key]["tokens_prompt"] += tp
+            agg[key]["tokens_completion"] += tcomp
             if dur is not None:
                 agg[key]["durations"].append(float(dur))
 
@@ -184,6 +189,8 @@ async def get_summary(
             project_agg[pid]["calls"] += 1
             project_agg[pid]["success"] += int(ok)
             project_agg[pid]["fallbacks"] += int(is_fb)
+            project_agg[pid]["tokens_prompt"] += tp
+            project_agg[pid]["tokens_completion"] += tcomp
             project_names[pid] = pname
 
         # type aggregation
@@ -228,22 +235,29 @@ async def get_summary(
         dur = rec.get("duration_ms")
         if dur is not None:
             bk["durations"].append(float(dur))
+        bk["tokens_prompt"] += rec.get("tokens_prompt") or 0
+        bk["tokens_completion"] += rec.get("tokens_completion") or 0
 
     num_buckets = max(1, int((_until - bucket_origin).total_seconds() / bkt_s) + 1)
     over_time = []
     for i in range(num_buckets):
-        bk = time_buckets.get(i, {"calls": 0, "success": 0, "durations": []})
+        bk = time_buckets.get(i, {"calls": 0, "success": 0, "durations": [], "tokens_prompt": 0, "tokens_completion": 0})
         durs = bk.get("durations", [])
         over_time.append({
             "bucket": (bucket_origin + timedelta(seconds=i * bkt_s)).isoformat(),
             "calls": bk["calls"],
             "success": bk["success"],
             "avg_duration_ms": round(statistics.mean(durs)) if durs else None,
+            "tokens_prompt": bk.get("tokens_prompt", 0),
+            "tokens_completion": bk.get("tokens_completion", 0),
+            "tokens_total": bk.get("tokens_prompt", 0) + bk.get("tokens_completion", 0),
         })
 
     # -- formatters ---------------------------------------------------------
     def _fmt(key: str, agg: dict, extra: dict | None = None) -> dict:
         c, s, durs, fb = agg["calls"], agg["success"], agg["durations"], agg["fallbacks"]
+        tp = agg.get("tokens_prompt", 0)
+        tcomp = agg.get("tokens_completion", 0)
         out = {
             "calls": c,
             "success": s,
@@ -251,6 +265,9 @@ async def get_summary(
             "success_rate": round(s / c, 3) if c else 0,
             "avg_duration_ms": round(statistics.mean(durs)) if durs else None,
             "p95_duration_ms": round(_percentile(durs, 95)) if durs else None,
+            "tokens_prompt": tp,
+            "tokens_completion": tcomp,
+            "tokens_total": tp + tcomp,
         }
         if extra:
             out.update(extra)
@@ -354,8 +371,14 @@ async def get_summary(
         key=lambda x: -x["count"],
     )
 
+    total_tokens_prompt = sum(r.get("tokens_prompt") or 0 for r in records)
+    total_tokens_completion = sum(r.get("tokens_completion") or 0 for r in records)
+
     return {
         "total_calls": len(records),
+        "total_tokens_prompt": total_tokens_prompt,
+        "total_tokens_completion": total_tokens_completion,
+        "total_tokens": total_tokens_prompt + total_tokens_completion,
         "period_hours": round(period_hours, 1),
         "by_model": by_model,
         "by_stage": by_stage,
