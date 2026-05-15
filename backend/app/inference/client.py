@@ -1469,6 +1469,22 @@ class InferenceClient:
                             _full = (_base / _rel).resolve()
                             if not str(_full).startswith(str(_base)):
                                 result_dict = {"error": "path outside project directory"}
+                            elif _rel in _written_files:
+                                # File was already written this session — skip re-read to prevent
+                                # the prune→re-read→prune loop; direct the model to memory instead.
+                                result_dict = {
+                                    "pruned": True,
+                                    "path": _rel,
+                                    "reason": (
+                                        f"You already wrote '{_rel}' in this session — re-reading it "
+                                        "wastes context. Use memory_search to recall its structure, "
+                                        "or proceed to your next file."
+                                    ),
+                                }
+                                logger.info(
+                                    "tools stage=%-20s read_file skipped (already written): %r%s",
+                                    stage_key, _rel, _agent_suffix,
+                                )
                             elif not _full.exists():
                                 result_dict = {"error": f"file not found: {_rel}"}
                             elif not _full.is_file():

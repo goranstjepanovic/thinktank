@@ -146,10 +146,11 @@ def prune_stale_reads(messages: list) -> list:
     if not stale:
         return messages
 
+    stale_paths = sorted({path for tool_name, path, result_idx in pairs if result_idx in stale})
     logger.info(
         "context_reducer: pruning %d stale read result(s) — paths: %s",
         len(stale),
-        ", ".join(sorted(written_paths)),
+        ", ".join(stale_paths),
     )
 
     # Pass 3: rebuild with stubs
