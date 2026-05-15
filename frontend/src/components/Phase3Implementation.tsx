@@ -69,7 +69,7 @@ function hljsLanguage(filename: string): string | undefined {
 // Activity log entry types
 // ---------------------------------------------------------------------------
 
-type SubAgentUpdate = { updateType: string; detail: string };
+type SubAgentUpdate = { updateType: string; detail: string; issues?: string[] };
 
 type ActivityEntry =
   | { kind: 'thinking'; id: number }
@@ -499,6 +499,26 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
               return (
                 <div key={i} style={{ padding: '4px 0', fontSize: 11, color: 'var(--text)', fontStyle: 'italic', lineHeight: 1.5, wordBreak: 'break-word' }}>
                   {u.detail}
+                </div>
+              );
+            }
+            if (u.updateType === 'verify') {
+              const hasIssues = u.issues && u.issues.length > 0;
+              return (
+                <div key={i} style={{ padding: '3px 0' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11 }}>
+                    <span style={{ color: hasIssues ? 'var(--yellow)' : 'var(--green)', flexShrink: 0 }}>⚑</span>
+                    <code style={{ color: hasIssues ? 'var(--yellow)' : 'var(--green)', fontFamily: 'monospace' }}>{u.detail}</code>
+                  </div>
+                  {hasIssues && (
+                    <div style={{ marginLeft: 18, marginTop: 2 }}>
+                      {u.issues!.map((issue, j) => (
+                        <div key={j} style={{ fontSize: 11, color: 'var(--yellow)', opacity: 0.85, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: '1px 0', borderLeft: '2px solid #4a3800', paddingLeft: 6, marginBottom: 2 }}>
+                          {issue}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -1803,7 +1823,7 @@ export function Phase3Implementation() {
           const detail = verified ? '✓ Verified — clean' : `⚠ ${issues.length} issue(s) found`;
           updateSubAgentBlock(taskId, e => ({
             ...e,
-            updates: [...e.updates, { updateType: 'verify', detail }],
+            updates: [...e.updates, { updateType: 'verify', detail, issues: issues.length ? issues : undefined }],
           }));
           break;
         }
