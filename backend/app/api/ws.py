@@ -22,7 +22,10 @@ async def idea_websocket(idea_id: str, websocket: WebSocket):
                 # No events for a while — send a lightweight ping so the connection
                 # stays alive through proxies and NAT devices.
                 await websocket.send_text('{"type":"keepalive"}')
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
+        # WebSocketDisconnect: clean client close.
+        # Exception: abrupt close (ConnectionClosedError 1012 service restart,
+        # browser refresh, proxy timeout, etc.) — log nothing, just clean up.
         pass
     finally:
         event_bus.unsubscribe(idea_id, queue)
