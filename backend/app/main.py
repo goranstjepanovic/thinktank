@@ -125,8 +125,8 @@ async def lifespan(app: FastAPI):
                 select(Phase3ActivityEvent.session_id, Phase3ActivityEvent.event_type, Phase3ActivityEvent.payload_json)
                 .where(Phase3ActivityEvent.session_id.in_(stale_ids))
                 .where(Phase3ActivityEvent.event_type.in_([
-                    "sub_agent_queued", "sub_agent_started",
-                    "sub_agent_complete", "sub_agent_cancelled",
+                    "sub_agent_queued", "sub_agent_started", "sub_agent_fix_started",
+                    "sub_agent_complete", "sub_agent_cancelled", "sub_agent_fix_complete",
                 ]))
             )
             started: dict[tuple[str, str], str] = {}   # (session_id, task_id) → title
@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
                 if not task_id:
                     continue
                 key = (session_id, task_id)
-                if event_type in ("sub_agent_complete", "sub_agent_cancelled"):
+                if event_type in ("sub_agent_complete", "sub_agent_cancelled", "sub_agent_fix_complete"):
                     finished.add(key)
                 else:
                     started.setdefault(key, payload.get("title", task_id))

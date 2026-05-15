@@ -407,6 +407,7 @@ const UPDATE_ICONS: Record<string, string> = {
   read_file: '📄',
   grep_files: '🔍',
   web_search: '🌐',
+  verify: '⚑',
 };
 
 function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, onStop }: {
@@ -1496,8 +1497,8 @@ export function Phase3Implementation() {
         const completedTaskIds = new Set<string>();
         const startedTaskIds = new Set<string>();
         for (const e of events) {
-          if (e.event_type === 'sub_agent_complete') completedTaskIds.add(e.payload.task_id as string);
-          if (e.event_type === 'sub_agent_started') startedTaskIds.add(e.payload.task_id as string);
+          if (e.event_type === 'sub_agent_complete' || e.event_type === 'sub_agent_fix_complete') completedTaskIds.add(e.payload.task_id as string);
+          if (e.event_type === 'sub_agent_started' || e.event_type === 'sub_agent_fix_started') startedTaskIds.add(e.payload.task_id as string);
         }
 
         // Build activity entries from persisted events
@@ -1520,10 +1521,14 @@ export function Phase3Implementation() {
             const taskId = e.payload.task_id as string;
             if (completedTaskIds.has(taskId)) return [];
             return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
-          } else if (e.event_type === 'sub_agent_complete') {
+          } else if (e.event_type === 'sub_agent_complete' || e.event_type === 'sub_agent_fix_complete') {
             const success = e.payload.success as boolean;
             const blocker = (e.payload.blocker as string) ?? null;
             return [{ kind: 'sub_agent_block', id: nextId(), taskId: e.payload.task_id as string, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${e.payload.task_id}`, status: success && !blocker ? 'done' : 'blocked', summary: e.payload.summary as string, filesWritten: (e.payload.files_written as string[]) ?? [], blocker, updates: [], ts: e.created_at }];
+          } else if (e.event_type === 'sub_agent_fix_started') {
+            const taskId = e.payload.task_id as string;
+            if (completedTaskIds.has(taskId)) return [];
+            return [{ kind: 'sub_agent_block', id: nextId(), taskId, agentId: e.payload.agent_id as string | undefined, title: (e.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [], ts: e.created_at }];
           } else {
             return [];
           }
@@ -1757,6 +1762,18 @@ export function Phase3Implementation() {
           updateSubAgentBlock(taskId, e => ({
             ...e,
             updates: [...e.updates, { updateType, detail }],
+          }));
+          break;
+        }
+
+        case 'phase3.sub_agent_verify_complete': {
+          const taskId = event.payload.task_id as string;
+          const verified = event.payload.verified as boolean;
+          const issues = (event.payload.issues as string[]) ?? [];
+          const detail = verified ? '✓ Verified — clean' : `⚠ ${issues.length} issue(s) found`;
+          updateSubAgentBlock(taskId, e => ({
+            ...e,
+            updates: [...e.updates, { updateType: 'verify', detail }],
           }));
           break;
         }

@@ -291,6 +291,38 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_complete", payload_json=json.dumps({"task_id": task_id, "title": title, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
                     await adb.commit()
 
+            elif event_type == "sub_agent_verify_complete":
+                task_id = str(data.get("task_id", ""))
+                verified = bool(data.get("verified", True))
+                issues: list = list(data.get("issues") or [])
+                detail = "✓ Verified — clean" if verified else f"⚠ {len(issues)} issue(s) found"
+                await event_bus.publish(ev.phase3_sub_agent_update(idea_id, session_id, task_id, "verify", detail))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_verify_complete", payload_json=json.dumps({"task_id": task_id, "verified": verified, "issues": issues})))
+                    await adb.commit()
+
+            elif event_type == "sub_agent_fix_started":
+                task_id = str(data.get("task_id", ""))
+                title = str(data.get("title", ""))
+                agent_id = str(data.get("agent_id", ""))
+                await event_bus.publish(ev.phase3_sub_agent_started(idea_id, session_id, task_id, title, agent_id))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_fix_started", payload_json=json.dumps({"task_id": task_id, "title": title, "agent_id": agent_id, "parent_task_id": str(data.get("parent_task_id", "")), "cycle": data.get("cycle", 1)})))
+                    await adb.commit()
+
+            elif event_type == "sub_agent_fix_complete":
+                task_id = str(data.get("task_id", ""))
+                title = str(data.get("title", ""))
+                summary = str(data.get("summary", ""))
+                files_written = list(data.get("files_written") or [])
+                commands_run = list(data.get("commands_run") or [])
+                success = bool(data.get("success", False))
+                blocker = data.get("blocker")
+                await event_bus.publish(ev.phase3_sub_agent_complete(idea_id, session_id, task_id, summary, files_written, success, blocker))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_fix_complete", payload_json=json.dumps({"task_id": task_id, "title": title, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
+                    await adb.commit()
+
         # ── Step 1: Generate PRD (skip on follow-up iterations) ──────────────
         prd_path = _Path(output_dir) / "docs" / "PRD.md"
         if not follow_up_message:

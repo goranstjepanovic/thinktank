@@ -2290,7 +2290,10 @@ class OrchestratorAgent:
                 "parent_task_id": task_id,
                 "cycle": cycle + 1,
                 "success": fix_result.get("success", False),
+                "summary": fix_result.get("summary", ""),
                 "files_written": fix_result.get("files_written", []),
+                "commands_run": fix_result.get("commands_run", []),
+                "blocker": fix_result.get("blocker"),
             })
             for f in fix_result.get("files_written") or []:
                 if f not in files_written:
