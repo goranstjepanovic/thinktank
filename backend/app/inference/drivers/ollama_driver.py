@@ -63,7 +63,6 @@ class OllamaDriver(InferenceBackend):
 
         message = data.get("message", {})
         content = message.get("content") or ""
-        usage = data.get("usage", {})
 
         # Parse tool_calls if the model chose to invoke a tool
         tool_calls: list[ToolCall] = []
@@ -83,8 +82,8 @@ class OllamaDriver(InferenceBackend):
         return InferenceResponse(
             content=content,
             model=data.get("model", request.model),
-            tokens_prompt=usage.get("prompt_tokens"),
-            tokens_completion=usage.get("completion_tokens"),
+            tokens_prompt=data.get("prompt_eval_count"),
+            tokens_completion=data.get("eval_count"),
             duration_ms=duration_ms,
             raw_response=data,
             tool_calls=tool_calls,
