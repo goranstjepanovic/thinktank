@@ -204,9 +204,9 @@ stages:
         timeout_seconds: 600
         num_ctx: 32768
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - model: "starcoder2:15b-instruct"
+      - model: "cogito:14b"
         timeout_seconds: 600
-        num_ctx: 16384
+        num_ctx: 32768
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 900
         num_ctx: 32768
