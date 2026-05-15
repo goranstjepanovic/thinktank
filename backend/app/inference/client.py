@@ -363,6 +363,97 @@ GENERATE_IMAGE_TOOL = ToolDefinition(
     },
 )
 
+GENERATE_AUDIO_MUSIC_TOOL = ToolDefinition(
+    name="generate_audio_music",
+    description=(
+        "Generate background music or an ambient soundtrack from a text description and save it "
+        "to the project directory as a FLAC audio file. Uses ACE-Step 1.5 via the local ComfyUI "
+        "service. Describe the style and mood with comma-separated tags. "
+        "output_path must be relative to the project root (e.g. 'assets/audio/theme.flac')."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "string",
+                "description": (
+                    "Comma-separated style/mood tags, e.g. "
+                    "'cinematic, orchestral, dramatic, low tempo' or "
+                    "'upbeat, electronic, game background music, looping'."
+                ),
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Relative path to save the audio file (e.g. 'assets/audio/theme.flac').",
+            },
+            "duration": {
+                "type": "number",
+                "description": "Length in seconds (default 30, max 300).",
+            },
+        },
+        "required": ["tags", "output_path"],
+    },
+)
+
+GENERATE_AUDIO_SFX_TOOL = ToolDefinition(
+    name="generate_audio_sfx",
+    description=(
+        "Generate a sound effect from a text description and save it to the project directory "
+        "as a FLAC audio file. Uses ACE-Step 1.5 via the local ComfyUI service. "
+        "Describe the sound with specific, concrete tags. "
+        "output_path must be relative to the project root (e.g. 'assets/audio/footsteps.flac')."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "string",
+                "description": (
+                    "Comma-separated descriptive tags for the sound effect, e.g. "
+                    "'footsteps on gravel, crunchy, rhythmic' or "
+                    "'sword clash, metallic, sharp impact, short'."
+                ),
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Relative path to save the audio file (e.g. 'assets/audio/sword_hit.flac').",
+            },
+            "duration": {
+                "type": "number",
+                "description": "Length in seconds (default 5, max 30 for SFX).",
+            },
+        },
+        "required": ["tags", "output_path"],
+    },
+)
+
+GENERATE_AUDIO_SPEECH_TOOL = ToolDefinition(
+    name="generate_audio_speech",
+    description=(
+        "Generate spoken dialogue or narration from text and save it to the project directory. "
+        "Requires a TTS backend (Kokoro) to be configured. "
+        "output_path must be relative to the project root (e.g. 'assets/audio/narrator.flac')."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "The text to speak aloud.",
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Relative path to save the audio file (e.g. 'assets/audio/intro_speech.flac').",
+            },
+            "voice": {
+                "type": "string",
+                "description": "Voice style (e.g. 'af_heart', 'am_echo'). Defaults to first available.",
+            },
+        },
+        "required": ["text", "output_path"],
+    },
+)
+
 INSPECT_FILES_TOOL = ToolDefinition(
     name="inspect_files",
     description=(
@@ -1531,6 +1622,60 @@ class InferenceClient:
                                 )
                                 if on_tool_result:
                                     await on_tool_result("generate_image", result_dict)
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name in ("generate_audio_music", "generate_audio_sfx"):
+                        if not allowed_file_dir or explore_only:
+                            result_dict = {"success": False, "error": f"{tc.name} not available in this context"}
+                        elif not settings.comfyui_base_url:
+                            result_dict = {"success": False, "error": "ComfyUI is not configured (set COMFYUI_BASE_URL in .env)"}
+                        else:
+                            from app.tools.audio_generator import generate_audio as _generate_audio
+                            _out_path = (tc.arguments.get("output_path") or tc.arguments.get("path") or "").strip()
+                            _tags = (tc.arguments.get("tags") or tc.arguments.get("prompt") or "").strip()
+                            _default_dur = 5.0 if tc.name == "generate_audio_sfx" else 30.0
+                            _duration = float(tc.arguments.get("duration") or _default_dur)
+                            logger.info(
+                                "tools stage=%-20s %s path=%r tags=%r duration=%.1fs",
+                                stage_key, tc.name, _out_path, _tags[:80], _duration,
+                            )
+                            if not _out_path or not _tags:
+                                result_dict = {"success": False, "error": "Missing required parameters: tags and output_path"}
+                            else:
+                                _audio_result = await _generate_audio(
+                                    tags=_tags,
+                                    output_path=_out_path,
+                                    allowed_base_dir=allowed_file_dir,
+                                    base_url=settings.comfyui_base_url,
+                                    duration=_duration,
+                                )
+                                result_dict = {
+                                    "success": _audio_result.error is None,
+                                    "path": _audio_result.path,
+                                    "backend": _audio_result.backend,
+                                    "duration_seconds": _audio_result.duration_seconds,
+                                    "duration_ms": _audio_result.duration_ms,
+                                }
+                                if _audio_result.error:
+                                    result_dict["error"] = _audio_result.error
+                                logger.info(
+                                    "tools stage=%-20s %s saved=%r ok=%s duration_ms=%d",
+                                    stage_key, tc.name, _audio_result.path, _audio_result.error is None, _audio_result.duration_ms,
+                                )
+                                if on_tool_result:
+                                    await on_tool_result(tc.name, result_dict)
+                        working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+
+                    elif tc.name == "generate_audio_speech":
+                        result_dict = {
+                            "success": False,
+                            "error": (
+                                "Speech generation (TTS) is not yet configured. "
+                                "A Kokoro TTS backend needs to be set up first. "
+                                "Use generate_audio_music or generate_audio_sfx for now, "
+                                "or create a placeholder file with file_edit."
+                            ),
+                        }
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif custom_tool_handlers and tc.name in custom_tool_handlers:

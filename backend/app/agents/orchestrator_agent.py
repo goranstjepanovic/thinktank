@@ -1107,13 +1107,16 @@ def _orchestrator_user_prompt(
 
 
 def _sub_agent_extra_tools() -> list:
-    """Return the extra tools list for sub-agents. generate_image is included only when ComfyUI is configured."""
+    """Return the extra tools list for sub-agents. Media tools are included only when ComfyUI is configured."""
     from app.config import settings
-    from app.inference.client import READ_PRD_TOOL, GENERATE_IMAGE_TOOL
+    from app.inference.client import (
+        READ_PRD_TOOL, GENERATE_IMAGE_TOOL,
+        GENERATE_AUDIO_MUSIC_TOOL, GENERATE_AUDIO_SFX_TOOL, GENERATE_AUDIO_SPEECH_TOOL,
+    )
     from app.memory import MEMORY_STORE_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL
     tools = [READ_PRD_TOOL, MEMORY_STORE_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL]
     if settings.comfyui_base_url:
-        tools.append(GENERATE_IMAGE_TOOL)
+        tools.extend([GENERATE_IMAGE_TOOL, GENERATE_AUDIO_MUSIC_TOOL, GENERATE_AUDIO_SFX_TOOL, GENERATE_AUDIO_SPEECH_TOOL])
     return tools
 
 
