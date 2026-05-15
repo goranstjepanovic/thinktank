@@ -507,13 +507,13 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
               return (
                 <div key={i} style={{ padding: '3px 0' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11 }}>
-                    <span style={{ color: hasIssues ? 'var(--yellow)' : 'var(--green)', flexShrink: 0 }}>⚑</span>
-                    <code style={{ color: hasIssues ? 'var(--yellow)' : 'var(--green)', fontFamily: 'monospace' }}>{u.detail}</code>
+                    <span style={{ color: hasIssues ? 'var(--red)' : 'var(--green)', flexShrink: 0 }}>⚑</span>
+                    <code style={{ color: hasIssues ? 'var(--red)' : 'var(--green)', fontFamily: 'monospace' }}>{u.detail}</code>
                   </div>
                   {hasIssues && (
                     <div style={{ marginLeft: 18, marginTop: 2 }}>
                       {u.issues!.map((issue, j) => (
-                        <div key={j} style={{ fontSize: 11, color: 'var(--yellow)', opacity: 0.85, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: '1px 0', borderLeft: '2px solid #4a3800', paddingLeft: 6, marginBottom: 2 }}>
+                        <div key={j} style={{ fontSize: 11, color: 'var(--red)', opacity: 0.85, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: '1px 0', borderLeft: '2px solid var(--red)', paddingLeft: 6, marginBottom: 2 }}>
                           {issue}
                         </div>
                       ))}
