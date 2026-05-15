@@ -857,6 +857,7 @@ class InferenceClient:
         _read_nudge_sent: bool = False
         _written_files: set[str] = set()       # paths successfully written this session
         _path_write_counts: dict[str, int] = {}  # per-path write count for loop detection
+        _memory_list_used: bool = False  # memory_list is one-shot — remove after first call
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             if round_num > 0:
@@ -1688,6 +1689,11 @@ class InferenceClient:
                         if on_tool_result:
                             await on_tool_result(tc.name, {"tool": tc.name, **result_dict})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+                        # memory_list is one-shot: drop it after the first call so the
+                        # model cannot loop on it after context compression resets state.
+                        if tc.name == "memory_list" and not _memory_list_used:
+                            _memory_list_used = True
+                            available_tools = [t for t in available_tools if t.name != "memory_list"]
 
                     else:
                         logger.warning("tools stage=%-20s unknown tool call: %s", stage_key, tc.name)
