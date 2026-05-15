@@ -22,6 +22,7 @@ The module-level `background_process_manager` singleton owns all background proc
 """
 
 import asyncio
+import os
 import platform
 import re
 import shutil
@@ -111,6 +112,7 @@ class BackgroundProcessManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
+                env=_clean_env(),
             )
         except Exception as exc:
             return ("", 0, f"Failed to launch: {exc}")
@@ -399,6 +401,30 @@ def _blocked_command_error(command: str, working_dir: str) -> str | None:
     return None
 
 
+def _clean_env() -> dict:
+    """Return os.environ with the ThinkTank venv stripped out.
+
+    When the user runs `npm run dev` with the venv activated, uvicorn inherits
+    VIRTUAL_ENV and the venv's Scripts/ dir in PATH.  Sub-agents that run
+    `pip install` in a generated project directory would then install packages
+    into the ThinkTank venv rather than the project's own venv.  Strip those
+    entries so spawned processes start with a clean system Python.
+    """
+    env = os.environ.copy()
+    venv_dir = env.pop("VIRTUAL_ENV", None)
+    env.pop("VIRTUAL_ENV_PROMPT", None)
+    if venv_dir:
+        scripts = os.path.join(venv_dir, "Scripts")
+        bin_dir = os.path.join(venv_dir, "bin")
+        path_parts = env.get("PATH", "").split(os.pathsep)
+        path_parts = [p for p in path_parts if not (
+            p.lower().startswith(scripts.lower()) or
+            p.lower().startswith(bin_dir.lower())
+        )]
+        env["PATH"] = os.pathsep.join(path_parts)
+    return env
+
+
 def _shell_args(command: str) -> list[str]:
     """Build the argv list to run `command` in the available shell."""
     if sys.platform == "win32":
@@ -438,6 +464,7 @@ async def run_shell_command(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
+            env=_clean_env(),
         )
 
         stdout_chunks: list[bytes] = []
