@@ -1319,6 +1319,7 @@ def _sub_agent_user_prompt(
     source_root: str | None = None,
     task_type: str = "implement",
     interface_summary: str | None = None,
+    memory_context: str | None = None,
 ) -> str:
     prior_block = ""
     if prior_failures:
@@ -1362,6 +1363,14 @@ def _sub_agent_user_prompt(
             "These modules already exist. Before creating any new file, search memory for its topic. "
             "If memory or the map above shows a module that covers what you need, IMPORT from it "
             "instead of recreating the same logic. Writing a duplicate implementation is a hard failure."
+        )
+    memory_block = ""
+    if memory_context and task_type != "scaffold":
+        memory_block = (
+            f"\n\n## Prior agent observations\n\n"
+            f"These files have already been analysed by other agents on this project. "
+            f"Use them to orient yourself — call `read_file` only if you need the actual code.\n\n"
+            f"{memory_context}"
         )
     if task_type == "inspect":
         closing = (
@@ -1412,6 +1421,7 @@ def _sub_agent_user_prompt(
         f"OUTPUT DIRECTORY: {output_dir}\n"
         f"{prd_line}"
         f"{ownership_block}"
+        f"{memory_block}"
         f"\n\n## Your task\n\n{task_instruction}"
         f"{structure_hint}"
         f"{prior_block}\n\n"
@@ -1447,6 +1457,8 @@ class OrchestratorAgent:
         on_orchestrator_event: OnOrchestratorEvent,
         user_message_queue: "asyncio.Queue[str]",
         follow_up_message: str | None = None,
+        register_sub_agent_task: "Callable[[str, asyncio.Task], None] | None" = None,
+        is_sub_agent_user_cancelled: "Callable[[str], bool] | None" = None,
     ) -> str:
         from app import telemetry as _telemetry
         _telemetry.set_project(idea.id, idea.name)
@@ -1797,6 +1809,8 @@ class OrchestratorAgent:
                 source_root=_structure["source_root"],
                 prd_content=prd_content,
                 interface_summary=_interface_summary,
+                register_task=register_sub_agent_task,
+                is_user_cancelled=is_sub_agent_user_cancelled,
             )
 
             for t, sub_result in zip(valid_tasks, batch_results):
@@ -1845,6 +1859,8 @@ class OrchestratorAgent:
         source_root: str | None = None,
         prd_content: str | None = None,
         interface_summary: str | None = None,
+        register_task: "Callable[[str, asyncio.Task], None] | None" = None,
+        is_user_cancelled: "Callable[[str], bool] | None" = None,
     ) -> list[dict]:
         """Run a batch of tasks concurrently. Each task gets its own DB session."""
 
@@ -1894,6 +1910,22 @@ class OrchestratorAgent:
                 })
                 return result
             except asyncio.CancelledError:
+                if is_user_cancelled and is_user_cancelled(task_id):
+                    # Per-task cancel — emit cancelled event and return gracefully
+                    # so the orchestrator continues with remaining tasks.
+                    await on_orchestrator_event("sub_agent_cancelled", {
+                        "task_id": task_id,
+                        "title": task_title,
+                        "agent_id": agent_id,
+                    })
+                    return {
+                        "summary": "Cancelled by user",
+                        "files_written": [],
+                        "commands_run": [],
+                        "success": False,
+                        "blocker": "Cancelled by user",
+                    }
+                # Full session cancel — notify and re-raise so the session stops.
                 await on_orchestrator_event("sub_agent_complete", {
                     "task_id": task_id,
                     "title": task_title,
@@ -1906,7 +1938,10 @@ class OrchestratorAgent:
                 raise
 
         if len(tasks) == 1:
-            return [await _run_one(tasks[0])]
+            at = asyncio.create_task(_run_one(tasks[0]))
+            if register_task:
+                register_task(tasks[0]["_id"], at)
+            return [await at]
 
         limit = self._client._registry.resources.max_parallel_sub_agents
         semaphore = asyncio.Semaphore(max(1, limit))
@@ -1916,7 +1951,13 @@ class OrchestratorAgent:
             async with semaphore:
                 return await _run_one(t)
 
-        results = await asyncio.gather(*[_run_one_limited(t) for t in tasks], return_exceptions=True)
+        asyncio_tasks = []
+        for t in tasks:
+            at = asyncio.create_task(_run_one_limited(t))
+            if register_task:
+                register_task(t["_id"], at)
+            asyncio_tasks.append(at)
+        results = await asyncio.gather(*asyncio_tasks, return_exceptions=True)
         out: list[dict] = []
         for t, r in zip(tasks, results):
             if isinstance(r, BaseException):
@@ -2343,6 +2384,18 @@ class OrchestratorAgent:
         from app import telemetry as _telemetry
         from app.tools.shell_runner import background_process_manager as _bg_procs
 
+        # Pre-fetch relevant memory observations once — injected into every attempt's
+        # prompt so agents don't need to call memory_search themselves.
+        _memory_context: str | None = None
+        if task_type != "scaffold":
+            import app.memory as _mem
+            _mem_results = await _mem.search(str(idea.id), task_instruction, top_k=5)
+            if _mem_results:
+                _memory_context = "\n".join(
+                    f"{r['file_path']} — {r['observation'].strip()}"
+                    for r in _mem_results
+                )
+
         try:
           for attempt, model_override in enumerate(models_to_try):
             _files_edited.clear()
@@ -2371,6 +2424,7 @@ class OrchestratorAgent:
                 source_root=source_root,
                 task_type=task_type,
                 interface_summary=interface_summary,
+                memory_context=_memory_context,
             )
 
             _attempt_start = _time.monotonic()

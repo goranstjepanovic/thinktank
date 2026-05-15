@@ -37,6 +37,12 @@ _session_user_queues: dict[str, "asyncio.Queue[str]"] = {}
 # Tracked asyncio Tasks for multi-agent sessions (enables task.cancel())
 _session_tasks: dict[str, "asyncio.Task"] = {}
 
+# Per-session sub-agent task registry: session_id → task_id → asyncio.Task
+_sub_agent_tasks: dict[str, dict[str, "asyncio.Task"]] = {}
+
+# Task IDs that were cancelled individually by the user (not a full session cancel)
+_user_cancelled_task_ids: dict[str, set[str]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Pydantic output schema
@@ -264,6 +270,14 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 attempt = int(data.get("attempt", 0))
                 await event_bus.publish(ev.phase3_sub_agent_model_fallback(idea_id, session_id, task_id, model, attempt))
 
+            elif event_type == "sub_agent_cancelled":
+                task_id = str(data.get("task_id", ""))
+                title = str(data.get("title", ""))
+                await event_bus.publish(ev.phase3_sub_agent_cancelled(idea_id, session_id, task_id, title))
+                async with AsyncSessionLocal() as adb:
+                    adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_cancelled", payload_json=json.dumps({"task_id": task_id, "title": title})))
+                    await adb.commit()
+
             elif event_type == "sub_agent_complete":
                 task_id = str(data.get("task_id", ""))
                 title = str(data.get("title", ""))
@@ -295,12 +309,22 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
         user_queue: asyncio.Queue[str] = asyncio.Queue()
         _session_user_queues[session_id] = user_queue
 
+        _sub_agent_tasks[session_id] = {}
+
+        def _register_sub_agent_task(task_id: str, asyncio_task: "asyncio.Task") -> None:
+            _sub_agent_tasks.setdefault(session_id, {})[task_id] = asyncio_task
+
+        def _is_user_cancelled_task(task_id: str) -> bool:
+            return task_id in (_user_cancelled_task_ids.get(session_id) or set())
+
         orch_agent = OrchestratorAgent(client)
         try:
             summary = await orch_agent.run(
                 db, session, idea, branch,
                 prd_content, on_tool_result, on_orchestrator_event, user_queue,
                 follow_up_message=follow_up_message,
+                register_sub_agent_task=_register_sub_agent_task,
+                is_sub_agent_user_cancelled=_is_user_cancelled_task,
             )
         except asyncio.CancelledError:
             logger.info("multi_agent: session %s cancelled by user", session_id[:8])
@@ -324,6 +348,8 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
         finally:
             _session_user_queues.pop(session_id, None)
             _session_tasks.pop(session_id, None)
+            _sub_agent_tasks.pop(session_id, None)
+            _user_cancelled_task_ids.pop(session_id, None)
 
         async with AsyncSessionLocal() as adb:
             s = await adb.get(Phase3Session, session_id)
@@ -880,6 +906,26 @@ async def cancel_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
 
     await event_bus.publish(ev.phase3_error(idea_id, session.id, "Cancelled by user"))
     return {"cancelled": True}
+
+
+@router.post("/{idea_id}/phase3/tasks/{task_id}/cancel", status_code=200)
+async def cancel_phase3_task(idea_id: str, task_id: str, db: AsyncSession = Depends(get_session)):
+    """
+    Cancel a single running sub-agent task without stopping the entire session.
+    The orchestrator catches the CancelledError, marks the task as cancelled, and continues.
+    """
+    session = await _get_phase3_or_404(idea_id, db)
+    if session.status != "RUNNING":
+        return {"cancelled": False}
+
+    sid = session.id
+    _user_cancelled_task_ids.setdefault(sid, set()).add(task_id)
+
+    asyncio_task = (_sub_agent_tasks.get(sid) or {}).get(task_id)
+    if asyncio_task and not asyncio_task.done():
+        asyncio_task.cancel()
+        return {"cancelled": True}
+    return {"cancelled": False}
 
 
 # ---------------------------------------------------------------------------

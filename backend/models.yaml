@@ -197,12 +197,12 @@ stages:
         model: "ducquoc/gemma4-fast-sonnet"
         description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
       - name: "standard"
-        model: "qwen2.5-coder:7b"
+        model: "sorc/qwen3.5-claude-4.6-opus:9b"
         description: "Most implementation tasks — multi-file modules, algorithms, cross-file wiring"
     fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
-      - "deepseek-coder:6.7b"
-      - "AliBilge/Huihui-Devstral-Small-2-24B-Instruct-2512-abliterated:q3_k_l"
-      - "qwen3-coder:30b"
+      - "ALIENTELLIGENCE/deepseekcoder16kcontextv2:latest"
+      - "Omoeba/gpt-oss-coder:20b"
+      - "qooba/qwen3-coder-30b-a3b-instruct:q3_k_m"
     backend: "ollama"
     temperature: 0.1    # code correctness > creativity
     max_tokens: null

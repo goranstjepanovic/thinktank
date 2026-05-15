@@ -87,7 +87,7 @@ type ActivityEntry =
   | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
   | { kind: 'orchestrator_thinking'; id: number }
   | { kind: 'orchestrator_message'; id: number; content: string }
-  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] }
+  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] }
   | { kind: 'plan_warnings'; id: number; warnings: string[] }
   | { kind: 'syntax_check'; id: number; path: string; passed: boolean; error: string; retrying: boolean };
 
@@ -410,7 +410,7 @@ const UPDATE_ICONS: Record<string, string> = {
 };
 
 function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, onStop }: {
-  taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked';
+  taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled';
   summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
   onStop?: () => void;
 }) {
@@ -418,8 +418,8 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
   const isRunning = status === 'running';
   const isQueued = status === 'queued';
 
-  const statusColor = status === 'done' ? 'var(--green)' : status === 'blocked' ? 'var(--yellow)' : 'var(--text2)';
-  const statusIcon = status === 'done' ? '✓' : status === 'blocked' ? '⚠' : isQueued ? '⏳' : null;
+  const statusColor = status === 'done' ? 'var(--green)' : status === 'blocked' ? 'var(--yellow)' : status === 'cancelled' ? 'var(--text2)' : 'var(--text2)';
+  const statusIcon = status === 'done' ? '✓' : status === 'blocked' ? '⚠' : status === 'cancelled' ? '⊘' : isQueued ? '⏳' : null;
 
   return (
     <div style={{
@@ -522,7 +522,7 @@ function CompletedGroup({ tasks, allSucceeded, allTotal, onStop }: {
   tasks: SubAgentBlockEntry[];
   allSucceeded: number;
   allTotal: number;
-  onStop?: () => void;
+  onStop?: (taskId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -555,7 +555,7 @@ function CompletedGroup({ tasks, allSucceeded, allTotal, onStop }: {
           filesWritten={t.filesWritten}
           blocker={t.blocker}
           updates={t.updates}
-          onStop={t.status === 'running' ? onStop : undefined}
+          onStop={t.status === 'running' && onStop ? () => onStop(t.taskId) : undefined}
         />
       ))}
     </div>
@@ -1778,6 +1778,17 @@ export function Phase3Implementation() {
           break;
         }
 
+        case 'phase3.sub_agent_cancelled': {
+          const taskId = event.payload.task_id as string;
+          const title = (event.payload.title as string) || `Task ${taskId}`;
+          upsertSubAgentBlock(
+            taskId,
+            e => ({ ...e, status: 'cancelled', summary: 'Cancelled by user', blocker: null }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: undefined, title, status: 'cancelled', summary: 'Cancelled by user', filesWritten: [], blocker: null, updates: [] }),
+          );
+          break;
+        }
+
         case 'phase3.plan_warnings':
           addEntry({ kind: 'plan_warnings', id: nextId(), warnings: (event.payload.warnings as string[]) || [] });
           break;
@@ -1838,6 +1849,15 @@ export function Phase3Implementation() {
       setError(`Failed to cancel: ${(e as Error).message}`);
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const doStopTask = async (taskId: string) => {
+    if (!id) return;
+    try {
+      await api.cancelPhase3Task(id, taskId);
+    } catch {
+      // best-effort — task may have already finished
     }
   };
 
@@ -2249,7 +2269,7 @@ export function Phase3Implementation() {
                           tasks={olderCompleted}
                           allSucceeded={succeededTotal}
                           allTotal={completedTasks.length}
-                          onStop={doCancel}
+                          onStop={doStopTask}
                         />
                       )}
                       {recentCompleted.map(t => (
@@ -2276,7 +2296,7 @@ export function Phase3Implementation() {
                           filesWritten={t.filesWritten}
                           blocker={t.blocker}
                           updates={t.updates}
-                          onStop={doCancel}
+                          onStop={() => doStopTask(t.taskId)}
                         />
                       ))}
                       {queuedTasks.length > 0 && (

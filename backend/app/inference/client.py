@@ -797,9 +797,21 @@ class InferenceClient:
                     stage_key=stage_key,
                 )
                 # If this is the first round (no tool results appended yet) the model
-                # likely doesn't support tool-calling.  Fall back to a plain call so
-                # the pipeline keeps running without script execution.
+                # likely doesn't support tool-calling.  If the backend explicitly says
+                # so (Ollama 400 "does not support tools"), raise immediately so the
+                # sub-agent fallback chain can skip to the next model rather than
+                # wasting a plain-text call that will only fabricate or produce nothing.
+                # For any other error, preserve the original plain-call fallback so
+                # non-sub-agent stages can still recover gracefully.
                 if round_num == 0:
+                    if "does not support tools" in error_str.lower():
+                        logger.warning(
+                            "tools stage=%-20s model=%s explicitly rejects tools — skipping to next fallback",
+                            stage_key, effective_model,
+                        )
+                        raise InferenceClientError(
+                            f"Backend '{stage_cfg.backend}' failed for stage '{stage_key}': {e}"
+                        ) from e
                     logger.warning(
                         "tools stage=%-20s rejected by backend (%s) — falling back to plain call",
                         stage_key, e,
