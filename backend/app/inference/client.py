@@ -856,6 +856,7 @@ class InferenceClient:
         _reads_since_write: int = 0   # exploration calls without a file write
         _read_nudge_sent: bool = False
         _written_files: set[str] = set()       # paths successfully written this session
+        _read_files: set[str] = set()          # paths read via read_file this session
         _path_write_counts: dict[str, int] = {}  # per-path write count for loop detection
         _memory_list_used: bool = False  # memory_list is one-shot — remove after first call
         while max_tool_rounds is None or round_num <= max_tool_rounds:
@@ -1219,6 +1220,31 @@ class InferenceClient:
                                 allowed_file_dir,
                                 tc.arguments.get("path", ""),
                             )
+                            # Guard: if write_file targets a pre-existing file the agent hasn't
+                            # read yet, block the write and require an explicit read first.
+                            # This prevents sub-agents from blindly overwriting another agent's work.
+                            _is_full_overwrite = tc.arguments.get("operation") == "write_file"
+                            _is_preexisting = (
+                                display_path not in _written_files
+                                and display_path not in _read_files
+                                and _pathlib.Path(allowed_file_dir, display_path).exists()
+                            )
+                            if _is_full_overwrite and _is_preexisting:
+                                result_dict = {
+                                    "success": False,
+                                    "error": (
+                                        f"'{display_path}' already exists. "
+                                        "Read it first with read_file so you understand what is already implemented, "
+                                        "then either edit it with replace_text/append_text or call write_file again "
+                                        "once you have confirmed the existing content."
+                                    ),
+                                }
+                                logger.info(
+                                    "tools stage=%-20s file_edit blocked blind overwrite of pre-existing file: %r%s",
+                                    stage_key, display_path, _agent_suffix,
+                                )
+                                working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
+                                continue
                             edit_result = await edit_file(
                                 operation=tc.arguments.get("operation", ""),
                                 path=display_path,
@@ -1518,6 +1544,8 @@ class InferenceClient:
                             if "start_line" in result_dict or "end_line" in result_dict:
                                 _range_str = f" lines={result_dict.get('start_line', 0)}-{result_dict.get('end_line', '?')}/{result_dict.get('total_lines', '?')}"
                             logger.info("tools stage=%-20s read_file path=%r%s%s", stage_key, _rel, _range_str, _agent_suffix)
+                            if "content" in result_dict:
+                                _read_files.add(_rel)
                             if on_tool_result:
                                 await on_tool_result("read_file", {"path": _rel})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
