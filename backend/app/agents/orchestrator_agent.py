@@ -728,7 +728,7 @@ def _detect_build_state(completed_tasks: list[dict], output_dir: str | None = No
 
     # Also check disk if output_dir provided — more reliable once files are written
     detected_systems: list[str] = []
-    if output_dir and Path(output_dir).exists():
+    if output_dir and Path(output_dir).exists() and completed_tasks:
         for d, cmd in _detect_build_commands(Path(output_dir)):
             try:
                 label = d.relative_to(Path(output_dir)).as_posix() or "."
@@ -1796,6 +1796,17 @@ class OrchestratorAgent:
         _interface_summary: str | None = None  # updated after every batch
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
+
+        # Delete stale plan file from any previous run — plan tools are suppressed
+        # during Milestone 0 so a leftover plan cannot confuse the orchestrator.
+        if output_dir:
+            _stale_plan = Path(output_dir) / ".think-plan.json"
+            if _stale_plan.exists():
+                try:
+                    _stale_plan.unlink()
+                    logger.info("orchestrator: deleted stale plan file from previous run")
+                except Exception as _e:
+                    logger.warning("orchestrator: could not delete stale plan file: %s", _e)
         _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
         _verification_attempts = 0    # counts how many verification rounds have run
         _empty_task_rounds = 0        # consecutive rounds with done=false but no tasks produced
@@ -1938,6 +1949,24 @@ class OrchestratorAgent:
 
             try:
                 from app.memory import MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL
+                # During Milestone 0 (no completed tasks) suppress plan tools and
+                # run_build — both cause the model to spin planning/checking before
+                # there is any scaffold to build or plan against.
+                _is_milestone_0 = not completed_tasks
+                _extra_tools = [INSPECT_FILES_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL]
+                _extra_handlers: dict = {
+                    "inspect_files": _handle_inspect_files,
+                    "scaffold": _handle_scaffold_misuse,
+                    **_memory_handlers(idea.id),
+                }
+                if not _is_milestone_0:
+                    _extra_tools += [
+                        _RUN_BUILD_TOOL,
+                        _PLAN_LIST_TOOL, _PLAN_ADD_TOOL, _PLAN_UPDATE_TOOL,
+                        _PLAN_REMOVE_TOOL, _PLAN_NEXT_TOOL,
+                    ]
+                    _extra_handlers["run_build"] = _handle_run_build
+                    _extra_handlers.update(_plan_handlers(output_dir))
                 orch_result = await self._client.call_with_tools(
                     stage_key="phase3_verification" if _verification_pending else "phase3_orchestrator",
                     messages=orch_messages,
@@ -1953,19 +1982,8 @@ class OrchestratorAgent:
                     return_json=True,
                     call_index=0,
                     on_tool_result=_orch_tool_cb,
-                    extra_tools=[
-                        INSPECT_FILES_TOOL, _RUN_BUILD_TOOL,
-                        MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL,
-                        _PLAN_LIST_TOOL, _PLAN_ADD_TOOL, _PLAN_UPDATE_TOOL,
-                        _PLAN_REMOVE_TOOL, _PLAN_NEXT_TOOL,
-                    ],
-                    custom_tool_handlers={
-                        "inspect_files": _handle_inspect_files,
-                        "run_build": _handle_run_build,
-                        "scaffold": _handle_scaffold_misuse,
-                        **_memory_handlers(idea.id),
-                        **_plan_handlers(output_dir),
-                    },
+                    extra_tools=_extra_tools,
+                    custom_tool_handlers=_extra_handlers,
                 )
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)
