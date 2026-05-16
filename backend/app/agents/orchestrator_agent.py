@@ -1083,10 +1083,11 @@ def _orchestrator_user_prompt(
                 lines.append(f"   ⚠ Blocker: {t['blocker']}")
             if t.get("permanently_failed"):
                 lines.append(
-                    "   ⛔ REFRAME REQUIRED: all models failed this task including the strongest fallback. "
-                    "Call plan_remove to drop it, then plan_add 2–3 smaller replacement tasks "
-                    "each touching ≤2 files and implementing exactly one function or class. "
-                    "Do NOT re-dispatch the same scope."
+                    "   ⛔ PERMANENTLY FAILED: all fallback models failed this task. "
+                    "Do NOT re-dispatch the same scope. "
+                    "Break it into 2–3 smaller replacement tasks, each touching ≤2 files "
+                    "and implementing exactly one function, class, or route. "
+                    "If plan tools are available, remove this task from the plan first, then add the smaller ones."
                 )
         history_block = "\n\n## Completed Tasks\n\n" + "\n".join(lines)
 
@@ -1995,7 +1996,7 @@ class OrchestratorAgent:
                 # During Milestone 0 (no completed tasks) suppress plan tools and
                 # run_build — both cause the model to spin planning/checking before
                 # there is any scaffold to build or plan against.
-                _is_milestone_0 = not completed_tasks
+                _is_milestone_0 = not any(r.get("files_written") for r in completed_tasks if isinstance(r, dict))
                 _extra_tools = [INSPECT_FILES_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL]
                 _extra_handlers: dict = {
                     "inspect_files": _handle_inspect_files,
@@ -2083,7 +2084,7 @@ class OrchestratorAgent:
                 and not user_message
                 and not _verification_pending
                 and not follow_up_message
-                and completed_tasks  # scaffold exists — not Milestone 0
+                and any(r.get("files_written") for r in completed_tasks if isinstance(r, dict))  # scaffold exists — not Milestone 0
                 and output_dir
             ):
                 _pf = Path(output_dir) / ".think-plan.json"
