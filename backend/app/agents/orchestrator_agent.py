@@ -1642,12 +1642,11 @@ def _sub_agent_user_prompt(
     structure_hint = ""
     if source_root and task_type != "inspect":
         structure_hint = (
-            f"\n\n## Project structure constraint\n\n"
-            f"This project uses `{source_root}/` as the source root. "
-            f"All source files (components, utilities, modules, hooks, styles, etc.) MUST live under "
-            f"`{source_root}/`. Do NOT create source files at the project root or in a different directory. "
-            f"Use import paths consistent with this layout (e.g. `import Foo from './{source_root}/Foo'` "
-            f"becomes `import Foo from './Foo'` when writing a file that is also inside `{source_root}/`)."
+            f"\n\n## ⚠ MANDATORY: source root is `{source_root}/`\n\n"
+            f"Every source file you write MUST be placed under `{source_root}/`. "
+            f"Writing ANY source file to the project root or to a directory other than `{source_root}/` "
+            f"is a hard error — it breaks the project layout established by the scaffold. "
+            f"Correct: `{source_root}/server/main.py`. Wrong: `server.py`, `server/main.py`, `main.py`."
         )
     ownership_block = ""
     if interface_summary and task_type != "inspect":
@@ -1714,10 +1713,10 @@ def _sub_agent_user_prompt(
         f"PROJECT: {idea_name}\n"
         f"OUTPUT DIRECTORY: {output_dir}\n"
         f"{prd_line}"
+        f"{structure_hint}"
         f"{ownership_block}"
         f"{memory_block}"
         f"\n\n## Your task\n\n{task_instruction}"
-        f"{structure_hint}"
         f"{prior_block}\n\n"
         f"{closing}"
     )
