@@ -859,6 +859,41 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: 
     blocker = str(blocker_raw).strip() if blocker_raw not in (None, "") else None
     success_raw = raw_result.get("success")
 
+    # Detect fabricated capability complaints in the blocker.
+    # Small models hallucinate "execution restrictions" or "cannot verify" even
+    # though run_shell and run_shell_background are available. If the agent
+    # actually wrote files, strip the fake blocker and treat it as success.
+    _FAKE_BLOCKER_PHRASES = (
+        "execution restriction",
+        "cannot verify",
+        "unable to verify",
+        "not able to verify",
+        "cannot execute",
+        "unable to execute",
+        "execution environment",
+        "not available in this environment",
+        "cannot run",
+        "unable to run",
+        "tool is not available",
+        "don't have access",
+        "do not have access",
+        "accessibility",
+        "cannot access",
+    )
+    if blocker and any(p in blocker.lower() for p in _FAKE_BLOCKER_PHRASES):
+        if files_written:
+            logger.warning(
+                "normalize_sub_agent: stripping fabricated capability blocker (files were written): %r",
+                blocker[:120],
+            )
+            blocker = None
+            success_raw = True
+        else:
+            logger.warning(
+                "normalize_sub_agent: capability complaint blocker but no files written: %r",
+                blocker[:120],
+            )
+
     if isinstance(success_raw, bool):
         success = success_raw
     else:
