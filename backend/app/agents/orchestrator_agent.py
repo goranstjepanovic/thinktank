@@ -1977,6 +1977,47 @@ class OrchestratorAgent:
             logger.info("orchestrator: done=%s tasks=%d question=%s",
                         done, len(next_tasks), bool(user_message))
 
+            # Enforce plan-first discipline: if the plan file is still empty/missing
+            # and the model skipped straight to dispatching tasks, reject the batch
+            # and force a plan-build round. Instruction-only approaches fail because
+            # small models return final JSON in round 1 without making any tool calls.
+            if (
+                next_tasks
+                and not done
+                and not user_message
+                and not _verification_pending
+                and not follow_up_message
+                and completed_tasks  # scaffold exists — not Milestone 0
+                and output_dir
+            ):
+                _pf = Path(output_dir) / ".think-plan.json"
+                _plan_currently_empty = True
+                if _pf.is_file():
+                    try:
+                        _pd = json.loads(_pf.read_text(encoding="utf-8"))
+                        _plan_currently_empty = len(_pd.get("tasks", [])) == 0
+                    except Exception:
+                        pass
+                if _plan_currently_empty:
+                    logger.warning(
+                        "orchestrator: round %d dispatched %d task(s) without building a plan — rejecting and forcing plan build",
+                        round_idx + 1, len(next_tasks),
+                    )
+                    completed_tasks.append({
+                        "id": f"_plan_required_{round_idx}",
+                        "title": "(plan required — tasks rejected)",
+                        "summary": (
+                            "REJECTED: You dispatched tasks without calling plan_list() or plan_add() first. "
+                            "You MUST build the plan before dispatching anything. "
+                            "Call plan_list() now. If it returns no tasks, call plan_add() for every PRD "
+                            "feature before including anything in next_tasks."
+                        ),
+                        "success": False,
+                        "files_written": [],
+                        "commands_run": [],
+                    })
+                    continue
+
             # Orchestrator needs blocking user input before it can continue
             if user_message:
                 content = str(user_message).strip()
