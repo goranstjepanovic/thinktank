@@ -967,6 +967,7 @@ class InferenceClient:
                     working_messages = await self._compress_context(
                         working_messages, stage_key, agent_id,
                         written_files=_written_files if _written_files else None,
+                        read_files=_path_read_counts if _path_read_counts else None,
                     )
 
             # Some local models emit tool calls as plain-text JSON instead of
@@ -1554,6 +1555,12 @@ class InferenceClient:
                                             "end_line": end,
                                             "total_lines": total_lines,
                                             "size_bytes": len(raw_bytes),
+                                            "memory_hint": (
+                                                f"Call memory_store(file_path='{_rel}', observation='...') "
+                                                "with your key findings before moving on. "
+                                                "This is your only chance — after context compression "
+                                                "you cannot re-read this file."
+                                            ),
                                         }
                                 except Exception as _e:
                                     result_dict = {"error": f"failed to read: {_e}"}
@@ -1877,6 +1884,7 @@ class InferenceClient:
         source_stage_key: str,
         agent_id: str | None,
         written_files: set[str] | None = None,
+        read_files: dict[str, int] | None = None,
     ) -> list[Message]:
         """Summarize old tool rounds to reclaim context window space.
 
@@ -1951,9 +1959,13 @@ class InferenceClient:
                     Message(
                         role="user",
                         content=(
-                            "Summarize what this agent has done so far. Include: which files were read "
-                            "and any key findings, which files were written and their purpose, "
-                            "commands run and their outcomes. Use exact file names. Under 250 words.\n\n"
+                            "Summarize what this agent has done, focusing on WHY and WHAT WAS CONCLUDED:\n"
+                            "- For each file READ: state what the agent was investigating and the key conclusion drawn "
+                            "(e.g. 'Read server.py to find route definitions — routes are in /api/v1/, "
+                            "auth handled by middleware.py').\n"
+                            "- For each file WRITTEN: its purpose and key exported names.\n"
+                            "- Commands run: intent and outcome.\n"
+                            "Use exact file names. Under 300 words. Bullet points only.\n\n"
                             f"{formatted}"
                         ),
                     ),
@@ -2011,11 +2023,21 @@ class InferenceClient:
                 f"they are complete): {', '.join(sorted(written_files))}"
             )
 
+        read_note = ""
+        if read_files:
+            unwritten = sorted(p for p in read_files if not written_files or p not in written_files)
+            if unwritten:
+                read_note = (
+                    "\n\nFiles already read this session — do NOT read them again. "
+                    "Use memory_search to recall conclusions instead of re-reading: "
+                    + ", ".join(unwritten)
+                )
+
         summary_msg = Message(
             role="user",
             content=(
                 "## Prior rounds summary (context compressed)\n\n"
-                f"{summary}{written_note}\n\n"
+                f"{summary}{written_note}{read_note}\n\n"
                 "Continue your task from where you left off."
             ),
         )
