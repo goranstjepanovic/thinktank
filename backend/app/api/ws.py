@@ -1,9 +1,11 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.events.bus import event_bus
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
 
 _KEEPALIVE_INTERVAL = 25  # seconds — below typical proxy/NAT idle timeouts
@@ -22,10 +24,9 @@ async def idea_websocket(idea_id: str, websocket: WebSocket):
                 # No events for a while — send a lightweight ping so the connection
                 # stays alive through proxies and NAT devices.
                 await websocket.send_text('{"type":"keepalive"}')
-    except (WebSocketDisconnect, Exception):
-        # WebSocketDisconnect: clean client close.
-        # Exception: abrupt close (ConnectionClosedError 1012 service restart,
-        # browser refresh, proxy timeout, etc.) — log nothing, just clean up.
-        pass
+    except WebSocketDisconnect:
+        pass  # clean client close
+    except Exception as exc:
+        logger.warning("ws: unexpected error for idea %s: %s", idea_id, exc, exc_info=True)
     finally:
         event_bus.unsubscribe(idea_id, queue)
