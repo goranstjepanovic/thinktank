@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -237,6 +237,32 @@ function ModelTokensChart({ data }: { data: ModelStat[] }) {
   const top = data.filter(d => d.tokens_total > 0).slice(0, 12).map(d => ({
     ...d,
     label: truncate(d.model),
+  }));
+  if (top.length === 0) return <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>No token data recorded yet</div>;
+  const barH = Math.max(200, top.length * 32);
+  return (
+    <ResponsiveContainer width="100%" height={barH}>
+      <BarChart data={top} layout="vertical" style={CHART_STYLE} barCategoryGap="20%">
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} horizontal={false} />
+        <XAxis type="number" tick={AXIS_STYLE} tickFormatter={v => fmtTokens(v)} />
+        <YAxis type="category" dataKey="label" tick={AXIS_STYLE} width={130} />
+        <Tooltip
+          {...TOOLTIP_PROPS}
+          formatter={(v, name) => [fmtTokens(v as number), name]}
+        />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Bar dataKey="tokens_prompt" name="Prompt" stackId="a" fill="#60a5fa" />
+        <Bar dataKey="tokens_completion" name="Completion" stackId="a" fill="#34d399" radius={[0, 3, 3, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Stacked bar chart: tokens by project (prompt + completion)
+function ProjectTokensChart({ data }: { data: ProjectStat[] }) {
+  const top = data.filter(d => d.tokens_total > 0).slice(0, 12).map(d => ({
+    ...d,
+    label: truncate(d.project_name || d.project_id),
   }));
   if (top.length === 0) return <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>No token data recorded yet</div>;
   const barH = Math.max(200, top.length * 32);
@@ -667,16 +693,23 @@ export function OpsDashboard() {
 
       {/* Token charts */}
       {data && data.by_model.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-          <ChartCard title="Tokens by Model" minHeight={280}>
-            <ModelTokensChart data={data.by_model} />
-          </ChartCard>
-          {data.over_time.some(b => b.tokens_total > 0) && (
-            <ChartCard title="Tokens Over Time" minHeight={280}>
-              <TokensTimelineChart data={data.over_time} periodHours={data.period_hours} />
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <ChartCard title="Tokens by Model" minHeight={280}>
+              <ModelTokensChart data={data.by_model} />
             </ChartCard>
+            <ChartCard title="Tokens by Project" minHeight={280}>
+              <ProjectTokensChart data={data.by_project} />
+            </ChartCard>
+          </div>
+          {data.over_time.some(b => b.tokens_total > 0) && (
+            <div style={{ marginBottom: 20 }}>
+              <ChartCard title="Tokens Over Time" minHeight={240}>
+                <TokensTimelineChart data={data.over_time} periodHours={data.period_hours} />
+              </ChartCard>
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {/* Backend comparison */}

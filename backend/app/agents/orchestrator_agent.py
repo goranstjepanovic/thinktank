@@ -67,6 +67,81 @@ _RUN_BUILD_TOOL = ToolDefinition(
 )
 
 
+_PLAN_LIST_TOOL = ToolDefinition(
+    name="plan_list",
+    description=(
+        "List tasks in the current implementation plan. Returns tasks in order with their status. "
+        "Supports pagination — use offset/limit to avoid loading all tasks at once on large plans."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "offset": {"type": "integer", "description": "Number of tasks to skip (default 0)"},
+            "limit":  {"type": "integer", "description": "Max tasks to return (default 20, max 50)"},
+        },
+        "required": [],
+    },
+)
+
+_PLAN_ADD_TOOL = ToolDefinition(
+    name="plan_add",
+    description=(
+        "Add a new pending task to the plan. Each task must be scoped to ≤2 files and one logical unit."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "id":          {"type": "string", "description": "Unique snake_case identifier"},
+            "title":       {"type": "string", "description": "Short title ≤60 chars"},
+            "instruction": {"type": "string", "description": "Complete self-contained task instruction"},
+            "notes":       {"type": "string", "description": "Optional notes"},
+        },
+        "required": ["id", "title", "instruction"],
+    },
+)
+
+_PLAN_UPDATE_TOOL = ToolDefinition(
+    name="plan_update",
+    description=(
+        "Update a task's status, instruction, or notes. "
+        "Call with status='in_progress' before dispatching, status='done' after success, "
+        "status='failed' when permanently blocked."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "id":          {"type": "string", "description": "Task id to update"},
+            "status":      {"type": "string", "enum": ["pending", "in_progress", "done", "failed"]},
+            "title":       {"type": "string", "description": "New title (optional)"},
+            "instruction": {"type": "string", "description": "New instruction (optional)"},
+            "notes":       {"type": "string", "description": "Notes to append (optional)"},
+        },
+        "required": ["id"],
+    },
+)
+
+_PLAN_REMOVE_TOOL = ToolDefinition(
+    name="plan_remove",
+    description="Remove a task from the plan by id. Use when replacing a failed task with smaller ones.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Task id to remove"},
+        },
+        "required": ["id"],
+    },
+)
+
+_PLAN_NEXT_TOOL = ToolDefinition(
+    name="plan_next",
+    description=(
+        "Get the next task to work on. Returns the first in_progress task if any, "
+        "otherwise the first pending task. Returns null when all tasks are done or failed."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
+
 def _node_check_command(pkg_dir: Path) -> str | None:
     """Return the best build-check command for a Node.js project directory."""
     import json as _json
@@ -383,6 +458,24 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "If you need a shell command run (e.g. `poetry install`, `npm install`, `dotnet restore`), "
         "dispatch a task with that command in the instruction — sub-agents have `run_shell`. "
         "NEVER set `user_message` because a tool is unavailable; dispatch a task instead.\n\n"
+        "## Plan management — your persistent task list\n\n"
+        "Use the plan tools to track every task you intend to implement. "
+        "The plan is stored on disk and survives restarts.\n\n"
+        "**Workflow:**\n"
+        "1. **Round 1**: call `plan_list` — if empty, build the full plan now by calling `plan_add` "
+        "for every task derived from the PRD. Scope each to ≤2 files before adding.\n"
+        "2. **Each round**: call `plan_next` to get the next task. "
+        "Call `plan_update(id, status='in_progress')` before dispatching it. "
+        "Use its `instruction` field as the task instruction in `next_tasks`.\n"
+        "3. **After success**: call `plan_update(id, status='done')`.\n"
+        "4. **After permanent failure** (⛔ REFRAME REQUIRED in history): call `plan_remove(id)`, "
+        "then `plan_add` 2–3 smaller replacement tasks each touching ≤2 files.\n"
+        "5. **When plan_next returns null**: all tasks done/failed — set done=true.\n\n"
+        "- `plan_list(offset, limit)` — paginated view of the plan (default limit=20)\n"
+        "- `plan_add(id, title, instruction)` — add a pending task\n"
+        "- `plan_update(id, status?, title?, instruction?, notes?)` — update a task\n"
+        "- `plan_remove(id)` — remove a task (use before adding replacement tasks)\n"
+        "- `plan_next()` — get the next in_progress or pending task\n\n"
         "## Deduplication — search memory before assigning\n\n"
         "Before dispatching a task that creates a new utility or module, call `memory_search('X')` "
         "where X is the feature or concept (e.g. 'authentication', 'API client', 'database connection'). "
@@ -403,14 +496,15 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "You may include 1–2 tasks in `next_tasks`. **Prefer 1 task per batch** — only use 2 when "
         "both tasks are truly independent and each is immediately ready to implement. "
         "Each task must be atomic: implement exactly one logical unit (one module, one component, "
-        "one endpoint, one service). Aim for tasks that touch 1–3 files at most. "
-        "A large feature should be split across multiple sequential batches, not crammed into one task. "
+        "one endpoint, one service). **Each task must touch ≤2 files.** "
+        "A large feature must be split across multiple sequential batches, not crammed into one task. "
         "Tasks in the same batch MUST target completely independent files — no two tasks in a batch "
         "may write to the same file.\n\n"
-        "**Task scope limit**: if a feature requires more than ~3 new functions or classes, split it "
-        "into separate sequential tasks (e.g. 'Implement data models', then 'Implement business logic', "
-        "then 'Implement API routes'). Smaller scope = smaller model output = complete implementations. "
-        "A task instruction that names more than 3 functions is too large — split it.\n\n"
+        "**Task scope limit — hard rule**: a task that names more than 2 files OR more than 3 functions "
+        "is too large and WILL fail. Split it. "
+        "BAD: 'Implement player solution submission and voting system' (two systems, many files). "
+        "GOOD: 'Implement solution submission endpoint' (one route, one file), then separately "
+        "'Implement vote tallying logic' (one module, one file).\n\n"
         "When all PRD sections are implemented:\n"
         '{"analysis": "all tasks complete", "next_tasks": [], "done": true, "user_message": null}\n\n'
         "When you need the user to make a decision before you can proceed:\n"
@@ -738,10 +832,20 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: 
             "blocker": "Sub-agent returned a non-dict result",
         }
 
+    # Normalize common key-name aliases before validating — small models often use
+    # "message" instead of "summary", "files" instead of "files_written", etc.
     if "summary" not in raw_result and any(k in raw_result for k in ("message", "files", "commands")):
-        message = str(raw_result.get("message") or "").strip()
+        raw_result = dict(raw_result)
+        if "message" in raw_result:
+            raw_result.setdefault("summary", raw_result.pop("message"))
+        if "files" in raw_result and "files_written" not in raw_result:
+            raw_result["files_written"] = raw_result.pop("files")
+        if "commands" in raw_result and "commands_run" not in raw_result:
+            raw_result["commands_run"] = raw_result.pop("commands")
+    # After normalization, if summary is still absent it's genuinely a planning payload
+    if "summary" not in raw_result and any(k in raw_result for k in ("message", "files", "commands")):
         return {
-            "summary": message or f"Task '{task_title}' returned a planning payload instead of an execution result.",
+            "summary": f"Task '{task_title}' returned a planning payload instead of an execution result.",
             "files_written": [],
             "commands_run": [],
             "success": False,
@@ -917,9 +1021,32 @@ def _orchestrator_user_prompt(
                 lines.append(f"   Files: {sample}{extra}")
             if t.get("blocker"):
                 lines.append(f"   ⚠ Blocker: {t['blocker']}")
+            if t.get("permanently_failed"):
+                lines.append(
+                    "   ⛔ REFRAME REQUIRED: all models failed this task including the strongest fallback. "
+                    "Call plan_remove to drop it, then plan_add 2–3 smaller replacement tasks "
+                    "each touching ≤2 files and implementing exactly one function or class. "
+                    "Do NOT re-dispatch the same scope."
+                )
         history_block = "\n\n## Completed Tasks\n\n" + "\n".join(lines)
 
     build_state = _detect_build_state(completed_tasks, output_dir=output_dir)
+
+    # Determine plan state so we can inject mandatory plan-bootstrap hints
+    _plan_is_empty = True
+    _plan_pending_count = 0
+    if output_dir:
+        _plan_path = Path(output_dir) / ".think-plan.json"
+        if _plan_path.is_file():
+            try:
+                _plan_data = json.loads(_plan_path.read_text(encoding="utf-8"))
+                _plan_tasks = _plan_data.get("tasks", [])
+                _plan_is_empty = len(_plan_tasks) == 0
+                _plan_pending_count = sum(
+                    1 for t in _plan_tasks if t.get("status") in ("pending", "in_progress")
+                )
+            except Exception:
+                pass
 
     # Build-state banner — injected on every round so the model cannot ignore it
     build_banner = ""
@@ -976,8 +1103,26 @@ def _orchestrator_user_prompt(
             "The scaffold must produce: entry point + build config + install command run."
         )
     else:
+        if _plan_is_empty:
+            _plan_hint = (
+                "⚡ FIRST ACTION THIS ROUND: build your implementation plan.\n"
+                "1. Call `plan_list()` — if it returns no tasks, call `plan_add()` for EVERY PRD "
+                "feature/section before doing anything else.\n"
+                "2. Each plan task must touch ≤2 files and implement exactly ONE function, class, or route.\n"
+                "3. Do NOT call `list_files`, `inspect_files`, or dispatch any task until the full "
+                "plan is built.\n\n"
+            )
+        else:
+            _plan_hint = (
+                f"⚡ FIRST ACTION THIS ROUND: call `plan_next()` "
+                f"({_plan_pending_count} task(s) still pending/in-progress).\n"
+                "Then call `plan_update(id, status='in_progress')` before dispatching.\n"
+                "After the sub-agent reports back, call `plan_update(id, status='done')` or `'failed'`.\n"
+                "Do NOT call `inspect_files` or `list_files` before `plan_next()`.\n\n"
+            )
         start_hint = (
-            "The full project file tree is shown above — do NOT call `list_files`. "
+            _plan_hint
+            + "The full project file tree is shown above — do NOT call `list_files`. "
             "Call `inspect_files` directly on the 3–8 files most relevant to your next task, "
             "then dispatch immediately. One `inspect_files` call is your entire exploration budget.\n\n"
             "**If you find files with `has_stubs: true`, TODOs, truncated content, or placeholder code**, "
@@ -1178,6 +1323,120 @@ def _memory_handlers(project_id: str) -> dict:
     }
 
 
+def _plan_handlers(output_dir: str) -> dict:
+    """Return custom tool handlers for the five plan tools, backed by .think-plan.json."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    _plan_file = _Path(output_dir) / ".think-plan.json"
+
+    def _load() -> dict:
+        if _plan_file.exists():
+            try:
+                return _json.loads(_plan_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"tasks": []}
+
+    def _save(data: dict) -> None:
+        _plan_file.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    async def _plan_list(args: dict) -> dict:
+        offset = max(0, int(args.get("offset") or 0))
+        limit  = min(50, max(1, int(args.get("limit") or 20)))
+        data   = _load()
+        tasks  = data.get("tasks", [])
+        page   = tasks[offset: offset + limit]
+        counts = {s: sum(1 for t in tasks if t.get("status") == s)
+                  for s in ("pending", "in_progress", "done", "failed")}
+        return {
+            "tasks": page,
+            "total": len(tasks),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + limit < len(tasks),
+            **counts,
+        }
+
+    async def _plan_add(args: dict) -> dict:
+        task_id     = (args.get("id") or "").strip()
+        title       = (args.get("title") or "").strip()
+        instruction = (args.get("instruction") or "").strip()
+        notes       = (args.get("notes") or "").strip() or None
+        if not task_id or not title or not instruction:
+            return {"error": "id, title, and instruction are required"}
+        data  = _load()
+        tasks = data.get("tasks", [])
+        if any(t.get("id") == task_id for t in tasks):
+            return {"error": f"task id '{task_id}' already exists"}
+        tasks.append({"id": task_id, "title": title, "status": "pending",
+                      "instruction": instruction, "notes": notes})
+        data["tasks"] = tasks
+        _save(data)
+        return {"added": True, "id": task_id, "total": len(tasks)}
+
+    async def _plan_update(args: dict) -> dict:
+        task_id = (args.get("id") or "").strip()
+        if not task_id:
+            return {"error": "id is required"}
+        data  = _load()
+        tasks = data.get("tasks", [])
+        for t in tasks:
+            if t.get("id") == task_id:
+                if args.get("status"):
+                    valid = {"pending", "in_progress", "done", "failed"}
+                    if args["status"] not in valid:
+                        return {"error": f"status must be one of {sorted(valid)}"}
+                    t["status"] = args["status"]
+                if args.get("title"):
+                    t["title"] = args["title"]
+                if args.get("instruction"):
+                    t["instruction"] = args["instruction"]
+                if "notes" in args:
+                    t["notes"] = args["notes"] or None
+                data["tasks"] = tasks
+                _save(data)
+                return {"updated": True, "task": t}
+        return {"error": f"task id '{task_id}' not found"}
+
+    async def _plan_remove(args: dict) -> dict:
+        task_id = (args.get("id") or "").strip()
+        if not task_id:
+            return {"error": "id is required"}
+        data  = _load()
+        tasks = data.get("tasks", [])
+        before = len(tasks)
+        tasks  = [t for t in tasks if t.get("id") != task_id]
+        if len(tasks) == before:
+            return {"error": f"task id '{task_id}' not found"}
+        data["tasks"] = tasks
+        _save(data)
+        return {"removed": True, "id": task_id, "total": len(tasks)}
+
+    async def _plan_next(_args: dict) -> dict:
+        data  = _load()
+        tasks = data.get("tasks", [])
+        pending_count = sum(1 for t in tasks if t.get("status") == "pending")
+        # Resume an in_progress task first (e.g. after a crash mid-round)
+        for t in tasks:
+            if t.get("status") == "in_progress":
+                return {"task": t, "remaining_pending": pending_count}
+        # Then the first pending task
+        for t in tasks:
+            if t.get("status") == "pending":
+                return {"task": t, "remaining_pending": pending_count - 1}
+        return {"task": None, "remaining_pending": 0,
+                "message": "All tasks are done or failed — set done=true"}
+
+    return {
+        "plan_list":   _plan_list,
+        "plan_add":    _plan_add,
+        "plan_update": _plan_update,
+        "plan_remove": _plan_remove,
+        "plan_next":   _plan_next,
+    }
+
+
 def _sub_agent_system_prompt(task_type: str = "implement") -> str:
     ctx = _runtime_context()
     if task_type == "inspect":
@@ -1222,6 +1481,8 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "`start_line`/`end_line` (e.g. `read_file(path='foo.py', start_line=200, end_line=400)`).\n"
         "   After each `read_file`, call `memory_store` with your key findings.\n"
         "4. Write all files required for your task using `file_edit` — write complete, real implementations\n"
+        "   **After each `file_edit` call succeeds, do NOT read that file back** — the write is confirmed. "
+        "Re-reading a file you just wrote wastes rounds and triggers the stall detector.\n"
         "5. Run any required commands (install dependencies, build, test) using `run_shell`\n"
         "6. Return a JSON summary AFTER all files are written — not before\n\n"
         "## Memory tools\n\n"
@@ -1658,12 +1919,18 @@ class OrchestratorAgent:
                     return_json=True,
                     call_index=0,
                     on_tool_result=_orch_tool_cb,
-                    extra_tools=[INSPECT_FILES_TOOL, _RUN_BUILD_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL],
+                    extra_tools=[
+                        INSPECT_FILES_TOOL, _RUN_BUILD_TOOL,
+                        MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL,
+                        _PLAN_LIST_TOOL, _PLAN_ADD_TOOL, _PLAN_UPDATE_TOOL,
+                        _PLAN_REMOVE_TOOL, _PLAN_NEXT_TOOL,
+                    ],
                     custom_tool_handlers={
                         "inspect_files": _handle_inspect_files,
                         "run_build": _handle_run_build,
                         "scaffold": _handle_scaffold_misuse,
                         **_memory_handlers(idea.id),
+                        **_plan_handlers(output_dir),
                     },
                 )
             except Exception as e:
@@ -2693,11 +2960,14 @@ class OrchestratorAgent:
                 "handoff": handoff,
                 "files_written": list(last_result.get("files_written") or []),
             })
+            _is_last_model = attempt + 1 >= len(models_to_try)
             logger.info("sub_agent: task '%s' attempt %d unsuccessful — blocker=%r summary=%r — %s",
                         task_title, attempt,
                         last_result.get("blocker") or "",
                         (last_result.get("summary") or "")[:120],
-                        f"retrying with {models_to_try[attempt + 1].model}" if attempt + 1 < len(models_to_try) else "no more fallbacks")
+                        "no more fallbacks" if _is_last_model else f"retrying with {models_to_try[attempt + 1].model}")
+            if _is_last_model:
+                last_result = {**last_result, "permanently_failed": True}
 
           return last_result
         finally:
