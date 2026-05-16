@@ -45,26 +45,30 @@ _THINK_TAG_OPEN = "<think>"
 _THINK_TAG_CLOSE = "</think>"
 
 
-def _filter_think_token(token: str, in_think: bool) -> tuple[bool, str]:
-    """Strip <think>…</think> spans from a streaming token fragment, tracking state across calls."""
-    visible_parts: list[str] = []
+def _extract_think_content(token: str, in_think: bool) -> tuple[bool, str]:
+    """Extract only content inside <think>…</think> blocks for streaming display.
+
+    Everything outside think blocks (tool_call JSON, final dispatch JSON) is discarded —
+    only the model's reasoning text is forwarded to the UI.
+    """
+    think_parts: list[str] = []
     buf = token
     while buf:
         if in_think:
             end = buf.find(_THINK_TAG_CLOSE)
             if end == -1:
+                think_parts.append(buf)  # still inside think block
                 break
+            think_parts.append(buf[:end])
             in_think = False
             buf = buf[end + len(_THINK_TAG_CLOSE):]
         else:
             start = buf.find(_THINK_TAG_OPEN)
             if start == -1:
-                visible_parts.append(buf)
-                break
-            visible_parts.append(buf[:start])
+                break  # outside think block — skip (tool_call / JSON dispatch)
             in_think = True
             buf = buf[start + len(_THINK_TAG_OPEN):]
-    return in_think, "".join(visible_parts)
+    return in_think, "".join(think_parts)
 _BUILD_CHECK_INTERVAL = 3  # run a build check every N implementation rounds
 
 _RUN_BUILD_TOOL = ToolDefinition(
@@ -1922,7 +1926,7 @@ class OrchestratorAgent:
 
             def _orch_on_token(token: str) -> None:
                 nonlocal _stream_in_think, _stream_buf
-                _stream_in_think, visible = _filter_think_token(token, _stream_in_think)
+                _stream_in_think, visible = _extract_think_content(token, _stream_in_think)
                 if visible:
                     _stream_buf.append(visible)
                     chunk = "".join(_stream_buf)

@@ -27,32 +27,6 @@ _TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOT
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
-def _filter_think_token(token: str, in_think: bool) -> tuple[bool, str]:
-    """Strip <think>…</think> spans from a streaming token fragment.
-
-    Returns (updated_in_think, visible_text).  Handles tags that may be split
-    across multiple tokens by tracking state between calls.
-    """
-    visible_parts: list[str] = []
-    buf = token
-    while buf:
-        if in_think:
-            end = buf.find("</think>")
-            if end == -1:
-                break  # still inside think block, nothing visible
-            in_think = False
-            buf = buf[end + len("</think>"):]
-        else:
-            start = buf.find("<think>")
-            if start == -1:
-                visible_parts.append(buf)
-                break
-            visible_parts.append(buf[:start])
-            in_think = True
-            buf = buf[start + len("<think>"):]
-    return in_think, "".join(visible_parts)
-
-
 def _extract_json(text: str) -> str:
     m = _JSON_FENCE_RE.search(text)
     if m:
