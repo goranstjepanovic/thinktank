@@ -855,9 +855,9 @@ class InferenceClient:
         _tool_call_counts: dict[str, int] = {}
         _reads_since_write: int = 0   # exploration calls without a file write
         _read_nudge_sent: bool = False
-        _written_files: set[str] = set()       # paths successfully written this session
-        _read_files: set[str] = set()          # paths read via read_file this session
-        _path_write_counts: dict[str, int] = {}  # per-path write count for loop detection
+        _written_files: set[str] = set()            # paths successfully written this session
+        _path_read_counts: dict[str, int] = {}     # read count per path; blocks re-reads and blind overwrites
+        _path_write_counts: dict[str, int] = {}    # per-path write count for loop detection
         _memory_list_used: bool = False  # memory_list is one-shot — remove after first call
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
@@ -1226,7 +1226,7 @@ class InferenceClient:
                             _is_full_overwrite = tc.arguments.get("operation") == "write_file"
                             _is_preexisting = (
                                 display_path not in _written_files
-                                and display_path not in _read_files
+                                and _path_read_counts.get(display_path, 0) == 0
                                 and _pathlib.Path(allowed_file_dir, display_path).exists()
                             )
                             if _is_full_overwrite and _is_preexisting:
@@ -1496,7 +1496,7 @@ class InferenceClient:
                             if not str(_full).startswith(str(_base)):
                                 result_dict = {"error": "path outside project directory"}
                             elif _rel in _written_files:
-                                # File was already written this session — skip re-read to prevent
+                                # File was written this session — skip re-read to prevent
                                 # the prune→re-read→prune loop; direct the model to memory instead.
                                 result_dict = {
                                     "pruned": True,
@@ -1510,6 +1510,23 @@ class InferenceClient:
                                 logger.info(
                                     "tools stage=%-20s read_file skipped (already written): %r%s",
                                     stage_key, _rel, _agent_suffix,
+                                )
+                            elif _path_read_counts.get(_rel, 0) >= 2:
+                                # File has been read twice already — block further re-reads.
+                                # Context compression causes agents to re-read the same files
+                                # indefinitely; capping at 2 reads breaks that cycle.
+                                result_dict = {
+                                    "pruned": True,
+                                    "path": _rel,
+                                    "reason": (
+                                        f"You have already read '{_rel}' {_path_read_counts[_rel]} time(s) this session. "
+                                        "The content was pruned from context to save space — re-reading it restarts the same loop. "
+                                        "Use memory_search to recall your key findings, or proceed with your implementation."
+                                    ),
+                                }
+                                logger.info(
+                                    "tools stage=%-20s read_file skipped (read %d times already): %r%s",
+                                    stage_key, _path_read_counts[_rel], _rel, _agent_suffix,
                                 )
                             elif not _full.exists():
                                 result_dict = {"error": f"file not found: {_rel}"}
@@ -1545,7 +1562,7 @@ class InferenceClient:
                                 _range_str = f" lines={result_dict.get('start_line', 0)}-{result_dict.get('end_line', '?')}/{result_dict.get('total_lines', '?')}"
                             logger.info("tools stage=%-20s read_file path=%r%s%s", stage_key, _rel, _range_str, _agent_suffix)
                             if "content" in result_dict:
-                                _read_files.add(_rel)
+                                _path_read_counts[_rel] = _path_read_counts.get(_rel, 0) + 1
                             if on_tool_result:
                                 await on_tool_result("read_file", {"path": _rel})
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
