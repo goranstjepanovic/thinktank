@@ -147,6 +147,9 @@ def phase3_sub_agent_started(idea_id: str, session_id: str, task_id: str, title:
 def phase3_sub_agent_update(idea_id: str, session_id: str, task_id: str, update_type: str, detail: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.sub_agent_update", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "update_type": update_type, "detail": detail})
 
+def phase3_sub_agent_token(idea_id: str, session_id: str, task_id: str, content: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.sub_agent_token", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "content": content})
+
 def phase3_sub_agent_complete(idea_id: str, session_id: str, task_id: str, summary: str, files_written: list, success: bool, blocker: str | None) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.sub_agent_complete", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "summary": summary, "files_written": files_written, "success": success, "blocker": blocker})
 

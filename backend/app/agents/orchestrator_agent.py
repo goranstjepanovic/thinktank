@@ -2960,6 +2960,27 @@ class OrchestratorAgent:
 
             _attempt_start = _time.monotonic()
             _telemetry.suppress_next_call()  # orchestrator logs task-level outcome below
+
+            # Token-level streaming from Ollama — shows sub-agent activity in the task card.
+            # Called from the async event loop so we use create_task for fire-and-forget.
+            _sub_stream_in_think = False
+
+            def _sub_on_token(token: str) -> None:
+                nonlocal _sub_stream_in_think
+                # Strip <think> tags; skip JSON/XML structural tokens
+                _sub_stream_in_think, visible = _extract_think_content(token, _sub_stream_in_think)
+                if not visible:
+                    return
+                stripped = visible.strip()
+                if not stripped or stripped[0] in ('{', '}', '[', ']', '<', '"'):
+                    return
+                asyncio.create_task(
+                    on_orchestrator_event("sub_agent_token", {
+                        "task_id": task_id,
+                        "content": visible,
+                    })
+                )
+
             try:
                 async with AsyncSessionLocal() as sub_db:
                     last_result = await self._client.call_with_tools(
@@ -2987,6 +3008,7 @@ class OrchestratorAgent:
                             **_memory_handlers(idea.id),
                         },
                         agent_id=agent_id,
+                        on_token=_sub_on_token,
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title, task_type=task_type)
 

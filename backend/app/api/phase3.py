@@ -263,6 +263,12 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_started", payload_json=json.dumps({"task_id": task_id, "title": title})))
                     await adb.commit()
 
+            elif event_type == "sub_agent_token":
+                task_id = str(data.get("task_id", ""))
+                content = str(data.get("content", ""))
+                if content:
+                    await event_bus.publish(ev.phase3_sub_agent_token(idea_id, session_id, task_id, content))
+
             elif event_type == "sub_agent_update":
                 task_id = str(data.get("task_id", ""))
                 update_type = str(data.get("update_type", ""))

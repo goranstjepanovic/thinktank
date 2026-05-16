@@ -88,7 +88,7 @@ type ActivityEntry =
   | { kind: 'orchestrator_thinking'; id: number }
   | { kind: 'orchestrator_streaming'; id: number; content: string }
   | { kind: 'orchestrator_message'; id: number; content: string }
-  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] }
+  | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[]; streamingText?: string }
   | { kind: 'plan_warnings'; id: number; warnings: string[] }
   | { kind: 'syntax_check'; id: number; path: string; passed: boolean; error: string; retrying: boolean };
 
@@ -424,9 +424,9 @@ const UPDATE_ICONS: Record<string, string> = {
   verify: '⚑',
 };
 
-function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, onStop }: {
+function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWritten, blocker, updates, streamingText, onStop }: {
   taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled';
-  summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[];
+  summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[]; streamingText?: string;
   onStop?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -468,6 +468,11 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
           {agentId && (
             <span style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'monospace', display: 'block' }}>
               #{agentId}
+            </span>
+          )}
+          {isRunning && streamingText && !expanded && (
+            <span style={{ fontSize: 11, color: 'var(--text2)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: 'italic', marginTop: 1 }}>
+              {streamingText.slice(-120)}
             </span>
           )}
         </span>
@@ -1843,6 +1848,19 @@ export function Phase3Implementation() {
           break;
         }
 
+        case 'phase3.sub_agent_token': {
+          const taskId = event.payload.task_id as string;
+          const chunk = event.payload.content as string;
+          if (chunk) {
+            updateSubAgentBlock(taskId, e => ({
+              ...e,
+              // Keep a rolling window of the last ~200 chars so the subtitle stays fresh
+              streamingText: ((e.streamingText ?? '') + chunk).slice(-200),
+            }));
+          }
+          break;
+        }
+
         case 'phase3.sub_agent_update': {
           const taskId = event.payload.task_id as string;
           const updateType = event.payload.update_type as string;
@@ -1874,8 +1892,8 @@ export function Phase3Implementation() {
           const blocker = event.payload.blocker as string | null;
           upsertSubAgentBlock(
             taskId,
-            e => ({ ...e, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker }),
-            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: event.payload.agent_id as string | undefined, title: (event.payload.title as string) || `Task ${taskId}`, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker, updates: [] }),
+            e => ({ ...e, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker, streamingText: undefined }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: event.payload.agent_id as string | undefined, title: (event.payload.title as string) || `Task ${taskId}`, status: success && !blocker ? 'done' : 'blocked', summary, filesWritten, blocker, updates: [], streamingText: undefined }),
           );
           // Debounce file list refresh on sub-agent completion
           if (fileRefreshTimer.current) clearTimeout(fileRefreshTimer.current);
@@ -1888,8 +1906,8 @@ export function Phase3Implementation() {
           const title = (event.payload.title as string) || `Task ${taskId}`;
           upsertSubAgentBlock(
             taskId,
-            e => ({ ...e, status: 'cancelled', summary: 'Cancelled by user', blocker: null }),
-            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: undefined, title, status: 'cancelled', summary: 'Cancelled by user', filesWritten: [], blocker: null, updates: [] }),
+            e => ({ ...e, status: 'cancelled', summary: 'Cancelled by user', blocker: null, streamingText: undefined }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: undefined, title, status: 'cancelled', summary: 'Cancelled by user', filesWritten: [], blocker: null, updates: [], streamingText: undefined }),
           );
           break;
         }
@@ -2402,6 +2420,7 @@ export function Phase3Implementation() {
                           filesWritten={t.filesWritten}
                           blocker={t.blocker}
                           updates={t.updates}
+                          streamingText={t.streamingText}
                           onStop={() => doStopTask(t.taskId)}
                         />
                       ))}
