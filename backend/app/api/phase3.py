@@ -216,6 +216,11 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                 if tool in ("list_files", "read_file", "grep_files", "web_search"):
                     await _emit_tool_use(idea_id, session_id, tool, result)
 
+            elif event_type == "orchestrator_token":
+                content = str(data.get("content", ""))
+                if content:
+                    await event_bus.publish(ev.phase3_orchestrator_token(idea_id, session_id, content))
+
             elif event_type == "orchestrator_message":
                 content = str(data.get("content", "")).strip()
                 if content:

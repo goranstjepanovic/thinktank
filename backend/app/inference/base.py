@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -37,6 +37,7 @@ class InferenceRequest:
     tools: list[ToolDefinition] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: int | None = None  # overrides backend default when set
+    on_token: Callable[[str], None] | None = None  # optional token-level streaming callback
 
 
 @dataclass

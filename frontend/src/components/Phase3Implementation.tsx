@@ -86,6 +86,7 @@ type ActivityEntry =
   | { kind: 'user_msg'; id: number; messageId: string; content: string }
   | { kind: 'assistant_msg'; id: number; messageId: string; content: string }
   | { kind: 'orchestrator_thinking'; id: number }
+  | { kind: 'orchestrator_streaming'; id: number; content: string }
   | { kind: 'orchestrator_message'; id: number; content: string }
   | { kind: 'sub_agent_block'; id: number; taskId: string; agentId?: string; title: string; status: 'queued' | 'running' | 'done' | 'blocked' | 'cancelled'; summary: string; filesWritten: string[]; blocker: string | null; updates: SubAgentUpdate[] }
   | { kind: 'plan_warnings'; id: number; warnings: string[] }
@@ -342,6 +343,19 @@ function OrchestratorThinkingEntry() {
         <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
       </div>
       <span style={{ fontSize: 12 }}>🧭 Orchestrator planning…</span>
+    </div>
+  );
+}
+
+function OrchestratorStreamingEntry({ content }: { content: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', color: 'var(--text2)' }}>
+      <div style={{ display: 'flex', gap: 3, marginTop: 2 }}>
+        <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+      </div>
+      <span style={{ fontSize: 12, fontStyle: 'italic', maxWidth: '80%', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+        {content}
+      </span>
     </div>
   );
 }
@@ -1478,8 +1492,8 @@ export function Phase3Implementation() {
         return [...prev, entry];
       }
       if (entry.kind === 'orchestrator_thinking') {
-        // Replace previous orchestrator_thinking
-        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking'), entry];
+        // New round: clear previous thinking spinner and any streaming content
+        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'orchestrator_streaming' && e.kind !== 'thinking'), entry];
       }
       if (entry.kind === 'tool_use') {
         return [...prev.filter(e => e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
@@ -1488,10 +1502,11 @@ export function Phase3Implementation() {
         return [...prev.filter(e => e.kind !== 'writing' && e.kind !== 'tool_use' && e.kind !== 'thinking'), entry];
       }
       if (entry.kind === 'orchestrator_message') {
-        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
+        // Complete message replaces thinking spinner + any streaming preview
+        return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'orchestrator_streaming' && e.kind !== 'thinking' && e.kind !== 'tool_use'), entry];
       }
       if (entry.kind === 'sub_agent_block') {
-        const filtered = prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use');
+        const filtered = prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'orchestrator_streaming' && e.kind !== 'thinking' && e.kind !== 'tool_use');
         // If a block for this task already exists, skip — updateSubAgentBlock handles mutations
         if (filtered.some(e => e.kind === 'sub_agent_block' && e.taskId === entry.taskId)) return filtered;
         return [...filtered, entry];
@@ -1514,7 +1529,7 @@ export function Phase3Implementation() {
         return prev.map(e => e.kind === 'sub_agent_block' && e.taskId === taskId ? updater(e) : e);
       }
       const newBlock = factory();
-      return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'thinking' && e.kind !== 'tool_use'), newBlock];
+      return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'orchestrator_streaming' && e.kind !== 'thinking' && e.kind !== 'tool_use'), newBlock];
     });
 
   // Auto-scroll log on new entries or when switching back to the chat tab
@@ -1763,6 +1778,29 @@ export function Phase3Implementation() {
         case 'phase3.orchestrator_thinking':
           addEntry({ kind: 'orchestrator_thinking', id: nextId() });
           break;
+
+        case 'phase3.orchestrator_token': {
+          const chunk = event.payload.content as string;
+          if (chunk) {
+            setLog(prev => {
+              const existingIdx = prev.findLastIndex(e => e.kind === 'orchestrator_streaming');
+              if (existingIdx !== -1) {
+                const updated = [...prev];
+                const existing = updated[existingIdx] as Extract<ActivityEntry, { kind: 'orchestrator_streaming' }>;
+                // Keep only the last ~300 chars to avoid unbounded growth
+                const combined = (existing.content + chunk).slice(-300);
+                updated[existingIdx] = { ...existing, content: combined };
+                return updated;
+              }
+              // Create a new streaming entry, replacing the thinking spinner
+              return [
+                ...prev.filter(e => e.kind !== 'orchestrator_thinking'),
+                { kind: 'orchestrator_streaming' as const, id: nextId(), content: chunk },
+              ];
+            });
+          }
+          break;
+        }
 
         case 'phase3.orchestrator_message':
           addEntry({
@@ -2213,7 +2251,7 @@ export function Phase3Implementation() {
             {/* Left: orchestrator chat */}
             <div style={{ flex: '0 0 55%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
               <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
-                {(isRunning || isWaiting) && log.filter(e => ['orchestrator_thinking', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete'].includes(e.kind)).length === 0 && (
+                {(isRunning || isWaiting) && log.filter(e => ['orchestrator_thinking', 'orchestrator_streaming', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete'].includes(e.kind)).length === 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text2)', fontSize: 12 }}>
                     <div style={{ display: 'flex', gap: 3 }}>
                       <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
@@ -2222,7 +2260,7 @@ export function Phase3Implementation() {
                   </div>
                 )}
                 {(() => {
-                  const _visibleKinds = new Set(['orchestrator_thinking', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete']);
+                  const _visibleKinds = new Set(['orchestrator_thinking', 'orchestrator_streaming', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete']);
                   const _leftEntries = log.filter(e => _visibleKinds.has(e.kind));
                   const _hidden = Math.max(0, _leftEntries.length - activityVisible);
                   const _visible = _leftEntries.slice(-activityVisible);
@@ -2239,6 +2277,7 @@ export function Phase3Implementation() {
                       {_visible.map((entry) => {
                         switch (entry.kind) {
                           case 'orchestrator_thinking': return <OrchestratorThinkingEntry key={entry.id} />;
+                          case 'orchestrator_streaming': return <OrchestratorStreamingEntry key={entry.id} content={entry.content} />;
                           case 'orchestrator_message': return <OrchestratorMessageEntry key={entry.id} content={entry.content} />;
                           case 'tool_use': return <ToolUseEntry key={entry.id} tool={entry.tool} detail={entry.detail} />;
                           case 'thinking': return <ThinkingEntry key={entry.id} />;

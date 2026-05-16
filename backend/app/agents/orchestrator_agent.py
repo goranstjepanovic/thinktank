@@ -40,6 +40,31 @@ from app.tools.interface_extractor import write_interface_manifest, format_manif
 logger = logging.getLogger(__name__)
 
 _MAX_ORCHESTRATOR_ROUNDS = 100  # safety ceiling — real stops are done=true or consecutive empty rounds
+
+_THINK_TAG_OPEN = "<think>"
+_THINK_TAG_CLOSE = "</think>"
+
+
+def _filter_think_token(token: str, in_think: bool) -> tuple[bool, str]:
+    """Strip <think>…</think> spans from a streaming token fragment, tracking state across calls."""
+    visible_parts: list[str] = []
+    buf = token
+    while buf:
+        if in_think:
+            end = buf.find(_THINK_TAG_CLOSE)
+            if end == -1:
+                break
+            in_think = False
+            buf = buf[end + len(_THINK_TAG_CLOSE):]
+        else:
+            start = buf.find(_THINK_TAG_OPEN)
+            if start == -1:
+                visible_parts.append(buf)
+                break
+            visible_parts.append(buf[:start])
+            in_think = True
+            buf = buf[start + len(_THINK_TAG_OPEN):]
+    return in_think, "".join(visible_parts)
 _BUILD_CHECK_INTERVAL = 3  # run a build check every N implementation rounds
 
 _RUN_BUILD_TOOL = ToolDefinition(
@@ -1888,6 +1913,24 @@ class OrchestratorAgent:
             async def _orch_tool_cb(tool: str, result: dict) -> None:
                 await on_orchestrator_event("orchestrator_tool", {"tool": tool, "result": result})
 
+            # Token-level streaming from OpenVINO — shows orchestrator reasoning in the UI.
+            # Called from a thread pool thread, so we schedule back onto the event loop.
+            _orch_stream_loop = asyncio.get_running_loop()
+            _stream_in_think = False
+            _stream_buf: list[str] = []
+
+            def _orch_on_token(token: str) -> None:
+                nonlocal _stream_in_think, _stream_buf
+                _stream_in_think, visible = _filter_think_token(token, _stream_in_think)
+                if visible:
+                    _stream_buf.append(visible)
+                    chunk = "".join(_stream_buf)
+                    _stream_buf.clear()
+                    asyncio.run_coroutine_threadsafe(
+                        on_orchestrator_event("orchestrator_token", {"content": chunk}),
+                        _orch_stream_loop,
+                    )
+
             async def _handle_inspect_files(args: dict) -> dict:
                 raw_paths = [str(p) for p in (args.get("paths") or []) if p][:10]
                 focus = str(args.get("focus") or "")
@@ -1984,6 +2027,7 @@ class OrchestratorAgent:
                     on_tool_result=_orch_tool_cb,
                     extra_tools=_extra_tools,
                     custom_tool_handlers=_extra_handlers,
+                    on_token=_orch_on_token,
                 )
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)

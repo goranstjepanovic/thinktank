@@ -135,6 +135,9 @@ def phase3_orchestrator_thinking(idea_id: str, session_id: str) -> PipelineEvent
 def phase3_orchestrator_message(idea_id: str, session_id: str, content: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.orchestrator_message", idea_id=idea_id, payload={"session_id": session_id, "content": content})
 
+def phase3_orchestrator_token(idea_id: str, session_id: str, content: str) -> PipelineEvent:
+    return PipelineEvent(event_type="phase3.orchestrator_token", idea_id=idea_id, payload={"session_id": session_id, "content": content})
+
 def phase3_sub_agent_queued(idea_id: str, session_id: str, task_id: str, title: str, agent_id: str) -> PipelineEvent:
     return PipelineEvent(event_type="phase3.sub_agent_queued", idea_id=idea_id, payload={"session_id": session_id, "task_id": task_id, "title": title, "agent_id": agent_id})
 
