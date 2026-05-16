@@ -162,6 +162,22 @@ async def list_all(project_id: str) -> list[dict]:
     return [{"file_path": fp, "snippet": snip, "stored_at": ts} for fp, snip, ts in rows]
 
 
+async def delete_project(project_id: str) -> int:
+    """Delete all memory observations for a project. Returns the number of rows deleted."""
+    if _db_path is None:
+        return 0
+    async with aiosqlite.connect(_db_path) as db:
+        await _ensure_table(db)
+        cursor = await db.execute(
+            "DELETE FROM project_memories WHERE project_id = ?",
+            (project_id,),
+        )
+        await db.commit()
+        n = cursor.rowcount
+    logger.info("memory: deleted %d observation(s) for project %s", n, project_id)
+    return n
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions — imported by orchestrator_agent to wire up sub-agents
 # ---------------------------------------------------------------------------

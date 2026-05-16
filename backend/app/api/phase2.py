@@ -478,6 +478,13 @@ async def reset_phase2(
     if phase3:
         await db.delete(phase3)
 
+    # ── Always clear agent memory on phase3 reset — observations reference files
+    #    that may no longer exist or have changed in the new run. ──
+    from app import memory as _memory
+    _mem_deleted = await _memory.delete_project(str(idea_id))
+    if _mem_deleted:
+        logger.info("reset: cleared %d memory observation(s) for idea %s", _mem_deleted, idea_id)
+
     # ── Optionally remove generated files from disk + telemetry ──
     if body.delete_output_dir and output_dir:
         try:
