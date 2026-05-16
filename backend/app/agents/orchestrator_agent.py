@@ -2039,14 +2039,18 @@ class OrchestratorAgent:
                         "orchestrator: user_message looks like a capability complaint — nudging to dispatch a task instead: %r",
                         content[:120],
                     )
-                    working_messages.append(Message(
-                        role="user",
-                        content=(
-                            "You must not ask the user to run commands. "
-                            "Sub-agents have `run_shell` — dispatch a task with the shell command in its instruction. "
+                    completed_tasks.append({
+                        "id": f"_capability_complaint_{round_idx}",
+                        "title": "(capability complaint intercepted)",
+                        "summary": (
+                            "REJECTED: Do not ask the user to run commands. "
+                            "Sub-agents have run_shell — dispatch a task with the shell command in its instruction. "
                             "Issue a JSON response with next_tasks now."
                         ),
-                    ))
+                        "success": False,
+                        "files_written": [],
+                        "commands_run": [],
+                    })
                     continue
                 await on_orchestrator_event("orchestrator_message", {"content": content})
                 await on_orchestrator_event("waiting", {})
