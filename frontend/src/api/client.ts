@@ -29,6 +29,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ notes: notes ?? '' }),
     }),
+  requestBranch: (id: string, parentBranchId?: string) =>
+    request<{ branch_id: string; idea: import('../types').IdeaDetail }>(`/ideas/${id}/request-branch`, {
+      method: 'POST',
+      body: JSON.stringify({ parent_branch_id: parentBranchId ?? null }),
+    }),
 
   // Branches
   listBranches: (ideaId: string) =>

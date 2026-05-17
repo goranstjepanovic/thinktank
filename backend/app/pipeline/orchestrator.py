@@ -100,6 +100,120 @@ class Orchestrator:
             pass  # fall back to null directions — pipeline still works
         return []
 
+    async def request_branch(self, idea_id: str, parent_branch_id: str | None = None) -> str:
+        """Spawn a new branch on user request — bypasses the max_branches limit.
+
+        Generates a direction that is explicitly distinct from any existing viable
+        approaches, then queues the branch and returns its id.
+        If the idea is CONVERGED, it is reset to RUNNING.
+        """
+        async with AsyncSessionLocal() as session:
+            idea = await self._get_idea(session, idea_id)
+            if not idea:
+                raise ValueError(f"Idea {idea_id} not found")
+
+            result = await session.execute(
+                select(SolutionBranch).where(SolutionBranch.idea_id == idea_id)
+            )
+            existing = result.scalars().all()
+            next_index = max((b.branch_index for b in existing), default=0) + 1
+            viable_approaches = [
+                b.approach_summary for b in existing
+                if b.status == "VIABLE" and b.approach_summary
+            ]
+            all_approaches = [
+                b.approach_summary for b in existing if b.approach_summary
+            ]
+
+            # Generate a direction that is distinct from all existing approaches
+            direction = await self._generate_distinct_direction(idea, session, all_approaches, viable_approaches)
+
+            # Build inherited context
+            inherited: dict = {"suggested_direction": direction, "user_requested": True}
+            if parent_branch_id:
+                parent = next((b for b in existing if b.id == parent_branch_id), None)
+                if parent:
+                    inherited["parent_branch_index"] = parent.branch_index
+                    inherited["parent_failure_reason"] = parent.failure_reason
+
+            branch = SolutionBranch(
+                idea_id=idea_id,
+                parent_branch_id=parent_branch_id,
+                branch_index=next_index,
+                status="QUEUED",
+                current_stage=0,
+                approach_summary=direction,
+                inherited_context=json.dumps(inherited),
+            )
+            session.add(branch)
+
+            # Re-open a CONVERGED idea so convergence check works properly
+            if idea.status == "CONVERGED":
+                idea.status = "RUNNING"
+
+            await session.commit()
+            await session.refresh(branch)
+
+        await event_bus.publish(ev.branch_spawned(idea_id, branch.id, next_index, direction, parent_branch_id))
+        await self._queue.put((idea_id, branch.id, next_index, parent_branch_id, inherited))
+        return branch.id
+
+    async def _generate_distinct_direction(
+        self,
+        idea: "Idea",
+        session,
+        all_approaches: list[str],
+        viable_approaches: list[str],
+    ) -> str | None:
+        """Ask the model for a solution direction clearly different from existing ones."""
+        from app.inference.base import Message
+
+        existing_block = ""
+        if viable_approaches:
+            existing_block = "Viable approaches already found (must be DIFFERENT from these):\n" + "\n".join(
+                f"- {a}" for a in viable_approaches
+            )
+        elif all_approaches:
+            existing_block = "Approaches already tried (must be DIFFERENT from these):\n" + "\n".join(
+                f"- {a}" for a in all_approaches
+            )
+
+        system_prompt = (
+            "You are a solution strategist. Propose ONE new solution approach for the idea described below. "
+            "The approach MUST be fundamentally different in architecture or technology strategy from any "
+            "approaches already listed. CONSTRAINTS ARE ABSOLUTE — the new approach must respect every constraint. "
+            "Return JSON with key: direction (string, 1-2 sentences summarising the approach's unique angle "
+            "and key technology choices)."
+        )
+        user_prompt = (
+            f"Idea: {idea.name}\n"
+            f"Description: {idea.description}\n"
+            f"Requirements: {idea.requirements}\n"
+            f"Constraints: {idea.constraints}\n\n"
+            f"{existing_block}\n\n"
+            "Propose ONE fundamentally different solution direction that has not been tried yet."
+        )
+        messages = [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=user_prompt),
+        ]
+        try:
+            output = await self._inference_client.call(
+                stage_key="approach_generation",
+                messages=messages,
+                session=session,
+                idea_id=idea.id,
+                branch_id=None,
+                call_type="FAILURE_ANALYSIS",
+                call_index=0,
+            )
+            direction = output.get("direction")
+            if isinstance(direction, str) and direction.strip():
+                return direction.strip()
+        except Exception:
+            pass
+        return None
+
     async def on_branch_failed(self, idea_id: str, branch_id: str) -> None:
         """Called by BranchRunner when a branch fails. Triggers failure analysis."""
         if idea_id in self._active and branch_id in self._active[idea_id]:

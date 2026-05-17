@@ -52,6 +52,7 @@ function BranchTreeNode({
   setSelectingBranchId,
   setSelectionNotes,
   doSelect,
+  onRequestBranch,
 }: {
   node: BranchNode;
   ideaId: string;
@@ -68,6 +69,7 @@ function BranchTreeNode({
   setSelectingBranchId: (id: string | null) => void;
   setSelectionNotes: (notes: string) => void;
   doSelect: (branchId: string) => Promise<void>;
+  onRequestBranch: (branchId: string) => void;
 }) {
   const navigate = useNavigate();
   const isSelected = node.id === selectedBranchId;
@@ -152,6 +154,20 @@ function BranchTreeNode({
               <span style={{ fontSize: 11, color: 'var(--text2)' }}>→</span>
             </div>
           </div>
+
+          {/* Spawn-from-here button for terminal branches */}
+          {(node.status === 'FAILED' || node.status === 'VIABLE') && (
+            <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+              <button
+                className="btn-ghost"
+                style={{ fontSize: 11, padding: '2px 8px', opacity: 0.75 }}
+                disabled={actionLoading === 'request-branch' + node.id}
+                onClick={(e) => { e.stopPropagation(); onRequestBranch(node.id); }}
+              >
+                {actionLoading === 'request-branch' + node.id ? 'Generating…' : '+ Branch from here'}
+              </button>
+            </div>
+          )}
 
           {(canSelect || isSelectingThis) && (
             <div
@@ -272,6 +288,7 @@ function BranchTreeNode({
           setSelectingBranchId={setSelectingBranchId}
           setSelectionNotes={setSelectionNotes}
           doSelect={doSelect}
+          onRequestBranch={onRequestBranch}
         />
       ))}
     </div>
@@ -411,6 +428,18 @@ export function IdeaDetail() {
     }
   };
 
+  const doRequestBranch = async (parentBranchId?: string) => {
+    if (!id) return;
+    const key = 'request-branch' + (parentBranchId ?? '');
+    setActionLoading(key);
+    try {
+      const { idea: updated } = await api.requestBranch(id, parentBranchId);
+      setIdeaDetail(updated);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   const tree = buildTree(idea.branches);
 
   return (
@@ -511,16 +540,30 @@ export function IdeaDetail() {
           {/* Selection prompt banner */}
           {(isConverged || isActive) && viableBranches.length > 0 && (
             <div className="card" style={{ background: '#1a2a1a', borderColor: 'var(--green)', padding: '12px 16px' }}>
-              <p style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600, marginBottom: 4 }}>
-                {isConverged
-                  ? `Analysis complete — ${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} found`
-                  : `${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} ready — other branches still running`}
-              </p>
-              <p style={{ fontSize: 12, color: 'var(--text2)' }}>
-                {isConverged
-                  ? 'Review the viable branches below and select one to proceed with.'
-                  : 'You can select now to proceed — remaining branches will be cancelled.'}
-              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <p style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600, marginBottom: 4 }}>
+                    {isConverged
+                      ? `Analysis complete — ${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} found`
+                      : `${viableBranches.length} viable solution${viableBranches.length > 1 ? 's' : ''} ready — other branches still running`}
+                  </p>
+                  <p style={{ fontSize: 12, color: 'var(--text2)' }}>
+                    {isConverged
+                      ? 'Review the viable branches below and select one to proceed with.'
+                      : 'You can select now to proceed — remaining branches will be cancelled.'}
+                  </p>
+                </div>
+                {isConverged && (
+                  <button
+                    className="btn-ghost"
+                    style={{ fontSize: 12, whiteSpace: 'nowrap', marginLeft: 16, flexShrink: 0 }}
+                    disabled={actionLoading === 'request-branch'}
+                    onClick={() => doRequestBranch()}
+                  >
+                    {actionLoading === 'request-branch' ? 'Generating…' : '+ Try a different approach'}
+                  </button>
+                )}
+              </div>
             </div>
           )}
           {isSelected && idea.selected_branch_id && (
@@ -565,6 +608,7 @@ export function IdeaDetail() {
               setSelectingBranchId={setSelectingBranchId}
               setSelectionNotes={setSelectionNotes}
               doSelect={doSelect}
+              onRequestBranch={doRequestBranch}
             />
           ))}
 

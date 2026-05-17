@@ -153,6 +153,34 @@ async def select_solution(
     return _to_detail(idea)
 
 
+class RequestBranchBody(BaseModel):
+    parent_branch_id: str | None = None
+
+
+@router.post("/{idea_id}/request-branch")
+async def request_branch(
+    idea_id: str,
+    body: RequestBranchBody = RequestBranchBody(),
+    session: AsyncSession = Depends(get_session),
+):
+    """Spawn a new solution branch on user request — bypasses the branch limit.
+
+    Can be called on ideas in any non-abandoned status. If the idea is CONVERGED,
+    it is reset to RUNNING so the new branch can complete and trigger convergence again.
+    The new branch is generated with a direction explicitly different from existing
+    viable approaches.
+    """
+    from app.pipeline.orchestrator import orchestrator
+
+    idea = await _get_or_404(idea_id, session)
+    if idea.status == "ABANDONED":
+        raise HTTPException(status_code=409, detail="Cannot add branches to an abandoned idea")
+
+    branch_id = await orchestrator.request_branch(idea_id, body.parent_branch_id)
+    updated = await _get_or_404(idea_id, session)
+    return {"branch_id": branch_id, "idea": _to_detail(updated)}
+
+
 @router.delete("/{idea_id}", status_code=204)
 async def delete_idea(idea_id: str, session: AsyncSession = Depends(get_session)):
     from app.pipeline.orchestrator import orchestrator
