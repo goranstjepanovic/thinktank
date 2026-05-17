@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { api } from '../api/client';
 import type { BranchSummary, DocumentMeta } from '../types';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -89,6 +90,7 @@ export function DocumentViewer({ ideaId, viableBranches, initialBranchId }: Prop
         ) : (
           <div className="markdown">
             <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
               components={{
                 code({ className, children }) {
                   const lang = /language-(\w+)/.exec(className || '')?.[1];
