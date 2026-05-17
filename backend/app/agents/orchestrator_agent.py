@@ -489,7 +489,9 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         prd_excerpt += "\n... (PRD truncated for context)"
 
     task_schema = (
-        '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
+        '{"id": "snake_case_id", '
+        '"plan_task_id": "EXACT id from plan_next() — required when dispatching a plan task", '
+        '"title": "short title ≤ 60 chars", '
         '"task_type": "implement", '
         '"instruction": "complete self-contained instructions — list all files to create, '
         'their purpose, cross-file dependencies, and commands to run"}'
@@ -528,7 +530,10 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "for every task derived from the PRD. Scope each to ≤2 files before adding.\n"
         "2. **Each round**: call `plan_next` to get the next task. "
         "Call `plan_update(id, status='in_progress')` before dispatching it. "
-        "Use its `instruction` field as the task instruction in `next_tasks`.\n"
+        "Use its `instruction` field as the task instruction in `next_tasks`. "
+        "**CRITICAL**: copy the EXACT `id` from the plan task into the `next_tasks` entry — "
+        "the runtime matches dispatched tasks to plan tasks by id. "
+        "If the ids don't match, the plan never advances and the orchestrator loops forever.\n"
         "3. **After success**: call `plan_update(id, status='done')`.\n"
         "4. **After permanent failure** (⛔ REFRAME REQUIRED in history): call `plan_remove(id)`, "
         "then `plan_add` 2–3 smaller replacement tasks each touching ≤2 files.\n"
@@ -2536,6 +2541,9 @@ class OrchestratorAgent:
 
             # Auto-update plan file so plan_next stays accurate even when the orchestrator
             # model forgets to call plan_update after a task completes.
+            # Uses plan_task_id (explicit link) if the orchestrator provided it,
+            # then falls back to the dispatched task's id, then scans for orphaned
+            # in_progress tasks as a last resort.
             import json as _json
             _plan_file = Path(output_dir) / ".think-plan.json"
             if _plan_file.exists():
@@ -2543,19 +2551,44 @@ class OrchestratorAgent:
                     _plan_data = _json.loads(_plan_file.read_text(encoding="utf-8"))
                     _plan_map = {t["id"]: t for t in _plan_data.get("tasks", [])}
                     _plan_dirty = False
+                    _matched_plan_ids: set[str] = set()
                     for t, sub_result in zip(valid_tasks, batch_results):
-                        pt = _plan_map.get(t["_id"])
+                        # plan_task_id is the explicit link the orchestrator copied from plan_next();
+                        # fall back to the dispatched task's own id if omitted.
+                        _plan_lookup_id = t.get("plan_task_id") or t["_id"]
+                        pt = _plan_map.get(_plan_lookup_id)
+                        if pt is None:
+                            # Also try the dispatched id in case orchestrator set plan_task_id wrong
+                            pt = _plan_map.get(t["_id"])
                         if pt is None:
                             continue
+                        _matched_plan_ids.add(pt["id"])
                         current = pt.get("status", "pending")
                         if sub_result.get("success") and current != "done":
                             pt["status"] = "done"
                             _plan_dirty = True
-                            logger.debug("orchestrator: plan auto-done '%s'", t["_id"])
+                            logger.debug("orchestrator: plan auto-done '%s' (via %s)", pt["id"], _plan_lookup_id)
                         elif sub_result.get("permanently_failed") and current not in ("done", "failed"):
                             pt["status"] = "failed"
                             _plan_dirty = True
-                            logger.debug("orchestrator: plan auto-failed '%s'", t["_id"])
+                            logger.debug("orchestrator: plan auto-failed '%s'", pt["id"])
+
+                    # Fallback: if a plan task was set to in_progress but the dispatched task
+                    # used a completely different id (no match above), the plan task is orphaned.
+                    # If this round had at least one success, mark the orphan done — the orchestrator
+                    # would only mark a task in_progress immediately before dispatching it.
+                    _round_had_success = any(r.get("success") for r in batch_results)
+                    if _round_had_success:
+                        for pt in _plan_data.get("tasks", []):
+                            if pt.get("status") == "in_progress" and pt["id"] not in _matched_plan_ids:
+                                pt["status"] = "done"
+                                _plan_dirty = True
+                                logger.info(
+                                    "orchestrator: plan auto-done orphaned in_progress task '%s' "
+                                    "(id mismatch — dispatched task used a different id)",
+                                    pt["id"],
+                                )
+
                     if _plan_dirty:
                         _plan_file.write_text(
                             _json.dumps(_plan_data, indent=2, ensure_ascii=False), encoding="utf-8"
