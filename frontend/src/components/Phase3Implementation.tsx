@@ -1286,11 +1286,17 @@ function Phase3Sidebar({
   const doneTasks = subAgentBlocks.filter(b => b.status === 'done').length;
   const totalTasks = subAgentBlocks.length;
 
-  // Track previous ranking snapshot to show movement indicators
+  // prevRanksRef: "before" snapshot used to compute arrows
+  // lastRanksRef: last snapshot actually seen — only advance prevRanks when order changes
   const prevRanksRef = useRef<Map<string, number>>(new Map());
+  const lastRanksRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
-    if (ranking) {
-      prevRanksRef.current = new Map(ranking.models.map(m => [m.model, m.rank]));
+    if (!ranking) return;
+    const orderChanged = ranking.models.length !== lastRanksRef.current.size ||
+      ranking.models.some(m => lastRanksRef.current.get(m.model) !== m.rank);
+    if (orderChanged) {
+      prevRanksRef.current = new Map(lastRanksRef.current);
+      lastRanksRef.current = new Map(ranking.models.map(m => [m.model, m.rank]));
     }
   }, [ranking]);
 

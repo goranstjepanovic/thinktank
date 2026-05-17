@@ -386,9 +386,15 @@ function SubAgentRankingTable({ data }: { data: SubAgentRanking }) {
   const { models, min_calls, min_success_rate } = data;
   const rankedCount = models.filter(m => m.is_ranked).length;
   const prevRanksRef = useRef<Map<string, number>>(new Map());
+  const lastRanksRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
-    prevRanksRef.current = new Map(models.map(m => [m.model, m.rank]));
+    const orderChanged = models.length !== lastRanksRef.current.size ||
+      models.some(m => lastRanksRef.current.get(m.model) !== m.rank);
+    if (orderChanged) {
+      prevRanksRef.current = new Map(lastRanksRef.current);
+      lastRanksRef.current = new Map(models.map(m => [m.model, m.rank]));
+    }
   }, [models]);
 
   function rankMovement(model: string, currentRank: number): { delta: number; first: boolean } {
