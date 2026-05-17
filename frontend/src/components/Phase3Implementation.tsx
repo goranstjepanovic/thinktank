@@ -1286,6 +1286,19 @@ function Phase3Sidebar({
   const doneTasks = subAgentBlocks.filter(b => b.status === 'done').length;
   const totalTasks = subAgentBlocks.length;
 
+  // Track previous ranking snapshot to show movement indicators
+  const prevRanksRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    if (ranking) {
+      prevRanksRef.current = new Map(ranking.models.map(m => [m.model, m.rank]));
+    }
+  }, [ranking]);
+
+  function rankMovement(model: string, currentRank: number): { delta: number; first: boolean } {
+    if (!prevRanksRef.current.has(model)) return { delta: 0, first: true };
+    return { delta: prevRanksRef.current.get(model)! - currentRank, first: false };
+  }
+
   return (
     <div style={{
       width: 220,
@@ -1381,11 +1394,19 @@ function Phase3Sidebar({
               {ranking.models.map((m) => {
                 const name = m.model.includes('/') ? m.model.split('/').pop()! : m.model;
                 const pct = m.total_calls > 0 ? Math.round(m.success_rate * 100) : null;
+                const { delta, first } = rankMovement(m.model, m.rank);
+                const mvIcon = first ? null : delta > 1 ? '⬆⬆' : delta === 1 ? '⬆' : delta < -1 ? '⬇⬇' : delta === -1 ? '⬇' : '·';
+                const mvColor = delta > 0 ? 'var(--green)' : delta < 0 ? 'var(--red)' : 'var(--text2)';
                 return (
-                  <div key={m.model} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div key={m.model} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ fontSize: 10, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums', flexShrink: 0, width: 14, textAlign: 'right' }}>
                       {m.rank}.
                     </span>
+                    {mvIcon && (
+                      <span style={{ fontSize: 9, flexShrink: 0, color: mvColor, width: 12, textAlign: 'center', lineHeight: 1 }} title={delta === 0 ? 'no change' : `moved ${Math.abs(delta)} place${Math.abs(delta) > 1 ? 's' : ''} ${delta > 0 ? 'up' : 'down'}`}>
+                        {mvIcon}
+                      </span>
+                    )}
                     <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.model}>
                       {name}
                     </span>

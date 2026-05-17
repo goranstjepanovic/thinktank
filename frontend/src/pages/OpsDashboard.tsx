@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -385,6 +385,17 @@ function ToolsPerModelChart({ data }: { data: ToolModelStat[] }) {
 function SubAgentRankingTable({ data }: { data: SubAgentRanking }) {
   const { models, min_calls, min_success_rate } = data;
   const rankedCount = models.filter(m => m.is_ranked).length;
+  const prevRanksRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    prevRanksRef.current = new Map(models.map(m => [m.model, m.rank]));
+  }, [models]);
+
+  function rankMovement(model: string, currentRank: number): { delta: number; first: boolean } {
+    if (!prevRanksRef.current.has(model)) return { delta: 0, first: true };
+    return { delta: prevRanksRef.current.get(model)! - currentRank, first: false };
+  }
+
   return (
     <>
       <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 10 }}>
@@ -400,7 +411,7 @@ function SubAgentRankingTable({ data }: { data: SubAgentRanking }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['#', 'Model', 'Calls', 'Success', 'Rate', 'Avg Duration', 'Pool'].map(h => (
+              {['#', '', 'Model', 'Calls', 'Success', 'Rate', 'Avg Duration', 'Pool'].map(h => (
                 <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
@@ -409,10 +420,23 @@ function SubAgentRankingTable({ data }: { data: SubAgentRanking }) {
             {models.map((m: SubAgentRankEntry) => {
               const pct = Math.round(m.success_rate * 100);
               const rateColor = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : m.total_calls === 0 ? 'var(--text2)' : 'var(--red)';
+              const { delta, first } = rankMovement(m.model, m.rank);
+              const mvIcon = first ? null : delta > 1 ? '⬆⬆' : delta === 1 ? '⬆' : delta < -1 ? '⬇⬇' : delta === -1 ? '⬇' : '·';
+              const mvColor = delta > 0 ? 'var(--green)' : delta < 0 ? 'var(--red)' : 'var(--text2)';
               return (
                 <tr key={m.model} style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
                     {m.rank}
+                  </td>
+                  <td style={{ padding: '7px 4px', width: 20, textAlign: 'center' }}>
+                    {mvIcon && (
+                      <span
+                        style={{ color: mvColor, fontSize: 12, lineHeight: 1 }}
+                        title={`Moved ${Math.abs(delta)} place${Math.abs(delta) !== 1 ? 's' : ''} ${delta > 0 ? 'up' : 'down'}`}
+                      >
+                        {mvIcon}
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '7px 10px', fontFamily: 'monospace', fontSize: 12 }} title={m.model}>
                     {m.model}
