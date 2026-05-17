@@ -1843,6 +1843,7 @@ class OrchestratorAgent:
             # what was already done and doesn't restart from scaffolding.
             try:
                 _plan_data = json.loads(_plan_file.read_text(encoding="utf-8"))
+                _pending_plan_tasks: list[dict] = []
                 for _pt in _plan_data.get("tasks", []):
                     _status = _pt.get("status", "")
                     if _status == "done":
@@ -1862,9 +1863,43 @@ class OrchestratorAgent:
                         })
                         # Pre-veto so the orchestrator cannot re-dispatch the same task unchanged
                         _task_perm_fail_counts[_pt["id"]] = _MAX_TASK_PERM_FAILS
+                    elif _status in ("pending", "in_progress"):
+                        _pending_plan_tasks.append(_pt)
+
+                # If the plan had no done/failed tasks (e.g. run stopped before any task
+                # completed, or plan was written but statuses were never updated), inject
+                # a synthetic scaffold entry so the orchestrator knows the project exists
+                # and doesn't restart from Milestone 0. Include the pending plan tasks in
+                # the summary so the orchestrator picks up its own prior plan.
+                if not completed_tasks:
+                    _disk_files = sorted(
+                        p.relative_to(Path(output_dir)).as_posix()
+                        for p in Path(output_dir).rglob("*")
+                        if p.is_file()
+                        and p.name not in _INTERNAL_FILES
+                        and not p.name.endswith((".log", ".pyc"))
+                        and "__pycache__" not in p.parts
+                    )
+                    _pending_titles = [_pt.get("title", _pt["id"]) for _pt in _pending_plan_tasks]
+                    _resume_summary = (
+                        "Project was initialized in a previous run. "
+                        f"Files on disk: {', '.join(_disk_files[:20])}"
+                        + (f" (+{len(_disk_files) - 20} more)" if len(_disk_files) > 20 else "")
+                        + (f". Pending plan tasks: {'; '.join(_pending_titles)}" if _pending_titles else "")
+                        + ". Do NOT re-initialize. Check plan_list() and continue from where the previous run stopped."
+                    )
+                    completed_tasks.append({
+                        "id": "_resume_context",
+                        "title": "Project initialized (resumed from previous run)",
+                        "success": True,
+                        "summary": _resume_summary,
+                        "files_written": _disk_files[:10],
+                    })
+
                 logger.info(
-                    "orchestrator: resume detected — restored %d completed task(s) from plan",
-                    len(completed_tasks),
+                    "orchestrator: resume detected — %d completed task(s) from plan, %d pending",
+                    len([t for t in completed_tasks if t["id"] != "_resume_context"]),
+                    len(_pending_plan_tasks),
                 )
             except Exception as _e:
                 logger.warning("orchestrator: could not load plan for resume: %s", _e)
