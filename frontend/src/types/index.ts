@@ -326,6 +326,7 @@ export interface TelemetryCall {
   ts: string;
   project_id: string;
   project_name: string;
+  project_type: string | null;
   stage: string;
   model: string;
   backend: string;

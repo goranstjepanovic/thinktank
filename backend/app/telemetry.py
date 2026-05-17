@@ -21,9 +21,9 @@ def configure(path: str | Path) -> None:
     _log_path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def set_project(project_id: str, project_name: str = "") -> None:
+def set_project(project_id: str, project_name: str = "", project_type: str = "") -> None:
     """Set the current project context. Call once per orchestrator run."""
-    _project_ctx.set({"id": project_id, "name": project_name})
+    _project_ctx.set({"id": project_id, "name": project_name, "type": project_type})
 
 
 def set_call_context(
@@ -112,6 +112,7 @@ def log_call(
         "ts": datetime.now(timezone.utc).isoformat(),
         "project_id": proj.get("id", ""),
         "project_name": proj.get("name", ""),
+        "project_type": proj.get("type", "") or None,
         "stage": stage,
         "model": model,
         "backend": backend,

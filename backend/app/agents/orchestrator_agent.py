@@ -171,6 +171,58 @@ _PLAN_NEXT_TOOL = ToolDefinition(
 )
 
 
+def _detect_tech_type(prd_content: str) -> str:
+    """Heuristically detect the primary technology stack from PRD content."""
+    text = prd_content.lower()
+    if any(k in text for k in ("asp.net", " .net ", "c#", ".csproj", "dotnet restore", "dotnet new", "nuget")):
+        return "dotnet"
+    if any(k in text for k in ("fastapi", "django", "flask", "uvicorn", "pyproject.toml", "requirements.txt")):
+        return "python"
+    if any(k in text for k in ("express", "next.js", "nextjs", "node.js", "npm install", "package.json", "vite", "svelte", "vue", "react")):
+        return "node"
+    if any(k in text for k in ("go.mod", "golang", " goroutine", "go build")):
+        return "go"
+    if any(k in text for k in ("cargo.toml", "rust ", " crate")):
+        return "rust"
+    return ""
+
+
+async def _research_framework(tech_type: str) -> str | None:
+    """Run a single web search for current framework version and best practices. Returns formatted text or None."""
+    from app.config import settings as _settings
+    from app.tools.web_search import web_search as _web_search
+
+    _QUERIES: dict[str, str] = {
+        "dotnet": "ASP.NET Core .NET current LTS version 2025 dotnet new templates recommended",
+        "python": "Python current stable version 2025 pip pyproject.toml FastAPI Django recommended",
+        "node": "Node.js current LTS version 2025 npm TypeScript project setup recommended",
+        "go": "Go current stable version 2025 modules recommended project structure",
+        "rust": "Rust current stable version 2025 Cargo.toml recommended project setup",
+    }
+    query = _QUERIES.get(tech_type)
+    if not query:
+        return None
+    tavily_key = getattr(_settings, "tavily_api_key", "") or ""
+    try:
+        result = await _web_search(query=query, tavily_api_key=tavily_key, max_results=3)
+        if result.error or not result.results:
+            logger.debug("framework research: no results for %s: %s", tech_type, result.error)
+            return None
+        snippets = "\n\n".join(
+            f"**{h.title}**\n{h.snippet[:400]}"
+            for h in result.results[:3]
+        )
+        return (
+            f"## Framework Research — live data ({tech_type})\n\n"
+            f"The following was retrieved from the web before implementation started. "
+            f"Use it to pick the correct current version numbers and tooling — do NOT hardcode outdated versions.\n\n"
+            f"{snippets}"
+        )
+    except Exception as exc:
+        logger.warning("framework research: web search failed for %s: %s", tech_type, exc)
+        return None
+
+
 def _node_check_command(pkg_dir: Path) -> str | None:
     """Return the best build-check command for a Node.js project directory."""
     import json as _json
@@ -431,7 +483,7 @@ def _runtime_context() -> str:
     )
 
 
-def _orchestrator_system_prompt(prd_content: str) -> str:
+def _orchestrator_system_prompt(prd_content: str, framework_research: str | None = None) -> str:
     prd_excerpt = prd_content[:_MAX_PRD_CHARS]
     if len(prd_content) > _MAX_PRD_CHARS:
         prd_excerpt += "\n... (PRD truncated for context)"
@@ -644,7 +696,8 @@ def _orchestrator_system_prompt(prd_content: str) -> str:
         "  • Vite projects → no Rollup config at root; Vite IS the bundler\n"
         "  • SvelteKit → use @sveltejs/kit, not bare vite-plugin-svelte directly\n"
         "- When writing a task instruction that involves package.json, explicitly state the exact compatible versions to use.\n\n"
-        "## Startup scripts — mandatory before done=true\n\n"
+        + (f"{framework_research}\n\n" if framework_research else "")
+        + "## Startup scripts — mandatory before done=true\n\n"
         "Sub-agents register every runnable service in `SERVICES.json` at the project root. "
         "When you are about to set `done: true`, check the current user prompt for a SERVICES.json block. "
         "If it is present and a startup script has NOT yet been completed, you MUST dispatch a "
@@ -1819,7 +1872,8 @@ class OrchestratorAgent:
         is_sub_agent_user_cancelled: "Callable[[str], bool] | None" = None,
     ) -> str:
         from app import telemetry as _telemetry
-        _telemetry.set_project(idea.id, idea.name)
+        _tech_type = _detect_tech_type(prd_content)
+        _telemetry.set_project(idea.id, idea.name, _tech_type)
 
         output_dir = session.output_dir or ""
         completed_tasks: list[dict] = []
@@ -1924,6 +1978,16 @@ class OrchestratorAgent:
         _all_failed_rounds = 0        # consecutive rounds where every dispatched task permanently failed
         _prd_sections = _extract_prd_sections(prd_content)
 
+        # Research current framework versions before the first round (fresh starts only).
+        # The result is injected into the system prompt every round so the orchestrator
+        # always has live version data when writing task instructions.
+        _framework_research: str | None = None
+        if _tech_type and not _is_resume:
+            logger.info("orchestrator: researching framework %r before round 0", _tech_type)
+            _framework_research = await _research_framework(_tech_type)
+            if _framework_research:
+                logger.info("orchestrator: framework research retrieved (%d chars)", len(_framework_research))
+
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
             logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
             await on_orchestrator_event("orchestrator_thinking", {})
@@ -1945,7 +2009,7 @@ class OrchestratorAgent:
             _file_tree = _build_file_tree(output_dir) if output_dir else None
             _services_json = _read_services_json(output_dir) if output_dir else None
             orch_messages = [
-                Message(role="system", content=_orchestrator_system_prompt(prd_content)),
+                Message(role="system", content=_orchestrator_system_prompt(prd_content, _framework_research)),
                 Message(role="user", content=_orchestrator_user_prompt(
                     idea, branch, completed_tasks, _initial_follow_up,
                     pending_user_messages=pending_messages or None,
