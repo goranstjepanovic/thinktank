@@ -698,7 +698,9 @@ export function OpsDashboard() {
   const availableBackends = (data?.available_backends ?? []).map(b => ({ value: b, label: b }));
   const availableProjects = (data?.available_projects ?? []).map(p => {
     const tag = forkTags.get(p.id);
-    return { value: p.id, label: tag ? `${p.name || p.id} (${tag})` : (p.name || p.id) };
+    const name = p.name || p.id;
+    const shortId = p.id.slice(0, 8);
+    return { value: p.id, label: tag ? `${name} (${tag})` : `${name} [${shortId}]` };
   });
   const availableStages = (data?.available_stages ?? []).map(s => ({ value: s, label: s }));
 
