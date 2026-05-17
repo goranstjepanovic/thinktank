@@ -1792,9 +1792,11 @@ export function Phase3Implementation() {
               if (existingIdx !== -1) {
                 const updated = [...prev];
                 const existing = updated[existingIdx] as Extract<ActivityEntry, { kind: 'orchestrator_streaming' }>;
-                // Keep only the last ~300 chars to avoid unbounded growth
-                const combined = (existing.content + chunk).slice(-300);
-                updated[existingIdx] = { ...existing, content: combined };
+                // Keep the last 2 paragraphs so old text drops at line breaks, not mid-word
+                const combined = existing.content + chunk;
+                const paras = combined.split('\n\n');
+                const trimmed = paras.length > 2 ? paras.slice(-2).join('\n\n') : combined;
+                updated[existingIdx] = { ...existing, content: trimmed };
                 return updated;
               }
               // Create a new streaming entry, replacing the thinking spinner

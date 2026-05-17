@@ -134,6 +134,59 @@ def log_call(
         logger.debug("telemetry write error: %s", exc)
 
 
+def rank_models(stage: str, candidates: list[str], min_calls: int = 5) -> list[str]:
+    """Return candidates sorted by telemetry: success_rate DESC, avg_duration_ms ASC.
+
+    Models with fewer than min_calls records are placed after ranked models,
+    preserving their relative order from candidates.
+    """
+    if not candidates or _log_path is None or not _log_path.exists():
+        return candidates
+
+    stats: dict[str, dict] = {m: {"total": 0, "success": 0, "dur_sum": 0, "dur_n": 0} for m in candidates}
+    try:
+        with open(_log_path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("stage") != stage:
+                    continue
+                model = rec.get("model")
+                if model not in stats:
+                    continue
+                s = stats[model]
+                s["total"] += 1
+                if rec.get("success"):
+                    s["success"] += 1
+                dur = rec.get("duration_ms")
+                if dur is not None:
+                    s["dur_sum"] += dur
+                    s["dur_n"] += 1
+    except Exception as exc:
+        logger.debug("telemetry rank_models error: %s", exc)
+        return candidates
+
+    ranked, unranked = [], []
+    for m in candidates:
+        s = stats[m]
+        if s["total"] >= min_calls:
+            success_rate = s["success"] / s["total"]
+            avg_dur = s["dur_sum"] / s["dur_n"] if s["dur_n"] else float("inf")
+            ranked.append((m, success_rate, avg_dur))
+        else:
+            unranked.append(m)
+
+    ranked.sort(key=lambda x: (-x[1], x[2]))
+    result = [m for m, _, _ in ranked] + unranked
+    logger.debug("telemetry rank_models[%s]: %s", stage, result)
+    return result
+
+
 def delete_project_records(project_id: str) -> int:
     """Remove all telemetry records for a project. Returns the count deleted."""
     if _log_path is None or not _log_path.exists():

@@ -431,36 +431,17 @@ def _runtime_context() -> str:
     )
 
 
-def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None = None) -> str:
+def _orchestrator_system_prompt(prd_content: str) -> str:
     prd_excerpt = prd_content[:_MAX_PRD_CHARS]
     if len(prd_content) > _MAX_PRD_CHARS:
         prd_excerpt += "\n... (PRD truncated for context)"
 
-    if selectable_models:
-        model_lines = "\n".join(
-            f'- **"{m.name}"** (`{m.model}`): {m.description}'
-            for m in selectable_models
-        )
-        model_section = (
-            f"## Sub-agent model selection\n\n"
-            f"Each task must include a `\"model\"` field. Pick based on task complexity:\n\n"
-            f"{model_lines}\n\n"
-            f"Default to **\"fast\"** when unsure — only escalate when the task genuinely requires it.\n\n"
-        )
-        task_schema = (
-            '{"id": "snake_case_id", "title": "short title ≤ 60 chars", "model": "fast", '
-            '"task_type": "implement", '
-            '"instruction": "complete self-contained instructions — list all files to create, '
-            'their purpose, cross-file dependencies, and commands to run"}'
-        )
-    else:
-        model_section = ""
-        task_schema = (
-            '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
-            '"task_type": "implement", '
-            '"instruction": "complete self-contained instructions — list all files to create, '
-            'their purpose, cross-file dependencies, and commands to run"}'
-        )
+    task_schema = (
+        '{"id": "snake_case_id", "title": "short title ≤ 60 chars", '
+        '"task_type": "implement", '
+        '"instruction": "complete self-contained instructions — list all files to create, '
+        'their purpose, cross-file dependencies, and commands to run"}'
+    )
 
     return (
         _runtime_context()
@@ -516,7 +497,6 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "'import from `src/utils/auth.py` — do NOT recreate its functions in this file.'\n\n"
         "## Product Requirements Document\n\n"
         f"{prd_excerpt}\n\n"
-        f"{model_section}"
         "## Output format\n\n"
         "After any tool use (or immediately), output a JSON object only — no prose:\n"
         '{"analysis": "what has been done and what remains", '
@@ -579,6 +559,10 @@ def _orchestrator_system_prompt(prd_content: str, selectable_models: list | None
         "Call it: (a) after every scaffold task, (b) after completing each feature, "
         "(c) whenever the build status is unknown. Build errors tell you exactly which file and line "
         "is broken — every error is a concrete task to add.\n\n"
+        "**When build fails — act immediately, do not analyse**: Read the first error: file name, line "
+        "number, error message. Dispatch ONE task that says 'Fix [file]:[line] — [error]'. "
+        "Do NOT spend tokens reasoning about escape characters, backslash syntax, string quoting, "
+        "or encoding. The sub-agent will fix the actual source; you just need to name the file and error.\n\n"
         "## task_type field\n\n"
         "Every task must include one of:\n"
         "- `\"task_type\": \"implement\"` (default) — task creates or modifies source files\n"
@@ -1841,6 +1825,10 @@ class OrchestratorAgent:
         _verification_attempts = 0    # counts how many verification rounds have run
         _empty_task_rounds = 0        # consecutive rounds with done=false but no tasks produced
         _consecutive_failures = 0     # consecutive rounds that raised an exception
+        _all_failed_rounds = 0        # consecutive rounds where every dispatched task permanently failed
+        _task_perm_fail_counts: dict[str, int] = {}  # per-task-id count of permanent failures
+        _MAX_TASK_PERM_FAILS = 2      # block re-dispatch after this many permanent failures per task
+        _MAX_ALL_FAILED_ROUNDS = 8    # abort run after this many consecutive all-failed rounds
         _prd_sections = _extract_prd_sections(prd_content)
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
@@ -1863,9 +1851,8 @@ class OrchestratorAgent:
             # Build orchestrator messages with accumulated context
             _file_tree = _build_file_tree(output_dir) if output_dir else None
             _services_json = _read_services_json(output_dir) if output_dir else None
-            _selectable = self._client._registry.get_stage("phase3_sub_agent").selectable_models
             orch_messages = [
-                Message(role="system", content=_orchestrator_system_prompt(prd_content, _selectable)),
+                Message(role="system", content=_orchestrator_system_prompt(prd_content)),
                 Message(role="user", content=_orchestrator_user_prompt(
                     idea, branch, completed_tasks, _initial_follow_up,
                     pending_user_messages=pending_messages or None,
@@ -1881,11 +1868,21 @@ class OrchestratorAgent:
 
             # Periodic build check — runs every N rounds after tasks have been written
             _impl_rounds = sum(1 for t in completed_tasks if not t["id"].startswith("_"))
+            _last_build_idx = max(
+                (i for i, t in enumerate(completed_tasks) if t["id"].startswith("_build_check_")),
+                default=-1,
+            )
+            _files_since_build = any(
+                t.get("files_written")
+                for t in completed_tasks[_last_build_idx + 1:]
+                if not t["id"].startswith("_")
+            )
             if (
                 not _verification_pending
                 and _impl_rounds > 0
                 and round_idx > 0
                 and round_idx % _BUILD_CHECK_INTERVAL == 0
+                and _files_since_build  # skip if no files written since last build — would always fail
             ):
                 logger.info("orchestrator: running periodic build check at round %d", round_idx + 1)
                 await on_orchestrator_event("orchestrator_message", {
@@ -1923,11 +1920,13 @@ class OrchestratorAgent:
             _orch_stream_loop = asyncio.get_running_loop()
             _stream_in_think = False
             _stream_buf: list[str] = []
+            _think_log: list[str] = []
 
             def _orch_on_token(token: str) -> None:
                 nonlocal _stream_in_think, _stream_buf
                 _stream_in_think, visible = _extract_think_content(token, _stream_in_think)
                 if visible:
+                    _think_log.append(visible)
                     _stream_buf.append(visible)
                     chunk = "".join(_stream_buf)
                     _stream_buf.clear()
@@ -1955,9 +1954,11 @@ class OrchestratorAgent:
 
             async def _handle_scaffold_misuse(_args: dict) -> dict:
                 return {"error": (
-                    "scaffold is not a tool. To dispatch a scaffold task, return a JSON response "
-                    "with {\"tasks\": [{\"task_type\": \"scaffold\", \"id\": \"...\", \"title\": \"...\", "
-                    "\"instruction\": \"...\"}]}."
+                    "scaffold is not a callable tool — stop calling it. "
+                    "To scaffold the project, end this round by returning your final JSON right now:\n"
+                    '{"analysis":"<why scaffold is needed>","tasks":[{"task_type":"scaffold",'
+                    '"id":"scaffold_1","title":"Set up project structure",'
+                    '"instruction":"<detailed instruction for the sub-agent>"}],"done":false}'
                 )}
 
             async def _handle_list_files(args: dict) -> dict:
@@ -2026,7 +2027,7 @@ class OrchestratorAgent:
                     # 20 rounds: inspect_files (up to 3 batches of 10 files) +
                     # grep/list (2-3) + build check (1) + dispatch JSON (1) + spare.
                     # Verification: 25 rounds — must inspect every file then classify each PRD section.
-                    max_tool_rounds=25 if _verification_pending else 20,
+                    max_tool_rounds=25 if _verification_pending else 12,
                     return_json=True,
                     call_index=0,
                     on_tool_result=_orch_tool_cb,
@@ -2034,6 +2035,9 @@ class OrchestratorAgent:
                     custom_tool_handlers=_extra_handlers,
                     on_token=_orch_on_token,
                 )
+                if _think_log:
+                    logger.debug("orchestrator think (round %d):\n%s", round_idx + 1, "".join(_think_log))
+                    _think_log.clear()
             except Exception as e:
                 logger.error("orchestrator: round %d failed: %s", round_idx + 1, e)
                 _consecutive_failures += 1
@@ -2265,10 +2269,20 @@ class OrchestratorAgent:
             _EXPLORE_PREFIXES = ('list', 'read', 'inspect', 'explore', 'check', 'view', 'show', 'get', 'find')
             _IMPL_KEYWORDS = ('write', 'creat', 'implement', 'install', 'build', 'edit', 'modif', 'generat', 'add', 'setup', 'configure', 'scaffold')
             valid_tasks = []
+            _blocked_this_round: list[str] = []
             for t in next_tasks[:3]:  # cap at 3 concurrent sub-agents
+                task_id_raw = str(t.get("id") or "")
                 instruction = str(t.get("instruction") or "").strip()
                 if not instruction:
-                    logger.warning("orchestrator: task %r has empty instruction — skipping", t.get("id"))
+                    logger.warning("orchestrator: task %r has empty instruction — skipping", task_id_raw)
+                    continue
+                # Runtime veto: block tasks that have permanently failed too many times
+                if _task_perm_fail_counts.get(task_id_raw, 0) >= _MAX_TASK_PERM_FAILS:
+                    logger.warning(
+                        "orchestrator: blocking vetoed task '%s' (%d permanent failures)",
+                        task_id_raw, _task_perm_fail_counts[task_id_raw],
+                    )
+                    _blocked_this_round.append(task_id_raw)
                     continue
                 explicit_inspect = str(t.get("task_type") or "").strip() == "inspect"
                 title_lower = str(t.get("title") or "").lower().strip()
@@ -2282,6 +2296,22 @@ class OrchestratorAgent:
                     logger.warning("orchestrator: task %r looks like exploration-only — skipping (use list_files/inspect_files directly)", t.get("title"))
                     continue
                 valid_tasks.append(t)
+            # Inject veto notices so the orchestrator knows why tasks were blocked
+            if _blocked_this_round:
+                completed_tasks.append({
+                    "id": f"_veto_notice_{round_idx}",
+                    "title": "⛔ Runtime veto — tasks blocked",
+                    "summary": (
+                        f"The runtime has PERMANENTLY BLOCKED these task IDs after repeated failures: "
+                        f"{_blocked_this_round}. "
+                        f"You MUST call plan_remove(id) for each blocked id, then plan_add 1-2 "
+                        f"smaller replacement tasks each touching exactly ONE file. "
+                        f"Do NOT re-dispatch any blocked id."
+                    ),
+                    "success": False,
+                    "files_written": [],
+                    "commands_run": [],
+                })
             if not valid_tasks:
                 logger.warning("orchestrator: no valid tasks in round %d — continuing to next round", round_idx + 1)
                 continue  # let the orchestrator try again rather than stopping dead
@@ -2329,6 +2359,53 @@ class OrchestratorAgent:
 
             for t, sub_result in zip(valid_tasks, batch_results):
                 completed_tasks.append({"id": t["_id"], "title": t["_title"], **sub_result})
+                # Track per-task permanent failure count for runtime veto
+                if sub_result.get("permanently_failed"):
+                    _task_perm_fail_counts[t["_id"]] = _task_perm_fail_counts.get(t["_id"], 0) + 1
+                    if _task_perm_fail_counts[t["_id"]] >= _MAX_TASK_PERM_FAILS:
+                        logger.warning(
+                            "orchestrator: task '%s' hit veto threshold (%d permanent failures) — "
+                            "runtime will block future dispatch",
+                            t["_id"], _task_perm_fail_counts[t["_id"]],
+                        )
+
+            # Detect when every task in the batch permanently failed (all models exhausted)
+            _batch_all_permanent = batch_results and all(r.get("permanently_failed") for r in batch_results)
+            if _batch_all_permanent:
+                _all_failed_rounds += 1
+                logger.warning(
+                    "orchestrator: %d consecutive all-failed batches — injecting decomposition nudge",
+                    _all_failed_rounds,
+                )
+                completed_tasks.append({
+                    "id": f"_all_failed_nudge_{round_idx}",
+                    "title": "(all tasks failed — forced decomposition)",
+                    "summary": (
+                        f"CRITICAL: Every task in the last {_all_failed_rounds} rounds has permanently failed. "
+                        "The current task scope is too large or the instruction is ambiguous. "
+                        "You MUST change strategy: break the work into tasks that each touch exactly ONE file "
+                        "and implement exactly ONE function or class. Do NOT re-dispatch any task whose id "
+                        "already appears in the completed list. If the scaffold is missing, create one file at a time "
+                        "starting with the entry point. Do not dispatch more than 1 task this round."
+                    ),
+                    "success": False,
+                    "files_written": [],
+                    "commands_run": [],
+                })
+                if _all_failed_rounds >= _MAX_ALL_FAILED_ROUNDS:
+                    logger.error(
+                        "orchestrator: %d consecutive all-failed rounds — aborting run (deadlock detected)",
+                        _all_failed_rounds,
+                    )
+                    await on_orchestrator_event("orchestrator_message", {
+                        "content": (
+                            f"⛔ Run aborted: {_all_failed_rounds} consecutive rounds with no successful tasks. "
+                            "All sub-agent models have been exhausted. Check the model configuration and logs."
+                        )
+                    })
+                    break
+            else:
+                _all_failed_rounds = 0
 
             # Auto-store file ownership in memory so agents can find existing implementations
             import app.memory as _mem
@@ -2835,24 +2912,6 @@ class OrchestratorAgent:
     ) -> dict:
         stage_cfg = self._client._registry.get_stage("phase3_sub_agent")
 
-        # Resolve the primary model: orchestrator hint → first selectable (fast) → stage default
-        from app.inference.model_registry import SelectableModel as _SelectableModel
-        selectable_map = {m.name: m for m in stage_cfg.selectable_models}
-        if model_hint and model_hint in selectable_map:
-            primary_sm = selectable_map[model_hint]
-        elif stage_cfg.selectable_models:
-            primary_sm = stage_cfg.selectable_models[0]
-        else:
-            primary_sm = _SelectableModel(name=stage_cfg.model, model=stage_cfg.model)
-
-        models_to_try: list[_SelectableModel] = [primary_sm] + [
-            m for m in stage_cfg.fallback_models if m.model != primary_sm.model
-        ]
-        logger.info(
-            "sub_agent: starting task '%s' (%s) agent=%s model=%s (hint=%r)",
-            task_title, task_id, agent_id or "?", primary_sm.model, model_hint,
-        )
-
         _files_edited: list[str] = []  # reset each attempt to catch fabricated results
         _tool_counts: dict[str, int] = {}  # reset each attempt; logged at task outcome
 
@@ -2904,6 +2963,21 @@ class OrchestratorAgent:
         from app import telemetry as _telemetry
         from app.tools.shell_runner import background_process_manager as _bg_procs
 
+        # Rank models by telemetry (success_rate DESC, avg_ms ASC); YAML order until enough data
+        _candidate_models = [m.model for m in stage_cfg.selectable_models]
+        _ranked_names = _telemetry.rank_models("phase3_sub_agent", _candidate_models)
+        _by_model = {m.model: m for m in stage_cfg.selectable_models}
+        # model_hint may be a literal model tag override (e.g. from a manual retry)
+        if model_hint and model_hint in _by_model:
+            _ranked_names = [model_hint] + [m for m in _ranked_names if m != model_hint]
+        models_to_try = [_by_model[n] for n in _ranked_names if n in _by_model]
+        if not models_to_try:
+            models_to_try = list(stage_cfg.selectable_models)
+        logger.info(
+            "sub_agent: starting task '%s' (%s) agent=%s ranked_models=%s",
+            task_title, task_id, agent_id or "?", [m.model for m in models_to_try],
+        )
+
         # Pre-fetch relevant memory observations once — injected into every attempt's
         # prompt so agents don't need to call memory_search themselves.
         _memory_context: str | None = None
@@ -2927,7 +3001,7 @@ class OrchestratorAgent:
             _telemetry.set_call_context(
                 is_fallback=attempt > 0,
                 fallback_from=models_to_try[attempt - 1].model if attempt > 0 else None,
-                model_type=model_hint or "fast",
+                model_type=model_sm.model,
                 task_id=task_id,
             )
             if attempt > 0:

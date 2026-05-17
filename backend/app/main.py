@@ -63,6 +63,7 @@ logging.root.addHandler(_file_handler)
 # Quiet down noisy libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("app.agents.orchestrator_agent").setLevel(logging.DEBUG)
 
 from app.api.router import api_router
 from app.api.ws import router as ws_router

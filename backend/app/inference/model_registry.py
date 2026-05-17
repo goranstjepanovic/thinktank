@@ -99,28 +99,41 @@ class ModelRegistry:
         ) if qcfg else None
 
         _KNOWN = {"model", "backend", "temperature", "max_tokens", "format",
-                  "num_ctx", "supports_tools", "fallback_models", "selectable_models", "timeout_seconds"}
+                  "num_ctx", "supports_tools", "fallback_models", "selectable_models", "models", "timeout_seconds"}
         stages: dict[str, StageConfig] = {}
         for stage_key, cfg in data.get("stages", {}).items():
             backend = cfg["backend"]
-            selectable = [
-                SelectableModel(
-                    name=s["name"], model=s["model"], description=s.get("description", ""),
-                    timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
-                )
-                for s in (cfg.get("selectable_models") or [])
-            ]
-            raw_fallbacks = cfg.get("fallback_models") or []
-            fallbacks = [
-                SelectableModel(
-                    name=f if isinstance(f, str) else f["model"],
-                    model=f if isinstance(f, str) else f["model"],
-                    timeout_seconds=None if isinstance(f, str) else f.get("timeout_seconds"),
-                    num_ctx=None if isinstance(f, str) else f.get("num_ctx"),
-                )
-                for f in raw_fallbacks
-            ]
-            # When selectable_models is present, derive the primary model from the first entry
+            # Unified 'models' list supersedes legacy selectable_models + fallback_models
+            raw_models_list = cfg.get("models") or []
+            if raw_models_list:
+                selectable = [
+                    SelectableModel(
+                        name=s.get("name", s["model"]), model=s["model"],
+                        description=s.get("description", ""),
+                        timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
+                    )
+                    for s in raw_models_list
+                ]
+                fallbacks = []
+            else:
+                selectable = [
+                    SelectableModel(
+                        name=s["name"], model=s["model"], description=s.get("description", ""),
+                        timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
+                    )
+                    for s in (cfg.get("selectable_models") or [])
+                ]
+                raw_fallbacks = cfg.get("fallback_models") or []
+                fallbacks = [
+                    SelectableModel(
+                        name=f if isinstance(f, str) else f["model"],
+                        model=f if isinstance(f, str) else f["model"],
+                        timeout_seconds=None if isinstance(f, str) else f.get("timeout_seconds"),
+                        num_ctx=None if isinstance(f, str) else f.get("num_ctx"),
+                    )
+                    for f in raw_fallbacks
+                ]
+            # Derive primary model from first entry when no explicit 'model' key
             model = cfg.get("model") or (selectable[0].model if selectable else None)
             if not model:
                 raise ValueError(f"Stage '{stage_key}' must define either 'model' or 'selectable_models'")

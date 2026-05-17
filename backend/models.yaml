@@ -172,12 +172,12 @@ stages:
     backend: "openvino"
     device: "AUTO:CPU"  # NPU compiler (vpux) fails on Qwen3-8B; skip it
     temperature: 0.1    # thinking handles exploration; final JSON should be focused
-    max_tokens: 4096
+    max_tokens: 2048    # was 4096 — tighter budget forces faster decisions, breaks think loops
     format: "json"
     num_ctx: 32768      # ignored by OpenVINO (uses model's compiled max)
     supports_tools: true
     timeout_seconds: 900
-    think: true         # orchestrator makes high-stakes batch decisions — CoT pays off
+    think: false        
 
   phase3_verification:  # PRD compliance verification pass — needs deeper reasoning
     model: "qwen3.5:9b"
@@ -191,19 +191,27 @@ stages:
     think: false
 
   phase3_sub_agent:  # Multi-agent mode — executor that writes files and runs commands
-    # Orchestrator picks one of these per task; first entry is the default when no model is specified
-    selectable_models:
-      - name: "fast"
-        model: "ducquoc/gemma4-fast-sonnet"
-        description: "Config files, simple single-file edits, boilerplate — ≤2 files, no complex logic"
-        timeout_seconds: 240
+    # Tried in telemetry-ranked order (success_rate DESC, avg_ms ASC); YAML order is the default
+    # until each model accumulates enough calls to be reliably ranked.
+    models:
+      - model: "ducquoc/gemma4-fast-sonnet:latest"
+        timeout_seconds: 900
         num_ctx: 32768
-      - name: "standard"
-        model: "sorc/qwen3.5-claude-4.6-opus:9b"
-        description: "Most implementation tasks — multi-file modules, algorithms, cross-file wiring"
+      - model: "qwen2.5-coder:7b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "ssfdre38/gemma4-turbo:e4b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "cogito:14b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "sorc/qwen3.5-claude-4.6-opus:9b"
         timeout_seconds: 900
         num_ctx: 65536
-    fallback_models:  # error-recovery fallbacks tried in order when the selected model fails
+      - model: "Omoeba/gpt-oss-coder:20b"
+        timeout_seconds: 1200
+        num_ctx: 32768
       - model: "qwen3-coder:30b"
         timeout_seconds: 1200
         num_ctx: 32768
