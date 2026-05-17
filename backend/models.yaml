@@ -210,7 +210,7 @@ stages:
         num_ctx: 32768
       - model: "qwen3-coder:30b"
         timeout_seconds: 1200
-        num_ctx: 32768
+        num_ctx: 24576
     backend: "ollama"
     temperature: 0.1    # code correctness > creativity
     max_tokens: null
