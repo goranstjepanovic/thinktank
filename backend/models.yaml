@@ -44,7 +44,7 @@ backends:
 
 stages:
   intake:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.1
     max_tokens: 1024
@@ -62,7 +62,7 @@ stages:
     max_tokens: 4096
 
   solution_analysis:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 3072
@@ -70,7 +70,7 @@ stages:
     supports_tools: true
 
   decomposition:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.15
     max_tokens: 4096
@@ -78,7 +78,7 @@ stages:
     supports_tools: false
 
   component_validator:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 2048
@@ -86,7 +86,7 @@ stages:
     supports_tools: true
 
   deep_review:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 3072
@@ -94,10 +94,11 @@ stages:
     supports_tools: true
 
   documentation:
-    model: "qwen2.5:7b"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: 8192
+    num_ctx: 32768
 
   failure_analysis:
     model: "ssfdre38/gemma4-turbo:e4b"
