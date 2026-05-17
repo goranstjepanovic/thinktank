@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePipelineEvents } from '../hooks/usePipelineEvents';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BranchDetail, BranchSummary } from '../types';
+import type { BranchSummary } from '../types';
 import { STAGE_NAMES } from '../types';
 import { AuditTrail } from './AuditTrail';
 import { DocumentViewer } from './DocumentViewer';
@@ -304,7 +304,7 @@ export function IdeaDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { ideaDetails, setIdeaDetail, setIdeas, removeIdea } = useIdeaStore();
-  const [, setBranchDetails] = useState<Record<string, BranchDetail>>({});
+  const refreshIdea = () => { if (id) api.getIdea(id).then(setIdeaDetail).catch(() => {}); };
   const [actionLoading, setActionLoading] = useState('');
   const [showFork, setShowFork] = useState(false);
   const [selectingBranchId, setSelectingBranchId] = useState<string | null>(null);
@@ -328,11 +328,6 @@ export function IdeaDetail() {
   useEffect(() => {
     if (!id) return;
     api.getIdea(id).then(setIdeaDetail);
-    api.listBranches(id).then((branches) => {
-      const map: Record<string, BranchDetail> = {};
-      branches.forEach((b) => { map[b.id] = b; });
-      setBranchDetails(map);
-    });
   }, [id]);
 
   // Load phase session statuses; redirect to deepest active phase
@@ -359,16 +354,12 @@ export function IdeaDetail() {
     });
   }, [id, idea?.status]);
 
-  // Refresh branch details every 5 s while running
+  // Poll the full idea every 5 s while active so the branch tree stays in sync
+  // even if a WebSocket event is missed. Uses getIdea (not listBranches) so
+  // idea.branches — the source of truth for the tree — actually gets updated.
   useEffect(() => {
     if (!id || !idea || !['RUNNING', 'PAUSED'].includes(idea.status)) return;
-    const t = setInterval(() => {
-      api.listBranches(id).then((branches) => {
-        const map: Record<string, BranchDetail> = {};
-        branches.forEach((b) => { map[b.id] = b; });
-        setBranchDetails(map);
-      });
-    }, 5000);
+    const t = setInterval(refreshIdea, 5000);
     return () => clearInterval(t);
   }, [id, idea?.status]);
 
@@ -435,6 +426,8 @@ export function IdeaDetail() {
     try {
       const { idea: updated } = await api.requestBranch(id, parentBranchId);
       setIdeaDetail(updated);
+      // Follow-up fetch in case the API response had a stale DB read
+      setTimeout(() => { if (id) api.getIdea(id).then(setIdeaDetail).catch(() => {}); }, 1000);
     } finally {
       setActionLoading('');
     }

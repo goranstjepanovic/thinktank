@@ -61,6 +61,8 @@ export const useIdeaStore = create<IdeaStore>((set) => ({
               updated_at: event.timestamp,
             } as BranchSummary);
           }
+          // A user-requested branch resets a CONVERGED idea back to RUNNING
+          if (ideaStatus === 'CONVERGED') ideaStatus = 'RUNNING';
           break;
         }
         case 'branch.started':
