@@ -197,19 +197,14 @@ stages:
     models:
       - model: "ducquoc/gemma4-fast-sonnet:latest"
         timeout_seconds: 900
-        num_ctx: 32768
       - model: "qwen2.5-coder:7b"
         timeout_seconds: 900
-        num_ctx: 32768
       - model: "ssfdre38/gemma4-turbo:e4b"
         timeout_seconds: 900
-        num_ctx: 32768
       - model: "cogito:14b"
         timeout_seconds: 900
-        num_ctx: 32768
       - model: "sorc/qwen3.5-claude-4.6-opus:9b"
         timeout_seconds: 900
-        num_ctx: 65536
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 1200
         num_ctx: 32768
