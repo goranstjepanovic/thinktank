@@ -909,6 +909,13 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: 
 
     if isinstance(success_raw, bool):
         success = success_raw
+    elif files_written or commands_run:
+        # Model omitted the success field but did produce observable work — infer success.
+        logger.warning(
+            "normalize_sub_agent: missing 'success' field but %d file(s)/%d command(s) present — inferring success",
+            len(files_written), len(commands_run),
+        )
+        success = True
     else:
         success = False
         if not blocker:
@@ -1513,6 +1520,11 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
     return (
         ctx
         + "You are an EXECUTOR agent. Your only job is to call tools and write files.\n\n"
+        "## CRITICAL — file_edit is the ONLY way to write files\n\n"
+        "Writing a file means calling the `file_edit` tool. There is no other way.\n"
+        "Describing a file in text does NOT write it. Mentioning a filename does NOT write it.\n"
+        "If you say 'I created server/main.py' without calling `file_edit`, the file does not exist "
+        "and your task will be marked FAILED and retried. Do NOT narrate — ACT.\n\n"
         "## You are NOT a planner\n\n"
         "Do NOT describe what you intend to do. Do NOT summarise the task. Do NOT explain your approach.\n"
         "Do NOT output the final JSON before you have written all required files.\n"
