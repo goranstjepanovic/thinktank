@@ -2369,6 +2369,35 @@ class OrchestratorAgent:
                             t["_id"], _task_perm_fail_counts[t["_id"]],
                         )
 
+            # Auto-update plan file so plan_next stays accurate even when the orchestrator
+            # model forgets to call plan_update after a task completes.
+            import json as _json
+            _plan_file = Path(output_dir) / ".think-plan.json"
+            if _plan_file.exists():
+                try:
+                    _plan_data = _json.loads(_plan_file.read_text(encoding="utf-8"))
+                    _plan_map = {t["id"]: t for t in _plan_data.get("tasks", [])}
+                    _plan_dirty = False
+                    for t, sub_result in zip(valid_tasks, batch_results):
+                        pt = _plan_map.get(t["_id"])
+                        if pt is None:
+                            continue
+                        current = pt.get("status", "pending")
+                        if sub_result.get("success") and current != "done":
+                            pt["status"] = "done"
+                            _plan_dirty = True
+                            logger.debug("orchestrator: plan auto-done '%s'", t["_id"])
+                        elif sub_result.get("permanently_failed") and current not in ("done", "failed"):
+                            pt["status"] = "failed"
+                            _plan_dirty = True
+                            logger.debug("orchestrator: plan auto-failed '%s'", t["_id"])
+                    if _plan_dirty:
+                        _plan_file.write_text(
+                            _json.dumps(_plan_data, indent=2, ensure_ascii=False), encoding="utf-8"
+                        )
+                except Exception as _pe:
+                    logger.warning("orchestrator: plan auto-update error: %s", _pe)
+
             # Detect when every task in the batch permanently failed (all models exhausted)
             _batch_all_permanent = batch_results and all(r.get("permanently_failed") for r in batch_results)
             if _batch_all_permanent:
