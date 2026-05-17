@@ -12,15 +12,17 @@ A local AI system that takes a raw idea through structured analysis, interactive
 
 **Hybrid inference: Ollama + OpenVINO.** The orchestrator can run on an Intel NPU or iGPU via OpenVINO GenAI while sub-agents use GPU models via Ollama. You can mix backends per stage in a single config file.
 
-**Auto-fallback chains.** Every stage has a priority-ordered list of fallback models. If the primary fails (OOM, timeout, bad output), the next model is tried automatically. The pipeline keeps running.
+**Telemetry-driven model ordering.** Sub-agents try models in order of measured performance — success rate DESC, average duration ASC — computed from per-project telemetry. A flat `models` list in `models.yaml` sets the default order; the runtime reorders it as data accumulates. Models without enough data stay in YAML order. The current ranking is visible in the Phase 3 sidebar and the Ops dashboard.
 
 **Config-only model routing.** All stage → model → backend assignments live in `models.yaml`. Swap any model without touching application code.
 
 **Build-first development.** Phase 3 follows a milestone discipline: scaffold first (entry point + build config + install), verify the build passes, then add features one at a time with a build check after each. Agents can't skip ahead to feature work while the build is broken.
 
+**Resumable runs.** Stopped or failed multi-agent runs can be resumed with a single button click. On resume the orchestrator reads the plan file and scans actual files on disk to reconstruct what was already done — it picks up where it left off rather than restarting from scaffold.
+
 **Per-project agent memory.** Sub-agents store observations about files they read or write into a semantic memory (aiosqlite + Ollama embeddings). Before touching a file, agents search memory to find what already exists — reducing duplicate implementations across parallel workers.
 
-**Live model telemetry.** An Ops dashboard tracks inference call counts, success rates, average duration, p95 latency, and fallback rates per model across all pipeline runs.
+**Live model telemetry.** An Ops dashboard tracks inference call counts, success rates, average duration, p95 latency, and fallback rates per model and per project. A dedicated sub-agent ranking panel shows the current dispatch order and which models have accumulated enough data to be telemetry-ranked vs. still using YAML default order.
 
 ![Ops dashboard](docs/ops_dashboard.png)
 
@@ -55,12 +57,13 @@ An interactive chat session that surfaces every open question and assumption fro
 
 The orchestrator reads the full Phase 1 document package and Phase 2 resolution summary, then drives a loop:
 
-1. **Plan** — the orchestrator LLM produces a batch of implementation tasks, each assigned to a model tier (fast / standard / large) based on complexity
-2. **Dispatch** — sub-agent workers execute tasks in parallel: write files, run install/build commands, verify results
-3. **Review** — the orchestrator inspects written files and decides the next batch, or declares done
-4. **Iterate** — chat with the agent after completion to request changes, add features, or fix issues
+1. **Plan** — the orchestrator LLM calls `plan_add` to build an implementation plan, then produces a batch of tasks
+2. **Dispatch** — sub-agent workers execute tasks: write files with `file_edit`, run install/build commands, report back
+3. **Verify** — each completed task goes through a verification pass that checks for stubs, broken imports, and hollow implementations; failures trigger a fix cycle (up to 3 rounds)
+4. **Review** — the orchestrator inspects results, updates the plan, and decides the next batch or runs a PRD compliance check
+5. **Iterate** — chat with the agent after completion to request changes or add features; or hit **▶ Resume** to restart a stopped run without adding a message
 
-Sub-agents can use different models per task — a config file tweak, not a code change.
+Sub-agents are tried in telemetry-ranked order — best performing model first, degrading through the list if a model times out, OOMs, or produces bad output. The order is locked at task start so in-task failures don't reshuffle remaining candidates mid-attempt.
 
 Supported project types include Node.js, Python, and .NET — the orchestrator detects the framework and applies the correct scaffold tooling (e.g. `dotnet new sln` for .NET, `npm install` for Node).
 
@@ -80,18 +83,23 @@ Supported project types include Node.js, Python, and .NET — the orchestrator d
 
 ### 1. Pull models
 
-Think Tank routes different stages to different models. A minimal working set:
+Think Tank routes different pipeline stages to different models. A minimal working set:
 
 ```bash
 # Phase 1 — analysis and reasoning
-ollama pull phi4:14b
+ollama pull qwen2.5:7b
 
-# Phase 3 — code generation (pick based on your VRAM)
-ollama pull qwen2.5-coder:14b   # standard tier
-ollama pull qwen3.5:9b          # fast tier (lightweight tasks)
+# Phase 3 — orchestrator embedding model (for agent memory search)
+ollama pull nomic-embed-text
+
+# Phase 3 — sub-agent code generation (add as many as your VRAM allows)
+ollama pull qwen2.5-coder:7b    # fast, good baseline
+ollama pull qwen3-coder:30b     # larger, better at complex tasks
 ```
 
-See [Model Configuration](#model-configuration) for the full routing setup and alternatives.
+The sub-agent list in `models.yaml` can hold as many models as you like. The runtime tries them in telemetry-ranked order and falls through the list on failure.
+
+See [Model Configuration](#model-configuration) for the full routing setup.
 
 ### 2. Install backend
 
@@ -137,7 +145,7 @@ Open **http://localhost:5173** and submit your first idea.
 
 ## Model Configuration
 
-All routing lives in `backend/models.yaml`. Each pipeline stage maps to a model, backend, temperature, context size, and fallback chain. No code changes needed to swap models.
+All routing lives in `backend/models.yaml`. Each pipeline stage maps to a model, backend, temperature, and context size. No code changes needed to swap models.
 
 ```yaml
 stages:
@@ -153,24 +161,26 @@ stages:
     backend: "openvino"
     device: "AUTO:CPU"
 
-  # Phase 3 — sub-agents: orchestrator picks tier per task
+  # Phase 3 — sub-agents: flat list, tried in telemetry-ranked order
+  # Runtime reorders by success_rate DESC, avg_duration ASC per project.
+  # Add more models freely — smaller/faster ones first as the default.
   phase3_sub_agent:
-    selectable_models:
-      - name: "fast"
-        model: "qwen3.5:9B"
-        description: "Config files, simple edits, boilerplate"
-      - name: "standard"
-        model: "qwen2.5-coder:14b"
-        description: "Multi-file modules, straightforward logic"
-      - name: "large"
-        model: "qwen3-coder:30b"
-        description: "Complex algorithms, intricate cross-file wiring"
-    fallback_models:
-      - "mrthp/omnicoder2"
-      - "gemma4:latest"
-      - "qwen2.5-coder:14b"
+    models:
+      - model: "qwen2.5-coder:7b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "gemma4-turbo:e4b"
+        timeout_seconds: 900
+        num_ctx: 32768
+      - model: "qwen3-coder:30b"
+        timeout_seconds: 1200
+        num_ctx: 32768
     backend: "ollama"
+    temperature: 0.1
+    supports_tools: true
 ```
+
+The `models` list sets the default dispatch order. Once a model accumulates ≥ 5 calls with ≥ 15% success rate in the current project, it enters the telemetry-ranked pool and is sorted above models that don't qualify yet. Models with no data stay in YAML order at the bottom.
 
 Supported backends: `ollama`, `openvino` (Intel NPU/GPU via OpenVINO GenAI), `llamacpp` (experimental).
 
