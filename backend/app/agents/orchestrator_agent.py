@@ -1104,6 +1104,10 @@ def _orchestrator_user_prompt(
             except Exception:
                 pass
 
+    # On resume the project already had a working build in the previous run.
+    # Suppress the "not verified" banner so it doesn't fight with the resume context.
+    _is_resume = any(t.get("id") == "_resume_context" for t in completed_tasks)
+
     # Build-state banner — injected on every round so the model cannot ignore it
     build_banner = ""
     if not follow_up_message:
@@ -1113,7 +1117,7 @@ def _orchestrator_user_prompt(
                 "The last `run_build` returned errors. You MUST fix the build before dispatching any "
                 "new feature or content task. Dispatch ONE build-fix task now, then call `run_build` again."
             )
-        elif build_state["has_scaffold"] and not build_state["build_checked"]:
+        elif build_state["has_scaffold"] and not build_state["build_checked"] and not _is_resume:
             systems_hint = ""
             if build_state.get("detected_systems"):
                 systems_hint = " Detected: " + "; ".join(build_state["detected_systems"]) + "."
@@ -1882,15 +1886,17 @@ class OrchestratorAgent:
                     )
                     _pending_titles = [_pt.get("title", _pt["id"]) for _pt in _pending_plan_tasks]
                     _resume_summary = (
-                        "Project was initialized in a previous run. "
-                        f"Files on disk: {', '.join(_disk_files[:20])}"
+                        "Resumed from a previous run. The project is partially implemented — do NOT re-initialize or re-scaffold. "
+                        f"Files already on disk: {', '.join(_disk_files[:20])}"
                         + (f" (+{len(_disk_files) - 20} more)" if len(_disk_files) > 20 else "")
-                        + (f". Pending plan tasks: {'; '.join(_pending_titles)}" if _pending_titles else "")
-                        + ". Do NOT re-initialize. Check plan_list() and continue from where the previous run stopped."
+                        + ". "
+                        + (f"Pending plan tasks from last run: {'; '.join(_pending_titles)}. " if _pending_titles else "")
+                        + "Call plan_list() to see the current plan, then dispatch the next pending task immediately. "
+                        "Do not inspect files or call run_build before dispatching — pick up where the previous run stopped."
                     )
                     completed_tasks.append({
                         "id": "_resume_context",
-                        "title": "Project initialized (resumed from previous run)",
+                        "title": "Resumed from previous run — project partially implemented",
                         "success": True,
                         "summary": _resume_summary,
                         "files_written": _disk_files[:10],
