@@ -1951,6 +1951,14 @@ class OrchestratorAgent:
                     await on_orchestrator_event("orchestrator_message", {
                         "content": f"✅ Build check (round {round_idx + 1}): build passes"
                     })
+                    completed_tasks.append({
+                        "id": f"_build_check_{round_idx}",
+                        "title": "(periodic build check passed)",
+                        "summary": f"Build command '{build_result.get('command', 'unknown')}' succeeded.",
+                        "success": True,
+                        "files_written": [],
+                        "commands_run": [],
+                    })
 
             async def _orch_tool_cb(tool: str, result: dict) -> None:
                 await on_orchestrator_event("orchestrator_tool", {"tool": tool, "result": result})
