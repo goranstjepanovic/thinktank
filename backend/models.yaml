@@ -233,14 +233,13 @@ stages:
     supports_tools: false
 
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
-    model: "qwen2.5-coder-3b-instruct"  # int4_mixed — NPU-capable; pull: see openvino backend comment above
-    backend: "openvino"
-    device: "AUTO:CPU"  # GPU (OpenCL) throws ocl_memory error; 3B int4 is NPU-capable
+    model: "ducquoc/gemma4-fast-sonnet:latest"
+    backend: "ollama"
     temperature: 0.1
     max_tokens: 1024
     format: "json"
     num_ctx: 8192
-    supports_tools: true
+    supports_tools: false
     timeout_seconds: 180
 
 memory:
