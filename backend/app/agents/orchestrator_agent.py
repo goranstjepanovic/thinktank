@@ -965,6 +965,14 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: 
                 blocker[:120],
             )
 
+    # Coerce common non-bool representations before the isinstance check.
+    # Small models frequently output "success": "true" (string) or "success": 1 (int).
+    if not isinstance(success_raw, bool) and success_raw is not None:
+        if str(success_raw).lower() in ("true", "yes", "1"):
+            success_raw = True
+        elif str(success_raw).lower() in ("false", "no", "0"):
+            success_raw = False
+
     if isinstance(success_raw, bool):
         success = success_raw
     elif files_written or commands_run:
