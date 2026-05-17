@@ -3403,6 +3403,7 @@ class OrchestratorAgent:
             # log_call, the flag was never consumed and would silently drop this record.
             _telemetry.clear_suppress()
             _telemetry.set_tool_counts(_tool_counts)
+            _sub_tokens_prompt, _sub_tokens_completion = _telemetry.get_last_call_tokens()
             _telemetry.log_call(
                 stage="phase3_sub_agent",
                 model=model_sm.model,
@@ -3410,6 +3411,8 @@ class OrchestratorAgent:
                 duration_ms=int((_time.monotonic() - _attempt_start) * 1000),
                 success=bool(last_result.get("success", True)) and not last_result.get("blocker"),
                 error=last_result.get("blocker") or None,
+                tokens_prompt=_sub_tokens_prompt,
+                tokens_completion=_sub_tokens_completion,
             )
 
             if last_result.get("success", True):

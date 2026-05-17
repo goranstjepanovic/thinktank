@@ -11,6 +11,7 @@ _project_ctx: ContextVar[dict[str, str]] = ContextVar("telemetry_project", defau
 _call_ctx: ContextVar[dict[str, Any]] = ContextVar("telemetry_call", default={})
 _suppress_next: ContextVar[bool] = ContextVar("telemetry_suppress_next", default=False)
 _tool_counts_ctx: ContextVar[dict[str, int]] = ContextVar("telemetry_tool_counts", default={})
+_last_call_tokens_ctx: ContextVar[tuple[int | None, int | None]] = ContextVar("telemetry_last_tokens", default=(None, None))
 
 _log_path: Path | None = None
 
@@ -49,6 +50,23 @@ def suppress_next_call() -> None:
 def set_tool_counts(counts: dict[str, int]) -> None:
     """Store tool call counts from call_with_tools so log_call can include them."""
     _tool_counts_ctx.set(dict(counts))
+
+
+def set_last_call_tokens(tokens_prompt: int | None, tokens_completion: int | None) -> None:
+    """Capture token counts from the most recent inference call (round 0 only).
+
+    Called by _log_call before suppress_next_call can discard the record, so
+    callers that suppress automatic logging can still retrieve token counts for
+    their own manual log_call via get_last_call_tokens().
+    """
+    _last_call_tokens_ctx.set((tokens_prompt, tokens_completion))
+
+
+def get_last_call_tokens() -> tuple[int | None, int | None]:
+    """Return and clear the token counts stored by the last set_last_call_tokens call."""
+    result = _last_call_tokens_ctx.get()
+    _last_call_tokens_ctx.set((None, None))
+    return result
 
 
 def clear_suppress() -> None:

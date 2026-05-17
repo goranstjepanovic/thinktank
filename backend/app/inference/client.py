@@ -2106,6 +2106,13 @@ class InferenceClient:
         # Subsequent rounds (tool calls in call_with_tools) are skipped to avoid spam.
         if call_index == 0 and stage_key:
             from app import telemetry as _telemetry
+            # Capture tokens in a ContextVar BEFORE log_call so that callers
+            # which suppress automatic logging (suppress_next_call) can still
+            # retrieve token counts for their own manual log_call.
+            _telemetry.set_last_call_tokens(
+                response.tokens_prompt if response else None,
+                response.tokens_completion if response else None,
+            )
             _telemetry.log_call(
                 stage=stage_key,
                 model=model_name,
