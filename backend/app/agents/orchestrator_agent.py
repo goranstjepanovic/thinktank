@@ -2477,7 +2477,7 @@ class OrchestratorAgent:
                     task_type=task_type,
                     interface_summary=interface_summary,
                 )
-                if result.get("success") and max_verify_cycles > 0 and task_type != "inspect":
+                if result.get("success") and max_verify_cycles > 0 and task_type not in ("inspect", "scaffold"):
                     result = await self._run_task_verify_fix_loop(
                         idea, branch, output_dir,
                         t, result,
@@ -2800,25 +2800,39 @@ class OrchestratorAgent:
             if verify["verified"]:
                 break
 
-            # Discard hallucinated issues: if the reported line number exceeds the
-            # actual file length, the verifier made it up.
+            # Discard hallucinated issues — two checks:
+            # 1. Claimed line number exceeds actual file length.
+            # 2. Issue claims a structural problem (hollow body, stub, returns None) but the
+            #    actual line is an import, decorator, comment, or blank — clearly not a function body.
+            _STRUCTURAL_KEYWORDS = ("hollow body", "stub", "returns none", "not implemented", "pass only", "ellipsis")
+            _NON_BODY_PREFIXES = ("import ", "from ", "@", "#", '"""', "'''")
             real_issues = []
             for issue in verify["issues"]:
                 _line_match = re.search(r"\bline[s]?\s+(\d+)", issue, re.IGNORECASE)
                 if _line_match:
                     _claimed_line = int(_line_match.group(1))
-                    # Extract the file path (first token before ':')
                     _issue_file = issue.split(":")[0].strip()
                     _abs = Path(output_dir) / _issue_file
                     if _abs.exists():
                         try:
-                            _actual_lines = len(_abs.read_text(encoding="utf-8", errors="replace").splitlines())
+                            _file_lines = _abs.read_text(encoding="utf-8", errors="replace").splitlines()
+                            _actual_lines = len(_file_lines)
                             if _claimed_line > _actual_lines:
                                 logger.warning(
                                     "verify_fix_loop: dropping hallucinated issue (line %d > file length %d): %s",
                                     _claimed_line, _actual_lines, issue,
                                 )
                                 continue
+                            # Check if line content is incompatible with the reported issue type
+                            _issue_lower = issue.lower()
+                            if any(kw in _issue_lower for kw in _STRUCTURAL_KEYWORDS):
+                                _line_content = _file_lines[_claimed_line - 1].strip()
+                                if not _line_content or any(_line_content.startswith(p) for p in _NON_BODY_PREFIXES):
+                                    logger.warning(
+                                        "verify_fix_loop: dropping hallucinated issue (line %d is '%s', not a function body): %s",
+                                        _claimed_line, _line_content[:40], issue,
+                                    )
+                                    continue
                         except OSError:
                             pass
                 real_issues.append(issue)
