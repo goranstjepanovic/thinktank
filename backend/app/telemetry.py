@@ -134,11 +134,18 @@ def log_call(
         logger.debug("telemetry write error: %s", exc)
 
 
-def rank_models(stage: str, candidates: list[str], min_calls: int = 5) -> list[str]:
+def rank_models(
+    stage: str,
+    candidates: list[str],
+    min_calls: int = 5,
+    min_success_rate: float = 0.15,
+) -> list[str]:
     """Return candidates sorted by telemetry: success_rate DESC, avg_duration_ms ASC.
 
-    Models with fewer than min_calls records are placed after ranked models,
-    preserving their relative order from candidates.
+    A model only enters the ranked pool if it has >= min_calls records AND a
+    success_rate >= min_success_rate. Models below either threshold fall back to
+    their original YAML order. This prevents a run full of failures from promoting
+    fast-failing models to the top of the list.
     """
     if not candidates or _log_path is None or not _log_path.exists():
         return candidates
@@ -174,8 +181,8 @@ def rank_models(stage: str, candidates: list[str], min_calls: int = 5) -> list[s
     ranked, unranked = [], []
     for m in candidates:
         s = stats[m]
-        if s["total"] >= min_calls:
-            success_rate = s["success"] / s["total"]
+        success_rate = s["success"] / s["total"] if s["total"] else 0.0
+        if s["total"] >= min_calls and success_rate >= min_success_rate:
             avg_dur = s["dur_sum"] / s["dur_n"] if s["dur_n"] else float("inf")
             ranked.append((m, success_rate, avg_dur))
         else:
@@ -183,7 +190,10 @@ def rank_models(stage: str, candidates: list[str], min_calls: int = 5) -> list[s
 
     ranked.sort(key=lambda x: (-x[1], x[2]))
     result = [m for m, _, _ in ranked] + unranked
-    logger.debug("telemetry rank_models[%s]: %s", stage, result)
+    logger.debug(
+        "telemetry rank_models[%s]: ranked=%s unranked=%s",
+        stage, [m for m, _, _ in ranked], unranked,
+    )
     return result
 
 
