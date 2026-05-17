@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, BASE, WS_BASE } from '../api/client';
 import type { IdeaDetail, Phase2Message, Phase2Session, PipelineEvent } from '../types';
@@ -36,7 +37,7 @@ function MessageBubble({ msg, streaming }: { msg: Phase2Message; streaming?: boo
           <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{msg.content}</p>
         ) : (
           <div className="markdown" style={{ fontSize: 13 }}>
-            <ReactMarkdown>{msg.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
             {streaming && <span className="stream-cursor" />}
           </div>
         )}
@@ -100,7 +101,7 @@ function ResolutionSummaryPanel({ summary }: { summary: string }) {
       {open && (
         <div style={{ padding: '0 24px 16px', maxHeight: 360, overflowY: 'auto' }}>
           <div className="markdown" style={{ fontSize: 12 }}>
-            <ReactMarkdown>{summary}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
           </div>
         </div>
       )}
