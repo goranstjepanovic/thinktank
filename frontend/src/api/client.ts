@@ -69,6 +69,8 @@ export const api = {
     request<import('../types').Phase3Session>(`/ideas/${id}/phase3`),
   cancelPhase3: (id: string) =>
     request<{ cancelled: boolean }>(`/ideas/${id}/phase3/cancel`, { method: 'POST', body: '{}' }),
+  resumePhase3: (id: string) =>
+    request<{ resumed: boolean }>(`/ideas/${id}/phase3/resume`, { method: 'POST', body: '{}' }),
   cancelPhase3Task: (id: string, taskId: string) =>
     request<{ cancelled: boolean }>(`/ideas/${id}/phase3/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', body: '{}' }),
   getPhase3Activity: (id: string) =>

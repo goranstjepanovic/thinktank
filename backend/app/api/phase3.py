@@ -334,9 +334,9 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
                     adb.add(Phase3ActivityEvent(session_id=session_id, event_type="sub_agent_fix_complete", payload_json=json.dumps({"task_id": task_id, "title": title, "summary": summary, "files_written": files_written, "commands_run": commands_run, "success": success, "blocker": blocker})))
                     await adb.commit()
 
-        # ── Step 1: Generate PRD (skip on follow-up iterations) ──────────────
+        # ── Step 1: Generate PRD (skip if it already exists on disk) ────────────
         prd_path = _Path(output_dir) / "docs" / "PRD.md"
-        if not follow_up_message:
+        if not prd_path.is_file():
             try:
                 await gen_agent.generate_prd(db, session, idea, branch, on_tool_result)
             except Exception as e:
@@ -949,6 +949,30 @@ async def cancel_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
 
     await event_bus.publish(ev.phase3_error(idea_id, session.id, "Cancelled by user"))
     return {"cancelled": True}
+
+
+@router.post("/{idea_id}/phase3/resume", status_code=200)
+async def resume_phase3(idea_id: str, db: AsyncSession = Depends(get_session)):
+    """
+    Resume a stopped/failed multi-agent session without injecting any user message.
+    The orchestrator restarts cleanly: PRD is read from disk (not regenerated),
+    plan is rebuilt from existing files, and work continues where it left off.
+    Only valid for multi_agent sessions that are FAILED or COMPLETE.
+    """
+    session = await _get_phase3_or_404(idea_id, db)
+    if getattr(session, "mode", "classic") != "multi_agent":
+        raise HTTPException(status_code=409, detail="Resume is only available for multi-agent sessions")
+    if session.status in ("PLANNING", "RUNNING", "WAITING"):
+        raise HTTPException(status_code=409, detail="Session is already running")
+    if not session.output_dir:
+        raise HTTPException(status_code=409, detail="No output directory — start a fresh session instead")
+
+    session.status = "RUNNING"
+    await db.commit()
+
+    task = asyncio.ensure_future(_run_multi_agent_implementation(idea_id, session.id, follow_up_message=None))
+    _session_tasks[session.id] = task
+    return {"resumed": True}
 
 
 @router.post("/{idea_id}/phase3/tasks/{task_id}/cancel", status_code=200)

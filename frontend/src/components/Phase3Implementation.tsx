@@ -1963,6 +1963,23 @@ export function Phase3Implementation() {
     }
   };
 
+  const [resuming, setResuming] = useState(false);
+
+  const doResume = async () => {
+    if (!id) return;
+    setResuming(true);
+    setError(null);
+    try {
+      await api.resumePhase3(id);
+      const s = await api.getPhase3(id);
+      setSession(s);
+    } catch (e: unknown) {
+      setError(`Failed to resume: ${(e as Error).message}`);
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const doCancel = async () => {
     if (!id) return;
     setCancelling(true);
@@ -2254,6 +2271,17 @@ export function Phase3Implementation() {
               onClick={doCancel}
             >
               {cancelling ? 'Stopping…' : '■ Stop'}
+            </button>
+          )}
+          {isFailed && isMultiAgent && hasActivity && !isRunning && (
+            <button
+              className="btn-ghost"
+              style={{ fontSize: 11, padding: '3px 10px', color: 'var(--accent)', flexShrink: 0 }}
+              disabled={resuming}
+              onClick={doResume}
+              title="Resume from where the run stopped — no message needed"
+            >
+              {resuming ? 'Resuming…' : '▶ Resume'}
             </button>
           )}
           {(isComplete || isFailed) && !isRunning && (
