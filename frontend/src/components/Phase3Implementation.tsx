@@ -1239,7 +1239,7 @@ function fmtTokens(n: number | null | undefined): string {
 
 function SidebarLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>
       {children}
     </div>
   );
@@ -1292,10 +1292,10 @@ function Phase3Sidebar({
       flexShrink: 0,
       borderRight: '1px solid var(--border)',
       overflowY: 'auto',
-      padding: '16px 14px',
+      padding: '12px 14px',
       display: 'flex',
       flexDirection: 'column',
-      gap: 16,
+      gap: 8,
       fontSize: 12,
       background: 'var(--bg)',
     }}>
