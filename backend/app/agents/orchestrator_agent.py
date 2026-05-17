@@ -115,7 +115,7 @@ _PLAN_LIST_TOOL = ToolDefinition(
 _PLAN_ADD_TOOL = ToolDefinition(
     name="plan_add",
     description=(
-        "Add a new pending task to the plan. Each task must be scoped to ≤2 files and one logical unit."
+        "Add a new pending task to the plan. Each task must be scoped to exactly 1 file and one logical unit."
     ),
     parameters={
         "type": "object",
@@ -527,7 +527,7 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "The plan is stored on disk and survives restarts.\n\n"
         "**Workflow:**\n"
         "1. **Round 1**: call `plan_list` — if empty, build the full plan now by calling `plan_add` "
-        "for every task derived from the PRD. Scope each to ≤2 files before adding.\n"
+        "for every task derived from the PRD. Scope each to exactly 1 file before adding.\n"
         "2. **Each round**: call `plan_next` to get the next task. "
         "Call `plan_update(id, status='in_progress')` before dispatching it. "
         "Use its `instruction` field as the task instruction in `next_tasks`. "
@@ -536,7 +536,7 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "If the ids don't match, the plan never advances and the orchestrator loops forever.\n"
         "3. **After success**: call `plan_update(id, status='done')`.\n"
         "4. **After permanent failure** (⛔ REFRAME REQUIRED in history): call `plan_remove(id)`, "
-        "then `plan_add` 2–3 smaller replacement tasks each touching ≤2 files.\n"
+        "then `plan_add` 2–3 smaller replacement tasks each touching exactly 1 file.\n"
         "5. **When plan_next returns null**: all tasks done/failed — set done=true.\n\n"
         "- `plan_list(offset, limit)` — paginated view of the plan (default limit=20)\n"
         "- `plan_add(id, title, instruction)` — add a pending task\n"
@@ -562,11 +562,11 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "You may include 1–2 tasks in `next_tasks`. **Prefer 1 task per batch** — only use 2 when "
         "both tasks are truly independent and each is immediately ready to implement. "
         "Each task must be atomic: implement exactly one logical unit (one module, one component, "
-        "one endpoint, one service). **Each task must touch ≤2 files.** "
+        "one endpoint, one service). **Each task must touch exactly 1 file.** "
         "A large feature must be split across multiple sequential batches, not crammed into one task. "
         "Tasks in the same batch MUST target completely independent files — no two tasks in a batch "
         "may write to the same file.\n\n"
-        "**Task scope limit — hard rule**: a task that names more than 2 files OR more than 3 functions "
+        "**Task scope limit — hard rule**: a task that names more than 1 file OR more than 3 functions "
         "is too large and WILL fail. Split it. "
         "BAD: 'Implement player solution submission and voting system' (two systems, many files). "
         "GOOD: 'Implement solution submission endpoint' (one route, one file), then separately "
@@ -1138,7 +1138,7 @@ def _orchestrator_user_prompt(
                 lines.append(
                     "   ⛔ PERMANENTLY FAILED: all fallback models failed this task. "
                     "Do NOT re-dispatch the same scope. "
-                    "Break it into 2–3 smaller replacement tasks, each touching ≤2 files "
+                    "Break it into 2–3 smaller replacement tasks, each touching exactly 1 file "
                     "and implementing exactly one function, class, or route. "
                     "If plan tools are available, remove this task from the plan first, then add the smaller ones."
                 )
@@ -1226,7 +1226,7 @@ def _orchestrator_user_prompt(
                 "⚡ FIRST ACTION THIS ROUND: build your implementation plan.\n"
                 "1. Call `plan_list()` — if it returns no tasks, call `plan_add()` for EVERY PRD "
                 "feature/section before doing anything else.\n"
-                "2. Each plan task must touch ≤2 files and implement exactly ONE function, class, or route.\n"
+                "2. Each plan task must touch exactly 1 file and implement exactly ONE function, class, or route.\n"
                 "3. Do NOT call `list_files`, `inspect_files`, or dispatch any task until the full "
                 "plan is built.\n\n"
             )
@@ -1603,7 +1603,10 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "`read_file` always returns `total_lines` — if the file is large, request specific ranges with "
         "`start_line`/`end_line` (e.g. `read_file(path='foo.py', start_line=200, end_line=400)`).\n"
         "   After each `read_file`, call `memory_store` with your key findings.\n"
-        "4. Write all files required for your task using `file_edit` — write complete, real implementations\n"
+        "4. Write files **one at a time** using `file_edit`. If your task involves multiple files, "
+        "implement them strictly in sequence: write file 1 completely → call `memory_store` → "
+        "write file 2 completely → call `memory_store` → and so on. "
+        "Never plan or describe all files first — just write the first file, then the next.\n"
         "   **After each `file_edit` call succeeds, do NOT read that file back** — the write is confirmed. "
         "Re-reading a file you just wrote wastes rounds and triggers the stall detector.\n"
         "5. Run any required commands (install dependencies, build, test) using `run_shell`\n"
@@ -1615,12 +1618,13 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "Call this BEFORE reading any file — if a useful observation exists you may not need to read the file.\n"
         "- `memory_store(file_path, observation)` — store your analysis AFTER reading OR WRITING a file. "
         "Write what the file does, key exported function/class names, patterns, and anything non-obvious. "
-        "Do NOT store raw file content — store your own analysis (50–200 words).\n\n"
+        "Do NOT store raw file content — store your own analysis (50–200 words). "
+        "**Keep the observation under 200 characters** — longer strings cause a backend parser error (HTTP 500).\n\n"
         "**Read rule:** Before reading any file, call `memory_search` first. "
         "If a good observation already exists, skip the read.\n"
         "**Write rule:** After writing any file, call `memory_store` immediately with: the file's purpose, "
-        "every exported function/class name, what it owns (e.g. 'owns all authentication logic'), "
-        "and what files it imports from. This is how future agents find and reuse your work.\n"
+        "key exported names, what it owns. Keep the observation under 200 characters total — "
+        "longer strings cause a backend error. This is how future agents find and reuse your work.\n"
         "**Anti-duplication rule:** Before creating any new module or utility, call "
         "`memory_search('[functionality]')` to check if an existing file already implements it. "
         "If memory returns a relevant observation, IMPORT from that file — never reimplement. "
