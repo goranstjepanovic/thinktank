@@ -1810,25 +1810,65 @@ class OrchestratorAgent:
         _interface_summary: str | None = None  # updated after every batch
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
+        _task_perm_fail_counts: dict[str, int] = {}  # per-task-id count of permanent failures
+        _MAX_TASK_PERM_FAILS = 2      # block re-dispatch after this many permanent failures per task
+        _MAX_ALL_FAILED_ROUNDS = 8    # abort run after this many consecutive all-failed rounds
 
-        # Delete stale plan file from any previous run — plan tools are suppressed
-        # during Milestone 0 so a leftover plan cannot confuse the orchestrator.
-        if output_dir:
-            _stale_plan = Path(output_dir) / ".think-plan.json"
-            if _stale_plan.exists():
-                try:
-                    _stale_plan.unlink()
-                    logger.info("orchestrator: deleted stale plan file from previous run")
-                except Exception as _e:
-                    logger.warning("orchestrator: could not delete stale plan file: %s", _e)
+        # Detect resume vs. fresh start by checking whether real project files already exist.
+        # Internal files (.think-plan.json, PROGRESS.md, etc.) don't count.
+        _INTERNAL_FILES = {".think-plan.json", "PROGRESS.md", ".think-memory.json"}
+        _is_resume = False
+        if output_dir and Path(output_dir).exists():
+            _has_project_files = any(
+                p for p in Path(output_dir).rglob("*")
+                if p.is_file() and p.name not in _INTERNAL_FILES and not p.name.endswith(".log")
+            )
+            _is_resume = _has_project_files
+
+        _plan_file = Path(output_dir) / ".think-plan.json" if output_dir else None
+        if _is_resume and _plan_file and _plan_file.exists():
+            # Resume: load completed/failed tasks from the plan so the orchestrator knows
+            # what was already done and doesn't restart from scaffolding.
+            try:
+                _plan_data = json.loads(_plan_file.read_text(encoding="utf-8"))
+                for _pt in _plan_data.get("tasks", []):
+                    _status = _pt.get("status", "")
+                    if _status == "done":
+                        completed_tasks.append({
+                            "id": _pt["id"],
+                            "title": _pt.get("title", _pt["id"]),
+                            "success": True,
+                            "summary": _pt.get("summary") or _pt.get("notes") or "Completed in a previous run.",
+                        })
+                    elif _status == "failed":
+                        completed_tasks.append({
+                            "id": _pt["id"],
+                            "title": _pt.get("title", _pt["id"]),
+                            "success": False,
+                            "permanently_failed": True,
+                            "summary": _pt.get("notes") or "Failed in a previous run.",
+                        })
+                        # Pre-veto so the orchestrator cannot re-dispatch the same task unchanged
+                        _task_perm_fail_counts[_pt["id"]] = _MAX_TASK_PERM_FAILS
+                logger.info(
+                    "orchestrator: resume detected — restored %d completed task(s) from plan",
+                    len(completed_tasks),
+                )
+            except Exception as _e:
+                logger.warning("orchestrator: could not load plan for resume: %s", _e)
+        elif _plan_file and _plan_file.exists():
+            # Fresh start but a stale plan file exists — delete it.
+            try:
+                _plan_file.unlink()
+                logger.info("orchestrator: deleted stale plan file (fresh start)")
+            except Exception as _e:
+                logger.warning("orchestrator: could not delete stale plan file: %s", _e)
+
         _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
         _verification_attempts = 0    # counts how many verification rounds have run
         _empty_task_rounds = 0        # consecutive rounds with done=false but no tasks produced
         _consecutive_failures = 0     # consecutive rounds that raised an exception
         _all_failed_rounds = 0        # consecutive rounds where every dispatched task permanently failed
-        _task_perm_fail_counts: dict[str, int] = {}  # per-task-id count of permanent failures
-        _MAX_TASK_PERM_FAILS = 2      # block re-dispatch after this many permanent failures per task
-        _MAX_ALL_FAILED_ROUNDS = 8    # abort run after this many consecutive all-failed rounds
         _prd_sections = _extract_prd_sections(prd_content)
 
         for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
