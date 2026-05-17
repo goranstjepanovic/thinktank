@@ -116,6 +116,10 @@ export const api = {
     const qs = p.toString();
     return request<import('../types').TelemetrySummary>(`/telemetry/summary${qs ? `?${qs}` : ''}`);
   },
+  getSubAgentRanking: (projectId?: string) =>
+    request<import('../types').SubAgentRanking>(
+      `/telemetry/sub-agent-ranking${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`
+    ),
   getTelemetryCalls: (params: {
     since?: string; until?: string;
     model?: string; project_id?: string; backend?: string; stage?: string;

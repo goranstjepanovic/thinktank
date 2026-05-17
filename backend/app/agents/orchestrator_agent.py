@@ -3006,9 +3006,10 @@ class OrchestratorAgent:
         from app import telemetry as _telemetry
         from app.tools.shell_runner import background_process_manager as _bg_procs
 
-        # Rank models by telemetry (success_rate DESC, avg_ms ASC); YAML order until enough data
+        # Rank models by telemetry (success_rate DESC, avg_ms ASC); YAML order until enough data.
+        # Locked here — before any attempt — so failures within this task don't shift the order.
         _candidate_models = [m.model for m in stage_cfg.selectable_models]
-        _ranked_names = _telemetry.rank_models("phase3_sub_agent", _candidate_models)
+        _ranked_names = _telemetry.rank_models("phase3_sub_agent", _candidate_models, project_id=str(idea.id))
         _by_model = {m.model: m for m in stage_cfg.selectable_models}
         # model_hint may be a literal model tag override (e.g. from a manual retry)
         if model_hint and model_hint in _by_model:

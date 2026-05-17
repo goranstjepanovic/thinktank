@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -382,6 +382,68 @@ function ToolsPerModelChart({ data }: { data: ToolModelStat[] }) {
   );
 }
 
+function SubAgentRankingTable({ data }: { data: SubAgentRanking }) {
+  const { models, min_calls, min_success_rate } = data;
+  const rankedCount = models.filter(m => m.is_ranked).length;
+  return (
+    <>
+      <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 10 }}>
+        Dispatch order for <code style={{ fontSize: 11 }}>phase3_sub_agent</code>.
+        {' '}{rankedCount > 0
+          ? <><strong style={{ color: 'var(--green)' }}>{rankedCount}</strong> model{rankedCount !== 1 ? 's' : ''} ranked by telemetry</>
+          : <span>No models ranked yet</span>}
+        {' '}· <span title={`Needs ≥${min_calls} calls and ≥${Math.round(min_success_rate * 100)}% success rate to enter the ranked pool`}>
+          Threshold: ≥{min_calls} calls &amp; ≥{Math.round(min_success_rate * 100)}% success
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              {['#', 'Model', 'Calls', 'Success', 'Rate', 'Avg Duration', 'Pool'].map(h => (
+                <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {models.map((m: SubAgentRankEntry) => {
+              const pct = Math.round(m.success_rate * 100);
+              const rateColor = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : m.total_calls === 0 ? 'var(--text2)' : 'var(--red)';
+              return (
+                <tr key={m.model} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+                    {m.rank}
+                  </td>
+                  <td style={{ padding: '7px 10px', fontFamily: 'monospace', fontSize: 12 }} title={m.model}>
+                    {m.model}
+                  </td>
+                  <td style={{ padding: '7px 10px', fontVariantNumeric: 'tabular-nums' }}>{m.total_calls || '—'}</td>
+                  <td style={{ padding: '7px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{m.success || (m.total_calls ? '0' : '—')}</td>
+                  <td style={{ padding: '7px 10px', color: rateColor }}>
+                    {m.total_calls > 0 ? `${pct}%` : '—'}
+                  </td>
+                  <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtMs(m.avg_duration_ms)}
+                  </td>
+                  <td style={{ padding: '7px 10px' }}>
+                    {m.is_ranked ? (
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--green)', background: 'rgba(52,211,153,0.12)', padding: '2px 7px', borderRadius: 4 }}>ranked</span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'var(--text2)', background: 'var(--bg3, rgba(255,255,255,0.05))', padding: '2px 7px', borderRadius: 4 }}>
+                        {m.total_calls === 0 ? 'no data' : 'unranked'}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 const TYPE_COLORS: Record<string, string> = {
   fast: '#34d399',
   standard: '#60a5fa',
@@ -563,6 +625,12 @@ export function OpsDashboard() {
     refetchInterval: 30_000,
   });
 
+  const rankingQ = useQuery({
+    queryKey: ['sub-agent-ranking'],
+    queryFn: () => api.getSubAgentRanking(),
+    refetchInterval: 30_000,
+  });
+
   const callsQ = useQuery({
     queryKey: ['telemetry-calls', since, filterModel, filterBackend, filterProject, filterStage],
     queryFn: () => api.getTelemetryCalls({
@@ -669,6 +737,15 @@ export function OpsDashboard() {
         <StatCard label="Total Tokens" value={fmtTokens(totalTokens)} sub={totalTokens ? `${fmtTokens(data?.total_tokens_prompt)} prompt · ${fmtTokens(data?.total_tokens_completion)} completion` : undefined} />
         <StatCard label="Backends" value={String(data?.by_backend.length ?? 0)} sub={data?.by_backend.map(b => b.backend).join(', ') || '—'} />
       </div>
+
+      {/* Sub-agent model ranking */}
+      {rankingQ.data && rankingQ.data.models.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <ChartCard title="Sub-Agent Model Ranking  ·  current dispatch order" minHeight={0}>
+            <SubAgentRankingTable data={rankingQ.data} />
+          </ChartCard>
+        </div>
+      )}
 
       {/* Timeline */}
       {data && data.over_time.some(b => b.calls > 0) && (

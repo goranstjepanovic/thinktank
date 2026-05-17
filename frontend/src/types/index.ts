@@ -304,6 +304,24 @@ export interface TelemetrySummary {
   available_projects: { id: string; name: string }[];
 }
 
+export interface SubAgentRankEntry {
+  rank: number;
+  model: string;
+  total_calls: number;
+  success: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  is_ranked: boolean;
+}
+
+export interface SubAgentRanking {
+  models: SubAgentRankEntry[];
+  stage: string;
+  min_calls: number;
+  min_success_rate: number;
+  project_id: string | null;
+}
+
 export interface TelemetryCall {
   ts: string;
   project_id: string;

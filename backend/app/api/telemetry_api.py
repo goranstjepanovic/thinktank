@@ -399,6 +399,114 @@ async def get_summary(
     }
 
 
+@router.get("/sub-agent-ranking")
+async def get_sub_agent_ranking(project_id: str | None = Query(default=None)):
+    """Current telemetry-ranked order of phase3_sub_agent models.
+
+    When project_id is supplied, stats are scoped to that project only.
+    Returns each model with rank, stats, and whether it qualified for the
+    telemetry-ranked pool (min 5 calls + min 15% success rate).
+    Models that have data but don't qualify are sorted by success rate as a
+    secondary signal rather than falling back to raw YAML order.
+    """
+    from app.config import settings
+    import json, statistics as _stats
+
+    stage = "phase3_sub_agent"
+    log_path = settings.telemetry_log_path
+
+    # Load candidate list from model registry (preserves YAML order)
+    try:
+        from app.main import get_inference_client
+        stage_cfg = get_inference_client().registry.get_stage(stage)
+        candidates = [m.model for m in stage_cfg.selectable_models]
+    except Exception:
+        candidates = []
+
+    if not candidates:
+        return {"models": [], "stage": stage, "min_calls": 5, "min_success_rate": 0.15, "project_id": project_id}
+
+    # Compute per-model stats from telemetry log
+    per_model: dict[str, dict] = {m: {"total": 0, "success": 0, "durations": []} for m in candidates}
+    if log_path and log_path.exists():
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("stage") != stage:
+                        continue
+                    if project_id and rec.get("project_id") != project_id:
+                        continue
+                    m = rec.get("model")
+                    if m not in per_model:
+                        continue
+                    per_model[m]["total"] += 1
+                    if rec.get("success"):
+                        per_model[m]["success"] += 1
+                    dur = rec.get("duration_ms")
+                    if dur is not None:
+                        per_model[m]["durations"].append(float(dur))
+        except Exception:
+            pass
+
+    MIN_CALLS = 5
+    MIN_SUCCESS_RATE = 0.15
+
+    # Split into ranked (enough data to trust), partial (some data), and untried
+    ranked_entries = []
+    partial_entries = []  # has calls but below min_calls or min_success_rate threshold
+    untried_entries = []  # no calls at all — keep in YAML order
+    yaml_position = {m: i for i, m in enumerate(candidates)}
+
+    for m in candidates:
+        s = per_model[m]
+        total = s["total"]
+        success = s["success"]
+        durs = s["durations"]
+        success_rate = success / total if total else 0.0
+        avg_dur = round(_stats.mean(durs)) if durs else None
+
+        entry = {
+            "model": m,
+            "total_calls": total,
+            "success": success,
+            "success_rate": round(success_rate, 3),
+            "avg_duration_ms": avg_dur,
+            "is_ranked": total >= MIN_CALLS and success_rate >= MIN_SUCCESS_RATE,
+        }
+        if entry["is_ranked"]:
+            ranked_entries.append(entry)
+        elif total > 0:
+            partial_entries.append(entry)
+        else:
+            untried_entries.append(entry)
+
+    # Ranked: success_rate DESC, avg_duration ASC
+    ranked_entries.sort(key=lambda x: (-x["success_rate"], x["avg_duration_ms"] or float("inf")))
+    # Partial: same sort — use what data we have as a signal
+    partial_entries.sort(key=lambda x: (-x["success_rate"], x["avg_duration_ms"] or float("inf")))
+    # Untried: preserve YAML order
+    untried_entries.sort(key=lambda x: yaml_position[x["model"]])
+
+    ordered = ranked_entries + partial_entries + untried_entries
+    for i, entry in enumerate(ordered):
+        entry["rank"] = i + 1
+
+    return {
+        "models": ordered,
+        "stage": stage,
+        "min_calls": MIN_CALLS,
+        "min_success_rate": MIN_SUCCESS_RATE,
+        "project_id": project_id,
+    }
+
+
 @router.get("/calls")
 async def get_calls(
     since: str = Query(default="", description="ISO UTC timestamp; defaults to 24h ago"),

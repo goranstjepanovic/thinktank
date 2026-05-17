@@ -28,7 +28,7 @@ import ReactMarkdown from 'react-markdown';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, BASE, WS_BASE } from '../api/client';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3DirEntry, Phase3Session, PipelineEvent } from '../types';
+import type { IdeaDetail, Phase3ActivityEvent, Phase3ChatMessage, Phase3DirEntry, Phase3Session, PipelineEvent, SubAgentRanking } from '../types';
 import { PhaseNav } from './PhaseNav';
 
 // Register only the languages we need to keep the bundle small
@@ -1260,12 +1260,14 @@ function Phase3Sidebar({
   log,
   progressMd,
   telemetry,
+  ranking,
 }: {
   idea: IdeaDetail;
   session: Phase3Session;
   log: ActivityEntry[];
   progressMd: string | null;
   telemetry: import('../types').TelemetrySummary | null;
+  ranking: SubAgentRanking | null;
 }) {
   const tasks = useMemo(() => {
     if (!progressMd) return null;
@@ -1369,6 +1371,43 @@ function Phase3Sidebar({
           </>
         )}
       </div>
+
+      {ranking && ranking.models.length > 0 && (
+        <>
+          <div style={{ height: 1, background: 'var(--border)' }} />
+          <div>
+            <SidebarLabel>Sub-Agent Order</SidebarLabel>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {ranking.models.map((m) => {
+                const name = m.model.includes('/') ? m.model.split('/').pop()! : m.model;
+                const pct = m.total_calls > 0 ? Math.round(m.success_rate * 100) : null;
+                return (
+                  <div key={m.model} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ fontSize: 10, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums', flexShrink: 0, width: 14, textAlign: 'right' }}>
+                      {m.rank}.
+                    </span>
+                    <span style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={m.model}>
+                      {name}
+                    </span>
+                    {pct !== null ? (
+                      <span style={{
+                        fontSize: 10, flexShrink: 0, fontVariantNumeric: 'tabular-nums',
+                        color: m.is_ranked
+                          ? (pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)')
+                          : 'var(--text2)',
+                      }} title={m.is_ranked ? `${m.total_calls} calls · ranked by telemetry` : `${m.total_calls} calls · needs ≥${ranking.min_calls} calls & ≥${Math.round(ranking.min_success_rate * 100)}% to rank`}>
+                        {pct}%{m.is_ranked ? ' ★' : ''}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, color: 'var(--text2)', flexShrink: 0 }}>new</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
 
       {telemetry && telemetry.total_calls > 0 && (
         <>
@@ -1480,6 +1519,13 @@ export function Phase3Implementation() {
     enabled: !!id && !!session?.project_root && session?.mode === 'multi_agent',
     refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 60_000,
     retry: false,
+  });
+
+  const rankingQ = useQuery({
+    queryKey: ['sub-agent-ranking', id],
+    queryFn: () => api.getSubAgentRanking(id),
+    enabled: !!id,
+    refetchInterval: isActivelyRunning ? 30_000 : 120_000,
   });
 
   const telemetryQ = useQuery({
@@ -2213,6 +2259,7 @@ export function Phase3Implementation() {
           log={log}
           progressMd={progressQ.data?.content ?? null}
           telemetry={telemetryQ.data ?? null}
+          ranking={rankingQ.data ?? null}
         />
 
         {/* Main content */}

@@ -139,17 +139,24 @@ def rank_models(
     candidates: list[str],
     min_calls: int = 5,
     min_success_rate: float = 0.15,
+    project_id: str | None = None,
 ) -> list[str]:
     """Return candidates sorted by telemetry: success_rate DESC, avg_duration_ms ASC.
 
-    A model only enters the ranked pool if it has >= min_calls records AND a
-    success_rate >= min_success_rate. Models below either threshold fall back to
-    their original YAML order. This prevents a run full of failures from promoting
-    fast-failing models to the top of the list.
+    Three tiers:
+      1. Ranked — >= min_calls AND >= min_success_rate: fully trusted, sorted by
+         success_rate DESC then avg_duration ASC.
+      2. Partial — has some calls but below either threshold: sorted by
+         success_rate DESC as a secondary signal (beats keeping YAML order).
+      3. Untried — zero calls: preserved in original YAML order.
+
+    When project_id is supplied, only records for that project are counted.
+    This prevents cross-project data from distorting per-run ordering.
     """
     if not candidates or _log_path is None or not _log_path.exists():
         return candidates
 
+    yaml_order = {m: i for i, m in enumerate(candidates)}
     stats: dict[str, dict] = {m: {"total": 0, "success": 0, "dur_sum": 0, "dur_n": 0} for m in candidates}
     try:
         with open(_log_path, encoding="utf-8") as f:
@@ -162,6 +169,8 @@ def rank_models(
                 except json.JSONDecodeError:
                     continue
                 if rec.get("stage") != stage:
+                    continue
+                if project_id and rec.get("project_id") != project_id:
                     continue
                 model = rec.get("model")
                 if model not in stats:
@@ -178,21 +187,28 @@ def rank_models(
         logger.debug("telemetry rank_models error: %s", exc)
         return candidates
 
-    ranked, unranked = [], []
+    ranked, partial, untried = [], [], []
     for m in candidates:
         s = stats[m]
-        success_rate = s["success"] / s["total"] if s["total"] else 0.0
-        if s["total"] >= min_calls and success_rate >= min_success_rate:
-            avg_dur = s["dur_sum"] / s["dur_n"] if s["dur_n"] else float("inf")
+        total = s["total"]
+        success_rate = s["success"] / total if total else 0.0
+        avg_dur = s["dur_sum"] / s["dur_n"] if s["dur_n"] else float("inf")
+        if total >= min_calls and success_rate >= min_success_rate:
             ranked.append((m, success_rate, avg_dur))
+        elif total > 0:
+            partial.append((m, success_rate, avg_dur))
         else:
-            unranked.append(m)
+            untried.append(m)
 
     ranked.sort(key=lambda x: (-x[1], x[2]))
-    result = [m for m, _, _ in ranked] + unranked
+    partial.sort(key=lambda x: (-x[1], x[2]))
+    untried.sort(key=lambda x: yaml_order[x])
+
+    result = [m for m, _, _ in ranked] + [m for m, _, _ in partial] + untried
     logger.debug(
-        "telemetry rank_models[%s]: ranked=%s unranked=%s",
-        stage, [m for m, _, _ in ranked], unranked,
+        "telemetry rank_models[%s] project=%s: ranked=%s partial=%s untried=%s",
+        stage, project_id or "global",
+        [m for m, _, _ in ranked], [m for m, _, _ in partial], untried,
     )
     return result
 
