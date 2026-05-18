@@ -472,7 +472,7 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
           )}
           {isRunning && streamingText && !expanded && (
             <span style={{ fontSize: 11, color: 'var(--text2)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: 'italic', marginTop: 1 }}>
-              {streamingText.slice(-120)}
+              {streamingText.split('\n').filter(Boolean).at(-1)?.slice(-120) ?? ''}
             </span>
           )}
         </span>
@@ -505,6 +505,18 @@ function TaskBlock({ taskId: _taskId, agentId, title, status, summary, filesWrit
             <div style={{ padding: '0 12px 6px', fontSize: 12, color: 'var(--text2)', borderTop: '1px solid var(--border)' }}>
               {blocker && <span style={{ color: 'var(--yellow)', marginRight: 6 }}>⚠ Blocker:</span>}
               {blocker || summary}
+            </div>
+          )}
+          {isRunning && streamingText && (
+            <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, color: 'var(--text2)' }}>
+                <div style={{ display: 'flex', gap: 3, marginTop: 3, flexShrink: 0 }}>
+                  <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
+                </div>
+                <span style={{ fontSize: 12, fontStyle: 'italic', wordBreak: 'break-word', whiteSpace: 'pre-wrap', flex: 1, minWidth: 0 }}>
+                  {streamingText}
+                </span>
+              </div>
             </div>
           )}
         </>
@@ -1927,11 +1939,12 @@ export function Phase3Implementation() {
           const taskId = event.payload.task_id as string;
           const chunk = event.payload.content as string;
           if (chunk) {
-            updateSubAgentBlock(taskId, e => ({
-              ...e,
-              // Keep a rolling window of the last ~200 chars so the subtitle stays fresh
-              streamingText: ((e.streamingText ?? '') + chunk).slice(-200),
-            }));
+            updateSubAgentBlock(taskId, e => {
+              const combined = (e.streamingText ?? '') + chunk;
+              const paras = combined.split('\n\n');
+              const trimmed = paras.length > 2 ? paras.slice(-2).join('\n\n') : combined;
+              return { ...e, streamingText: trimmed };
+            });
           }
           break;
         }
