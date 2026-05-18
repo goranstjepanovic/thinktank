@@ -103,6 +103,11 @@ class OllamaDriver(InferenceBackend):
         content_parts: list[str] = []
         final_data: dict = {}
         _think_open: bool = False  # True while inside a thinking block
+        # Repetition-loop detector: models occasionally collapse into repeating the
+        # same phrase thousands of times. Abort if content grows large AND is non-diverse.
+        _REPLOOP_CHECK_AT = 8_000   # chars before we start checking
+        _REPLOOP_ABORT_AT = 20_000  # hard abort regardless of diversity
+        _reploop_checked = False
 
         try:
             async with httpx.AsyncClient(timeout=effective_timeout) as client:
@@ -139,6 +144,28 @@ class OllamaDriver(InferenceBackend):
                             content_parts.append(content_chunk)
                             if request.on_token:
                                 request.on_token(content_chunk)
+
+                            # Repetition-loop detection: check diversity once content crosses
+                            # the soft threshold, then hard-abort at the hard threshold.
+                            _content_len = sum(len(p) for p in content_parts)
+                            if _content_len >= _REPLOOP_ABORT_AT:
+                                raise InferenceBackendError(
+                                    f"Ollama model '{request.model}' repetition loop: "
+                                    f"content reached {_content_len} chars without finishing "
+                                    f"(model={request.model})"
+                                )
+                            if not _reploop_checked and _content_len >= _REPLOOP_CHECK_AT:
+                                _reploop_checked = True
+                                _recent = "".join(content_parts)[-2000:]
+                                _words = _recent.split()
+                                if len(_words) >= 50:
+                                    _unique_ratio = len(set(_words)) / len(_words)
+                                    if _unique_ratio < 0.08:
+                                        raise InferenceBackendError(
+                                            f"Ollama model '{request.model}' repetition loop: "
+                                            f"{_content_len} chars, {_unique_ratio:.0%} unique words in last 2k chars "
+                                            f"(model={request.model})"
+                                        )
 
                         if data.get("done"):
                             if _think_open and request.on_token:
