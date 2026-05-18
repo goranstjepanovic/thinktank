@@ -865,6 +865,10 @@ class InferenceClient:
         _path_read_counts: dict[str, int] = {}     # read count per path; blocks re-reads and blind overwrites
         _path_write_counts: dict[str, int] = {}    # per-path write count for loop detection
         _memory_list_used: bool = False  # memory_list is one-shot — remove after first call
+        # Non-consecutive duplicate call detector: tracks (tool, args_hash) → first result snippet.
+        # When the exact same call is repeated, inject a one-shot nudge to skip it.
+        _seen_call_results: dict[tuple, str] = {}
+        _dedup_nudge_pending: list[str] = []
         while max_tool_rounds is None or round_num <= max_tool_rounds:
             logger.info("tools stage=%-20s round=%d%s", stage_key, round_num, _agent_suffix)
             if round_num > 0:
@@ -1595,6 +1599,16 @@ class InferenceClient:
                                 tc.arguments.get("path") or "",
                             )
                             _glob = (tc.arguments.get("file_glob") or "").strip()
+                            # Dedup: return cached result for repeated identical searches.
+                            _grep_key = (_pattern, _search_dir, _glob)
+                            if _grep_key in _seen_call_results:
+                                _prev = _seen_call_results[_grep_key]
+                                logger.warning(
+                                    "tools stage=%-20s grep_files pattern=%r already searched — returning cached result%s",
+                                    stage_key, _pattern, _agent_suffix,
+                                )
+                                working_messages.append(Message(role="tool", content=_prev))
+                                continue
                             _target = (_base / _search_dir).resolve() if _search_dir and _search_dir != "." else _base
                             _SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
                             _MAX_RESULTS = 40
@@ -1644,6 +1658,8 @@ class InferenceClient:
                                     "pattern": _pattern,
                                     "match_count": len(result_dict.get("matches", [])),
                                 })
+                            # Cache result for dedup detection on repeated identical searches.
+                            _seen_call_results[_grep_key] = json.dumps(result_dict)
                         working_messages.append(Message(role="tool", content=json.dumps(result_dict)))
 
                     elif tc.name == "generate_image":
