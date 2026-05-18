@@ -2230,7 +2230,9 @@ class OrchestratorAgent:
                 # During Milestone 0 (no completed tasks) suppress plan tools and
                 # run_build — both cause the model to spin planning/checking before
                 # there is any scaffold to build or plan against.
-                _is_milestone_0 = not any(r.get("files_written") for r in completed_tasks if isinstance(r, dict))
+                # Resumed sessions always have files on disk even though loaded plan tasks
+                # don't carry files_written — never treat a resume as Milestone 0.
+                _is_milestone_0 = not _is_resume and not any(r.get("files_written") for r in completed_tasks if isinstance(r, dict))
                 _extra_tools = [INSPECT_FILES_TOOL, MEMORY_SEARCH_TOOL, MEMORY_LIST_TOOL]
                 _extra_handlers: dict = {
                     "inspect_files": _handle_inspect_files,
@@ -2321,7 +2323,7 @@ class OrchestratorAgent:
                 and not user_message
                 and not _verification_pending
                 and not follow_up_message
-                and any(r.get("files_written") for r in completed_tasks if isinstance(r, dict))  # scaffold exists — not Milestone 0
+                and (_is_resume or any(r.get("files_written") for r in completed_tasks if isinstance(r, dict)))  # scaffold exists — not Milestone 0
                 and output_dir
             ):
                 _pf = Path(output_dir) / ".think-plan.json"
