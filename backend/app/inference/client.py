@@ -311,6 +311,7 @@ READ_PRD_TOOL = ToolDefinition(
     name="read_prd",
     description=(
         "Read the full Product Requirements Document (PRD) for this project. "
+        "This tool returns the PRD content directly — do NOT use read_file to search for PRD.md yourself. "
         "Call this BEFORE implementing to understand the exact requirements, rules, and constraints. "
         "Call it AGAIN after writing all files to verify your implementation is complete and correct — "
         "if anything is missing or wrong, fix it before returning your summary."

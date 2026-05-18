@@ -1601,7 +1601,8 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
             "Returning `success: true` with empty `files_written` is CORRECT for inspection tasks.\n\n"
             "## Workflow — follow this order\n\n"
             "1. Call `memory_list()` to see what has already been analysed for this project\n"
-            "2. Call `read_prd` to read the Product Requirements Document\n"
+            "2. Call `read_prd` to read the Product Requirements Document (stored at `docs/PRD.md`; "
+            "use the `read_prd` tool — do NOT use `read_file` to search for PRD.md yourself)\n"
             "3. Read every file mentioned in your task using `read_file`; call `memory_store` after each read\n"
             "4. Return a JSON summary of your findings — no file writes required\n\n"
             "## Output format\n\n"
@@ -1646,7 +1647,8 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "unless the Nothing-to-fix rule (below) explicitly applies.\n\n"
         "## Workflow — follow this order every time\n\n"
         "1. Call `memory_list()` ONCE at the very start — **do NOT call it again after the first time**\n"
-        "2. Call `read_prd` to read the Product Requirements Document\n"
+        "2. Call `read_prd` to read the Product Requirements Document (stored at `docs/PRD.md`; "
+        "use the `read_prd` tool — do NOT use `read_file` to hunt for PRD.md yourself)\n"
         "3. Read context — **maximum 2 rounds**: before each `read_file`, call `memory_search` first — "
         "if a good observation exists, skip the read. Otherwise call `read_file` on the specific files "
         "named in your task, or `list_files` once if you need to confirm a path. Do NOT browse directories "
@@ -1850,7 +1852,8 @@ def _sub_agent_user_prompt(
             "and what is missing or broken. Do NOT write any files."
         )
         prd_line = (
-            f"REQUIREMENTS: call `read_prd` to read the Product Requirements Document for context.\n"
+            f"REQUIREMENTS: call `read_prd` to read the Product Requirements Document for context "
+            f"(stored at `docs/PRD.md`; the `read_prd` tool returns it directly — do NOT search for the file).\n"
         )
     elif task_type == "scaffold":
         closing = (
@@ -1881,8 +1884,9 @@ def _sub_agent_user_prompt(
             "Return the JSON summary only after all files pass self-verification and the build is clean."
         )
         prd_line = (
-            f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document — "
-            f"do this before implementing and again after to verify compliance.\n"
+            f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document "
+            f"(stored at `docs/PRD.md`; the `read_prd` tool returns it directly — do NOT use read_file to "
+            f"search for PRD.md) — do this before implementing and again after to verify compliance.\n"
             f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
             f"exports, prop names, and function signatures every module must implement. "
             f"Your files MUST match the contract — do not rename exports or change prop names.\n"
