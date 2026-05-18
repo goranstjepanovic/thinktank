@@ -896,7 +896,7 @@ def _parse_orchestrator_result(orch_result: dict) -> tuple[str | None, bool, lis
     return user_message, done, next_tasks
 
 
-def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: str = "implement") -> dict:
+def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: str = "implement", actual_shell_calls: int = 0) -> dict:
     """
     Normalize a sub-agent result into the execution schema the orchestrator expects.
 
@@ -1003,7 +1003,7 @@ def _normalize_sub_agent_result(raw_result: object, task_title: str, task_type: 
     if success and not summary:
         summary = f"Completed task '{task_title}'."
 
-    if success and not files_written and not commands_run and task_type != "inspect":
+    if success and not files_written and not commands_run and task_type != "inspect" and actual_shell_calls == 0:
         success = False
         blocker = blocker or "Sub-agent reported success but produced no files or commands"
         if not summary:
@@ -3412,8 +3412,12 @@ class OrchestratorAgent:
                         },
                         agent_id=agent_id,
                         on_token=_sub_on_token,
+                        json_schema=(
+                            '{"summary": "what was done", "files_written": ["path/to/file"], '
+                            '"commands_run": ["npm install"], "success": true, "blocker": null}'
+                        ),
                     )
-                    last_result = _normalize_sub_agent_result(last_result, task_title, task_type=task_type)
+                    last_result = _normalize_sub_agent_result(last_result, task_title, task_type=task_type, actual_shell_calls=_tool_counts.get("run_shell", 0))
 
                     # ----------------------------------------------------------
                     # Nudge pass — give the model one chance to self-correct
@@ -3487,8 +3491,12 @@ class OrchestratorAgent:
                                 },
                                 agent_id=agent_id,
                                 on_token=_sub_on_token,
+                                json_schema=(
+                                    '{"summary": "what was done", "files_written": ["path/to/file"], '
+                                    '"commands_run": ["npm install"], "success": true, "blocker": null}'
+                                ),
                             )
-                            last_result = _normalize_sub_agent_result(nudge_raw, task_title, task_type=task_type)
+                            last_result = _normalize_sub_agent_result(nudge_raw, task_title, task_type=task_type, actual_shell_calls=_tool_counts.get("run_shell", 0))
 
                     # ----------------------------------------------------------
                     # Hard verification — runs on the final result (post-nudge

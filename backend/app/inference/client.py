@@ -793,6 +793,7 @@ class InferenceClient:
         timeout_override: int | None = None,
         think_override: bool = False,
         on_token=None,  # Optional[Callable[[str], None]] — token-level streaming callback
+        json_schema: str | None = None,  # schema hint used in the prose-to-JSON nudge
     ) -> dict | str:
         """
         Multi-turn tool-use call. The model may invoke `run_python` zero or more times
@@ -1859,6 +1860,10 @@ class InferenceClient:
                         "tools stage=%-20s nudging prose final answer into JSON",
                         stage_key,
                     )
+                    _schema = json_schema or (
+                        '{"message": "brief summary", "files": [{"path": "relative/path", '
+                        '"description": "specific change required"}], "commands": []}'
+                    )
                     working_messages.append(Message(
                         role="assistant",
                         content=content,
@@ -1866,12 +1871,9 @@ class InferenceClient:
                     working_messages.append(Message(
                         role="user",
                         content=(
-                            "Convert your previous answer into a JSON object only, with no prose and no markdown. "
-                            "Use exactly this schema: "
-                            '{"message": "brief summary", "files": [{"path": "relative/path", '
-                            '"description": "specific change required"}], "commands": []}. '
-                            "If no files need to change, return "
-                            '{"message": "No files need to change.", "files": [], "commands": []}.'
+                            "Your previous response was not valid JSON. "
+                            "Output ONLY a JSON object — no prose, no markdown fences. "
+                            f"Use exactly this schema: {_schema}"
                         ),
                     ))
                     try:
