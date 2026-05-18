@@ -3404,6 +3404,7 @@ class OrchestratorAgent:
                         model_override=model_sm.model,
                         num_ctx_override=model_sm.num_ctx,
                         timeout_override=model_sm.timeout_seconds,
+                        think_override=model_sm.think,
                         extra_tools=_sub_agent_extra_tools(),
                         custom_tool_handlers={
                             "read_prd": _handle_read_prd,
@@ -3478,6 +3479,7 @@ class OrchestratorAgent:
                                 model_override=model_sm.model,
                                 num_ctx_override=model_sm.num_ctx,
                                 timeout_override=model_sm.timeout_seconds,
+                                think_override=model_sm.think,
                                 extra_tools=_sub_agent_extra_tools(),
                                 custom_tool_handlers={
                                     "read_prd": _handle_read_prd,

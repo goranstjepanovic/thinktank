@@ -38,6 +38,7 @@ class InferenceRequest:
     extra: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: int | None = None  # overrides backend default when set
     on_token: Callable[[str], None] | None = None  # optional token-level streaming callback
+    think: bool = False  # enable extended thinking (Ollama: adds think=True to payload)
 
 
 @dataclass

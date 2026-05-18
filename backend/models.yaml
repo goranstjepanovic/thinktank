@@ -205,9 +205,11 @@ stages:
       - model: "nemotron-cascade-2:30b"
         timeout_seconds: 1200
         num_ctx: 114688
+        think: true
       - model: "qwen3.6:27b"
         timeout_seconds: 1200
         num_ctx: 114688
+        think: true
     backend: "ollama"
     temperature: 0.2    # code correctness > creativity
     max_tokens: null

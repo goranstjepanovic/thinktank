@@ -36,6 +36,11 @@ class OllamaDriver(InferenceBackend):
             payload["options"]["num_predict"] = request.max_tokens
         if request.extra:
             payload.update(request.extra)
+        # Explicit think flag overrides anything set via extra (per-model takes precedence)
+        if request.think:
+            payload["think"] = True
+        elif "think" in payload and not payload["think"]:
+            del payload["think"]  # don't send think=False — omitting is cleaner
         return payload
 
     @staticmethod
@@ -97,6 +102,7 @@ class OllamaDriver(InferenceBackend):
         start = time.monotonic()
         content_parts: list[str] = []
         final_data: dict = {}
+        _think_open: bool = False  # True while inside a thinking block
 
         try:
             async with httpx.AsyncClient(timeout=effective_timeout) as client:
@@ -113,12 +119,30 @@ class OllamaDriver(InferenceBackend):
                             data = _json.loads(line)
                         except _json.JSONDecodeError:
                             continue
-                        chunk = data.get("message", {}).get("content", "")
-                        if chunk:
-                            content_parts.append(chunk)
+                        msg = data.get("message", {})
+                        thinking_chunk = msg.get("thinking") or ""
+                        content_chunk = msg.get("content") or ""
+
+                        if thinking_chunk:
+                            # Wrap thinking tokens in <think> tags so the existing
+                            # _extract_think_content mechanism in callers handles them.
+                            if not _think_open and request.on_token:
+                                request.on_token("<think>")
+                                _think_open = True
                             if request.on_token:
-                                request.on_token(chunk)
+                                request.on_token(thinking_chunk)
+
+                        if content_chunk:
+                            if _think_open and request.on_token:
+                                request.on_token("</think>")
+                                _think_open = False
+                            content_parts.append(content_chunk)
+                            if request.on_token:
+                                request.on_token(content_chunk)
+
                         if data.get("done"):
+                            if _think_open and request.on_token:
+                                request.on_token("</think>")
                             final_data = data
                             break
         except httpx.TimeoutException as e:

@@ -791,6 +791,7 @@ class InferenceClient:
         agent_id: str | None = None,
         num_ctx_override: int | None = None,
         timeout_override: int | None = None,
+        think_override: bool = False,
         on_token=None,  # Optional[Callable[[str], None]] — token-level streaming callback
     ) -> dict | str:
         """
@@ -878,6 +879,7 @@ class InferenceClient:
                 timeout_seconds=timeout_override if timeout_override is not None else stage_cfg.timeout_seconds,
                 extra=stage_cfg.extra,
                 on_token=on_token,
+                think=think_override,
             )
 
             response: InferenceResponse | None = None
