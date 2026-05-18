@@ -1541,9 +1541,20 @@ export function Phase3Implementation() {
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logEndRef = useRef<HTMLDivElement>(null);
+  const userScrolledUp = useRef(false);
 
   const isActivelyRunning = session?.status === 'PLANNING' || session?.status === 'RUNNING' || session?.status === 'WAITING';
   useWakeLock(isActivelyRunning);
+
+  // When a run starts, snap back to the bottom and reset manual-scroll flag.
+  const prevRunning = useRef(false);
+  useEffect(() => {
+    if (isActivelyRunning && !prevRunning.current) {
+      userScrolledUp.current = false;
+      logEndRef.current?.scrollIntoView({ behavior: 'instant' });
+    }
+    prevRunning.current = isActivelyRunning;
+  }, [isActivelyRunning]);
 
   const phase2Q = useQuery({
     queryKey: ['phase2', id],
@@ -1622,10 +1633,12 @@ export function Phase3Implementation() {
       return [...prev.filter(e => e.kind !== 'orchestrator_thinking' && e.kind !== 'orchestrator_streaming' && e.kind !== 'thinking' && e.kind !== 'tool_use'), newBlock];
     });
 
-  // Auto-scroll log on new entries or when switching back to the chat tab
+  // Auto-scroll log on new entries — only while the orchestrator is actively running
+  // and the user hasn't manually scrolled up to read earlier messages.
   useEffect(() => {
+    if (!isActivelyRunning || userScrolledUp.current) return;
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [log]);
+  }, [log, isActivelyRunning]);
 
   useEffect(() => {
     if (mainTab === 'log') logEndRef.current?.scrollIntoView({ behavior: 'instant' });
@@ -2386,7 +2399,13 @@ export function Phase3Implementation() {
 
             {/* Left: orchestrator chat */}
             <div style={{ flex: '0 0 55%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+              <div
+                style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}
+                onScroll={e => {
+                  const el = e.currentTarget;
+                  userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 80;
+                }}
+              >
                 {(isRunning || isWaiting) && log.filter(e => ['orchestrator_thinking', 'orchestrator_streaming', 'orchestrator_message', 'tool_use', 'thinking', 'user_msg', 'assistant_msg', 'error', 'complete'].includes(e.kind)).length === 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text2)', fontSize: 12 }}>
                     <div style={{ display: 'flex', gap: 3 }}>
@@ -2572,7 +2591,13 @@ export function Phase3Implementation() {
         ) : mainTab === 'log' ? (
           // ── Classic: single-column log ──────────────────────────────────────
           <>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+            <div
+              style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}
+              onScroll={e => {
+                const el = e.currentTarget;
+                userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 80;
+              }}
+            >
               {isRunning && log.length === 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text2)', fontSize: 12 }}>
                   <div style={{ display: 'flex', gap: 3 }}>
