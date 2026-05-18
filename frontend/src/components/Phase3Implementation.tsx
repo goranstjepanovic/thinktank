@@ -2566,21 +2566,29 @@ export function Phase3Implementation() {
                           ))}
                         </>
                       )}
-                      {runningTasks.map(t => (
-                        <TaskBlock
-                          key={t.id}
-                          taskId={t.taskId}
-                          agentId={t.agentId}
-                          title={t.title}
-                          status={t.status}
-                          summary={t.summary}
-                          filesWritten={t.filesWritten}
-                          blocker={t.blocker}
-                          updates={t.updates}
-                          streamingText={t.streamingText}
-                          onStop={() => doStopTask(t.taskId)}
-                        />
-                      ))}
+                      {runningTasks.length > 0 && (
+                        <>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '10px 0 4px', display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span className="typing-dot" style={{ margin: 0 }} />
+                            In Progress · {runningTasks.length}
+                          </p>
+                          {runningTasks.map(t => (
+                            <TaskBlock
+                              key={t.id}
+                              taskId={t.taskId}
+                              agentId={t.agentId}
+                              title={t.title}
+                              status={t.status}
+                              summary={t.summary}
+                              filesWritten={t.filesWritten}
+                              blocker={t.blocker}
+                              updates={t.updates}
+                              streamingText={t.streamingText}
+                              onStop={() => doStopTask(t.taskId)}
+                            />
+                          ))}
+                        </>
+                      )}
                     </>
                   )}
                 </div>
