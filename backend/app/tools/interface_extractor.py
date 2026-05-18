@@ -201,6 +201,12 @@ def extract_interface(output_dir: str) -> dict:
         if path.suffix in {".js", ".jsx", ".ts", ".tsx", ".svelte", ".vue"}:
             exports = _js_exports(content)
             imports = _js_imports(content)
+            # Svelte and Vue components are always default-exported by the compiler even
+            # when there is no explicit `export default` in the source. Infer the default
+            # from the filename so the manifest doesn't flag them as "missing default export".
+            if path.suffix in {".svelte", ".vue"} and exports["default"] is None:
+                exports = dict(exports)
+                exports["default"] = path.stem
         elif path.suffix == ".py":
             exports = _py_exports(content)
             imports = _py_imports(content)
