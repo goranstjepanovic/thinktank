@@ -1868,8 +1868,7 @@ def _sub_agent_user_prompt(
         prd_line = ""  # scaffold tasks must not be pulled into PRD feature implementation
     else:
         closing = (
-            "Start by reading the PRD (including the Module Interface Contract section) and any files "
-            "needed for context, then write all required files, run any specified commands.\n"
+            "Start by reading the PRD for requirements context, then write all required files, run any specified commands.\n"
             "Before returning:\n"
             "1. Call `read_file` on everything you wrote and fix any file that contains "
             "TODO/FIXME/placeholder text, stub implementations, or imports that don't match the contract. "
@@ -1887,9 +1886,10 @@ def _sub_agent_user_prompt(
             f"REQUIREMENTS: call `read_prd` to read the full Product Requirements Document "
             f"(stored at `docs/PRD.md`; the `read_prd` tool returns it directly — do NOT use read_file to "
             f"search for PRD.md) — do this before implementing and again after to verify compliance.\n"
-            f"INTERFACE CONTRACT: The PRD contains a 'Module Interface Contract' section listing the exact "
-            f"exports, prop names, and function signatures every module must implement. "
-            f"Your files MUST match the contract — do not rename exports or change prop names.\n"
+            f"INTERFACE: The exact exports, prop names, and function signatures for every module are in "
+            f"`docs/INTERFACE.json` (live-generated from disk). This is already summarised in the "
+            f"'## Existing module map' section of this prompt — use that first. "
+            f"Do NOT search the PRD for interface details; they are not there.\n"
         )
     return (
         f"PROJECT: {idea_name}\n"
