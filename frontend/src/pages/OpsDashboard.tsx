@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -480,38 +480,49 @@ const TYPE_COLORS: Record<string, string> = {
   large: '#a78bfa',
 };
 
-function TaskTypeTable({ byType, avgByType }: { byType: TaskTypeStat[]; avgByType: TypeProjectStat[] }) {
-  const avgMap = Object.fromEntries(avgByType.map(t => [t.model_type, t]));
+function TaskBreakdownTable({ tasks, filterProject }: { tasks: TaskStat[]; filterProject: string }) {
+  const visible = filterProject
+    ? tasks.filter(t => t.project_id === filterProject)
+    : tasks;
+  const top = visible.slice(0, 50);
+  if (top.length === 0) return (
+    <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>
+      {filterProject ? 'No task data for this project yet.' : 'No task data yet — filter by project to focus.'}
+    </div>
+  );
   return (
     <div style={{ overflowX: 'auto' }}>
+      <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
+        Sorted by total wall time · fix tasks are sub-agent retry attempts after verification failures
+        {!filterProject && <span style={{ marginLeft: 8, color: 'var(--yellow)' }}>· filter by project for per-task detail</span>}
+      </div>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ borderBottom: '1px solid var(--border)' }}>
-            {['Type', 'Calls', 'Success', 'Success Rate', 'Avg Duration', 'p95 Duration', 'Avg Tool Calls', 'Avg Tasks/Project'].map(h => (
+            {['Task ID', 'Attempts', 'Success', 'Rate', 'Total Time', 'Avg / Attempt'].map(h => (
               <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {byType.map((t, i) => {
-            const apx = avgMap[t.model_type];
-            const color = TYPE_COLORS[t.model_type] ?? MODEL_COLORS[i % MODEL_COLORS.length];
+          {top.map((t, i) => {
+            const pct = Math.round(t.success_rate * 100);
+            const rateColor = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)';
             return (
-              <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '7px 10px' }}>
-                  <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: `${color}22`, color }}>{t.model_type}</span>
+              <tr key={i} style={{ borderBottom: '1px solid var(--border)', opacity: t.is_fix ? 0.8 : 1 }}>
+                <td style={{ padding: '7px 10px', fontFamily: 'monospace', fontSize: 11, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.task_id}>
+                  {t.is_fix && (
+                    <span style={{ marginRight: 6, fontSize: 10, color: 'var(--yellow)', background: 'rgba(251,191,36,0.12)', padding: '1px 5px', borderRadius: 3, fontFamily: 'sans-serif' }}>
+                      fix
+                    </span>
+                  )}
+                  {t.task_id}
                 </td>
                 <td style={{ padding: '7px 10px', fontVariantNumeric: 'tabular-nums' }}>{t.calls}</td>
                 <td style={{ padding: '7px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{t.success}</td>
-                <td style={{ padding: '7px 10px', color: t.success_rate >= 0.9 ? 'var(--green)' : t.success_rate >= 0.7 ? 'var(--yellow)' : 'var(--red)' }}>
-                  {Math.round(t.success_rate * 100)}%
-                </td>
+                <td style={{ padding: '7px 10px', color: rateColor }}>{t.calls > 0 ? `${pct}%` : '—'}</td>
+                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmtMs(t.total_duration_ms)}</td>
                 <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(t.avg_duration_ms)}</td>
-                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(t.p95_duration_ms)}</td>
-                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{t.avg_tool_calls ?? '—'}</td>
-                <td style={{ padding: '7px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
-                  {apx ? `${apx.avg_tasks_per_project} (${apx.projects} project${apx.projects === 1 ? '' : 's'})` : '—'}
-                </td>
               </tr>
             );
           })}
@@ -846,11 +857,11 @@ export function OpsDashboard() {
         </div>
       )}
 
-      {/* Task type breakdown */}
-      {data && data.by_type && data.by_type.length > 0 && (
+      {/* Task execution breakdown */}
+      {data && data.by_task && data.by_task.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <ChartCard title="Task Type Breakdown  ·  fast / standard / large" minHeight={0}>
-            <TaskTypeTable byType={data.by_type} avgByType={data.avg_tasks_per_project_by_type ?? []} />
+          <ChartCard title="Task Execution  ·  sub-agent wall time by task" minHeight={0}>
+            <TaskBreakdownTable tasks={data.by_task} filterProject={filterProject} />
           </ChartCard>
         </div>
       )}

@@ -282,6 +282,19 @@ export interface ErrorCount {
   count: number;
 }
 
+export interface TaskStat {
+  project_id: string;
+  task_id: string;
+  is_fix: boolean;
+  base_task_id: string;
+  calls: number;
+  success: number;
+  failures: number;
+  success_rate: number;
+  total_duration_ms: number | null;
+  avg_duration_ms: number | null;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   total_tokens_prompt: number;
@@ -294,6 +307,7 @@ export interface TelemetrySummary {
   by_backend: BackendStat[];
   by_type: TaskTypeStat[];
   avg_tasks_per_project_by_type: TypeProjectStat[];
+  by_task: TaskStat[];
   over_time: TimeBucket[];
   avg_tools_per_project: ToolProjectStat[];
   avg_tools_per_model: ToolModelStat[];

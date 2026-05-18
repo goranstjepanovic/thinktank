@@ -134,13 +134,14 @@ _PLAN_UPDATE_TOOL = ToolDefinition(
     description=(
         "Update a task's status, instruction, or notes. "
         "Call with status='in_progress' before dispatching, status='done' after success, "
-        "status='failed' when permanently blocked."
+        "status='failed' when permanently blocked, status='skipped' when the task is no longer "
+        "needed (e.g. superseded by another task or a plan change)."
     ),
     parameters={
         "type": "object",
         "properties": {
             "id":          {"type": "string", "description": "Task id to update"},
-            "status":      {"type": "string", "enum": ["pending", "in_progress", "done", "failed"]},
+            "status":      {"type": "string", "enum": ["pending", "in_progress", "done", "failed", "skipped"]},
             "title":       {"type": "string", "description": "New title (optional)"},
             "instruction": {"type": "string", "description": "New instruction (optional)"},
             "notes":       {"type": "string", "description": "Notes to append (optional)"},
@@ -165,7 +166,9 @@ _PLAN_NEXT_TOOL = ToolDefinition(
     name="plan_next",
     description=(
         "Get the next task to work on. Returns the first in_progress task if any, "
-        "otherwise the first pending task. Returns null when all tasks are done or failed."
+        "otherwise the first non-done task in array order (pending or failed). "
+        "Failed tasks are flagged with retry=true and a warning — use a different approach. "
+        "Returns null only when all tasks are done."
     ),
     parameters={"type": "object", "properties": {}, "required": []},
 )
@@ -534,10 +537,17 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "**CRITICAL**: copy the EXACT `id` from the plan task into the `next_tasks` entry — "
         "the runtime matches dispatched tasks to plan tasks by id. "
         "If the ids don't match, the plan never advances and the orchestrator loops forever.\n"
+        "   - If `plan_next` returns `retry=true`, the task previously failed. "
+        "Read its `notes` field and use a different approach in the instruction.\n"
+        "   - If `plan_next` returns a `notice` about later-done tasks, the task may be obsolete — "
+        "call `plan_update(id, status='done')` or `plan_remove(id)` before dispatching.\n"
         "3. **After success**: call `plan_update(id, status='done')`.\n"
         "4. **After permanent failure** (⛔ REFRAME REQUIRED in history): call `plan_remove(id)`, "
         "then `plan_add` 2–3 smaller replacement tasks each touching exactly 1 file.\n"
-        "5. **When plan_next returns null**: all tasks done/failed — set done=true.\n\n"
+        "   - Use `plan_update(id, status='skipped')` when a task is no longer needed due to a "
+        "plan change or because another task already covered it. Skipped tasks are ignored by "
+        "plan_next — this lets you change direction without getting stuck.\n"
+        "5. **When plan_next returns null**: all tasks complete — set done=true.\n\n"
         "- `plan_list(offset, limit)` — paginated view of the plan (default limit=20)\n"
         "- `plan_add(id, title, instruction)` — add a pending task\n"
         "- `plan_update(id, status?, title?, instruction?, notes?)` — update a task\n"
@@ -1165,7 +1175,7 @@ def _orchestrator_user_prompt(
                 _plan_tasks = _plan_data.get("tasks", [])
                 _plan_is_empty = len(_plan_tasks) == 0
                 _plan_pending_count = sum(
-                    1 for t in _plan_tasks if t.get("status") in ("pending", "in_progress")
+                    1 for t in _plan_tasks if t.get("status") in ("pending", "in_progress", "failed")
                 )
             except Exception:
                 pass
@@ -1510,7 +1520,7 @@ def _plan_handlers(output_dir: str) -> dict:
         for t in tasks:
             if t.get("id") == task_id:
                 if args.get("status"):
-                    valid = {"pending", "in_progress", "done", "failed"}
+                    valid = {"pending", "in_progress", "done", "failed", "skipped"}
                     if args["status"] not in valid:
                         return {"error": f"status must be one of {sorted(valid)}"}
                     t["status"] = args["status"]
@@ -1542,17 +1552,33 @@ def _plan_handlers(output_dir: str) -> dict:
     async def _plan_next(_args: dict) -> dict:
         data  = _load()
         tasks = data.get("tasks", [])
-        pending_count = sum(1 for t in tasks if t.get("status") == "pending")
-        # Resume an in_progress task first (e.g. after a crash mid-round)
+        _TERMINAL = ("done", "skipped", "in_progress")
+        remaining = sum(1 for t in tasks if t.get("status") in ("pending", "failed"))
+        # Resume an in_progress task first (crash recovery)
         for t in tasks:
             if t.get("status") == "in_progress":
-                return {"task": t, "remaining_pending": pending_count}
-        # Then the first pending task
-        for t in tasks:
-            if t.get("status") == "pending":
-                return {"task": t, "remaining_pending": pending_count - 1}
-        return {"task": None, "remaining_pending": 0,
-                "message": "All tasks are done or failed — set done=true"}
+                return {"task": t, "remaining": remaining}
+        # First actionable task in array order (pending or failed); skip terminal statuses
+        for idx, t in enumerate(tasks):
+            if t.get("status") not in _TERMINAL:
+                result: dict = {"task": t, "remaining": remaining - 1}
+                if t.get("status") == "failed":
+                    result["retry"] = True
+                    result["warning"] = (
+                        "This task PREVIOUSLY FAILED. Read its 'notes' field for the failure reason. "
+                        "Use a different approach — do not repeat the same steps."
+                    )
+                # Warn if later tasks are already done/skipped (orphan signal)
+                later_done = [u["id"] for u in tasks[idx + 1:] if u.get("status") in ("done", "skipped")]
+                if later_done:
+                    result["notice"] = (
+                        f"Tasks {later_done} (later in the plan) are already done/skipped. "
+                        "If this task is now obsolete, call plan_update(id, status='skipped') "
+                        "instead of dispatching it."
+                    )
+                return result
+        return {"task": None, "remaining": 0,
+                "message": "All tasks are done, skipped, or failed — set done=true"}
 
     return {
         "plan_list":   _plan_list,
@@ -1595,6 +1621,23 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "Describing a file in text does NOT write it. Mentioning a filename does NOT write it.\n"
         "If you say 'I created server/main.py' without calling `file_edit`, the file does not exist "
         "and your task will be marked FAILED and retried. Do NOT narrate — ACT.\n\n"
+        "## NEVER invent tool arguments or fabricate results\n\n"
+        "Only report something as done if you actually called the tool that does it. "
+        "The orchestrator tracks every tool call — any file in `files_written` that was not "
+        "produced by a real `file_edit` call will be detected and your task will be hard-failed.\n\n"
+        "WRONG — fabricated (tool was never called, file does not exist on disk):\n"
+        '  {"summary": "Implemented src/main.py and src/utils.py", '
+        '"files_written": ["src/main.py", "src/utils.py"], "success": true}\n\n'
+        "CORRECT — call the tool first, then summarise:\n"
+        "  Step 1: call file_edit(path='src/main.py', content='# full file content here...')\n"
+        "  Step 2: call file_edit(path='src/utils.py', content='# full file content here...')\n"
+        "  Step 3: output the JSON summary AFTER both calls succeed:\n"
+        '  {"summary": "Implemented src/main.py and src/utils.py", '
+        '"files_written": ["src/main.py", "src/utils.py"], "success": true}\n\n'
+        "Never pass invented or placeholder argument values to any tool. "
+        "If you do not know the correct value for a required argument (e.g. a real file path, "
+        "a real package name, an existing function name), read the relevant file first to find it — "
+        "do not guess.\n\n"
         "## You are NOT a planner\n\n"
         "Do NOT describe what you intend to do. Do NOT summarise the task. Do NOT explain your approach.\n"
         "Do NOT output the final JSON before you have written all required files.\n"
@@ -2601,6 +2644,26 @@ class OrchestratorAgent:
                                     pt["id"],
                                 )
 
+                    # Detect pending tasks that appear before a done task in the array —
+                    # these were orphaned when the orchestrator skipped ahead in the queue.
+                    # Log them so the next round's prompt can include a cleanup hint.
+                    _plan_tasks_arr = _plan_data.get("tasks", [])
+                    _last_done_idx = max(
+                        (i for i, pt in enumerate(_plan_tasks_arr)
+                         if pt.get("status") in ("done", "skipped")),
+                        default=-1,
+                    )
+                    _orphaned_pending = [
+                        pt["id"] for i, pt in enumerate(_plan_tasks_arr)
+                        if i < _last_done_idx and pt.get("status") in ("pending", "failed")
+                    ]
+                    if _orphaned_pending:
+                        logger.warning(
+                            "orchestrator: orphaned pending task(s) before last done task — "
+                            "plan_next will return these until cleaned up: %s",
+                            _orphaned_pending,
+                        )
+
                     if _plan_dirty:
                         _plan_file.write_text(
                             _json.dumps(_plan_data, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -3004,6 +3067,8 @@ class OrchestratorAgent:
             "verification_agent: task '%s' verified=%s issues=%d",
             task_title, result["verified"], len(result["issues"]),
         )
+        for _issue in result["issues"]:
+            logger.info("verification_agent:   issue: %s", _issue)
         return result
 
     async def _run_task_verify_fix_loop(
@@ -3340,7 +3405,84 @@ class OrchestratorAgent:
                     )
                     last_result = _normalize_sub_agent_result(last_result, task_title, task_type=task_type)
 
-                    # Verify the model actually wrote what it claimed
+                    # ----------------------------------------------------------
+                    # Nudge pass — give the model one chance to self-correct
+                    # before hard-failing.  Covers two common small-model failure
+                    # modes:
+                    #   1. Claimed files written but never called file_edit
+                    #   2. Reported success with no files and no commands
+                    # We send the bad response back as an assistant turn so the
+                    # model sees what it said, then add a corrective user message.
+                    # ----------------------------------------------------------
+                    _nudge_msg: str | None = None
+                    _claimed_before_nudge: list[str] = []
+
+                    if last_result.get("success") and task_type != "scaffold":
+                        _claimed_before_nudge = [f for f in (last_result.get("files_written") or []) if f]
+                        if _claimed_before_nudge and not _files_edited:
+                            _files_list = ", ".join(_claimed_before_nudge[:3])
+                            if len(_claimed_before_nudge) > 3:
+                                _files_list += f" (and {len(_claimed_before_nudge) - 3} more)"
+                            _nudge_msg = (
+                                f"CORRECTION: You returned success and claimed to have written "
+                                f"{_files_list}, but `file_edit` was never called — "
+                                "those files do not exist on disk. "
+                                "You MUST call `file_edit` for each file to actually create it. "
+                                "Describing a file in text does NOT write it. "
+                                "Call `file_edit` now, then return the JSON summary."
+                            )
+                    elif not last_result.get("success") and "produced no files or commands" in (last_result.get("blocker") or ""):
+                        _nudge_msg = (
+                            "CORRECTION: You returned success but wrote no files and ran no commands — "
+                            "nothing was done. You must call `file_edit` to write the required files. "
+                            "Return the JSON summary only AFTER all files are written."
+                        )
+
+                    if _nudge_msg:
+                        logger.warning(
+                            "sub_agent: task '%s' attempt %d — nudging instead of failing: %s",
+                            task_title, attempt, _nudge_msg[:100],
+                        )
+                        _files_edited.clear()
+                        _tool_counts.clear()
+                        _telemetry.suppress_next_call()
+                        _prev_json = json.dumps(last_result, ensure_ascii=False)
+                        async with AsyncSessionLocal() as nudge_db:
+                            nudge_raw = await self._client.call_with_tools(
+                                stage_key="phase3_sub_agent",
+                                messages=[
+                                    Message(role="system", content=sys_prompt),
+                                    Message(role="user", content=user_prompt),
+                                    Message(role="assistant", content=_prev_json),
+                                    Message(role="user", content=_nudge_msg),
+                                ],
+                                session=nudge_db,
+                                idea_id=idea.id,
+                                branch_id=branch.id,
+                                allowed_file_dir=output_dir,
+                                explore_only=False,
+                                max_tool_rounds=60,
+                                return_json=True,
+                                call_index=0,
+                                on_tool_result=_wrapped_on_tool,
+                                on_text_response=_on_text_response,
+                                model_override=model_sm.model,
+                                num_ctx_override=model_sm.num_ctx,
+                                timeout_override=model_sm.timeout_seconds,
+                                extra_tools=_sub_agent_extra_tools(),
+                                custom_tool_handlers={
+                                    "read_prd": _handle_read_prd,
+                                    **_memory_handlers(idea.id),
+                                },
+                                agent_id=agent_id,
+                                on_token=_sub_on_token,
+                            )
+                            last_result = _normalize_sub_agent_result(nudge_raw, task_title, task_type=task_type)
+
+                    # ----------------------------------------------------------
+                    # Hard verification — runs on the final result (post-nudge
+                    # or original).  Models that ignored the nudge fail here.
+                    # ----------------------------------------------------------
                     if last_result.get("success"):
                         claimed = [f for f in (last_result.get("files_written") or []) if f]
                         if claimed and not _files_edited and task_type != "scaffold":

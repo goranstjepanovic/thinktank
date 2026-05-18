@@ -195,27 +195,24 @@ stages:
     # Tried in telemetry-ranked order (success_rate DESC, avg_ms ASC); YAML order is the default
     # until each model accumulates enough calls to be reliably ranked.
     models:
-      - model: "ducquoc/gemma4-fast-sonnet:latest"
+      - model: "rnj-1:8b"
         timeout_seconds: 900
-      - model: "qwen2.5-coder:7b"
-        timeout_seconds: 900
-      - model: "ssfdre38/gemma4-turbo:e4b"
-        timeout_seconds: 900
-      - model: "cogito:14b"
-        timeout_seconds: 900
-      - model: "sorc/qwen3.5-claude-4.6-opus:9b"
+      - model: "carstenuhlig/omnicoder-2-9b:q4_k_m"
         timeout_seconds: 900
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 1200
-        num_ctx: 32768
-      - model: "qwen3-coder:30b"
+        num_ctx: 114688
+      - model: "nemotron-cascade-2:30b"
         timeout_seconds: 1200
-        num_ctx: 24576
+        num_ctx: 114688
+      - model: "qwen3.6:27b"
+        timeout_seconds: 1200
+        num_ctx: 114688
     backend: "ollama"
-    temperature: 0.1    # code correctness > creativity
+    temperature: 0.2    # code correctness > creativity
     max_tokens: null
     format: "json"
-    num_ctx: 16384      # default if per-model num_ctx is not set
+    num_ctx: 65536      # default if per-model num_ctx is not set
     supports_tools: true
     timeout_seconds: 1200  # default if per-model timeout_seconds is not set
 

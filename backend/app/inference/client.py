@@ -826,6 +826,7 @@ class InferenceClient:
                 branch_id=branch_id,
                 stage_result_id=stage_result_id,
                 call_index=call_index,
+                model_override=model_override,
             )
 
         # web_search + fetch_webpage are always available
@@ -856,6 +857,7 @@ class InferenceClient:
         _tool_call_counts: dict[str, int] = {}
         _reads_since_write: int = 0   # exploration calls without a file write
         _read_nudge_sent: bool = False
+        _start_nudge_sent: bool = False  # True after we nudge a model that made no tool calls
         _written_files: set[str] = set()            # paths successfully written this session
         _path_read_counts: dict[str, int] = {}     # read count per path; blocks re-reads and blind overwrites
         _path_write_counts: dict[str, int] = {}    # per-path write count for loop detection
@@ -1784,13 +1786,43 @@ class InferenceClient:
             if not return_json:
                 return content
 
-            # Some models return empty content after tool rounds instead of the
-            # final answer.  Inject an explicit nudge and do one plain call to
-            # get the JSON response.
+            # Some models return empty content instead of tool calls or a final answer.
+            # We handle this in two stages depending on how much work has been done.
             if not content:
+                if not _tool_call_counts:
+                    # No tool calls made yet — model slipped into conversation mode.
+                    # Give it one explicit kick to start calling tools before giving up.
+                    # Do NOT ask for a JSON summary here — that causes fabrication.
+                    if not _start_nudge_sent:
+                        _start_nudge_sent = True
+                        logger.warning(
+                            "tools stage=%-20s empty content with no tool calls — nudging to start tool use%s",
+                            stage_key, _agent_suffix,
+                        )
+                        working_messages.append(Message(
+                            role="user",
+                            content=(
+                                "You have not called any tools yet and returned empty output. "
+                                "Do NOT write text or JSON. Call a tool RIGHT NOW. "
+                                "Start with memory_list() to see the project state, "
+                                "then read_prd to read the task requirements. "
+                                "Every response must be a tool call — never plain text."
+                            ),
+                        ))
+                        round_num += 1
+                        continue
+                    # Nudge also produced nothing — model truly cannot call tools.
+                    logger.warning(
+                        "tools stage=%-20s empty content after tool-call nudge, still no tool calls — failing fast%s",
+                        stage_key, _agent_suffix,
+                    )
+                    raise InferenceClientError(
+                        f"Model '{effective_model}' cannot call tools — returned empty content twice (rounds 0 and 1)"
+                    )
+                # Tool calls were made but no final answer — nudge for JSON summary.
                 logger.warning(
-                    "tools stage=%-20s empty content after round %d — nudging for final answer",
-                    stage_key, round_num,
+                    "tools stage=%-20s empty content after round %d — nudging for final answer%s",
+                    stage_key, round_num, _agent_suffix,
                 )
                 if not return_json:
                     return ""
@@ -1807,9 +1839,10 @@ class InferenceClient:
                         branch_id=branch_id,
                         stage_result_id=stage_result_id,
                         call_index=current_call_index,
+                        model_override=effective_model,
                     )
                 except InferenceClientError:
-                    logger.warning("tools stage=%-20s empty-content nudge also failed — returning empty", stage_key)
+                    logger.warning("tools stage=%-20s empty-content nudge also failed — returning empty%s", stage_key, _agent_suffix)
                     return {"message": "", "files": [], "commands": []}
 
             try:
@@ -1848,6 +1881,7 @@ class InferenceClient:
                             branch_id=branch_id,
                             stage_result_id=stage_result_id,
                             call_index=current_call_index,
+                            model_override=effective_model,
                         )
                     except InferenceClientError:
                         # Nudge also failed — return the prose as the message so

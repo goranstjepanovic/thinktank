@@ -135,6 +135,11 @@ async def get_summary(
     # per-model: list of total tool calls per invocation (to average)
     model_tool_totals: dict[str, list[int]] = defaultdict(list)
 
+    # per-task aggregation (phase3_sub_agent only; keyed by (project_id, task_id))
+    task_agg: dict[tuple[str, str], dict] = defaultdict(
+        lambda: {"calls": 0, "success": 0, "durations": []}
+    )
+
     # per-type (fast/standard/large) aggregation
     type_agg: dict[str, dict] = defaultdict(_new_agg)
     type_tool_totals: dict[str, list[int]] = defaultdict(list)
@@ -205,6 +210,16 @@ async def get_summary(
             # count initial dispatches per project per type (not fallbacks)
             if pid and not is_fb:
                 project_type_counts[pid][mtype] += 1
+
+        # task-level stats (phase3_sub_agent only)
+        if s == "phase3_sub_agent":
+            tid = rec.get("task_id") or ""
+            if tid and pid:
+                ta = task_agg[(pid, tid)]
+                ta["calls"] += 1
+                ta["success"] += int(ok)
+                if dur is not None:
+                    ta["durations"].append(float(dur))
 
         # tool-call stats
         if tc:
@@ -366,6 +381,33 @@ async def get_summary(
         key=lambda x: _TYPE_ORDER.index(x["model_type"]) if x["model_type"] in _TYPE_ORDER else 99,
     )
 
+    import re as _re
+
+    def _is_fix(tid: str) -> bool:
+        return bool(_re.search(r"_fix\d*$", tid))
+
+    def _base_id(tid: str) -> str:
+        return _re.sub(r"_fix\d*$", "", tid)
+
+    by_task = sorted(
+        [
+            {
+                "project_id": pid,
+                "task_id": tid,
+                "is_fix": _is_fix(tid),
+                "base_task_id": _base_id(tid),
+                "calls": v["calls"],
+                "success": v["success"],
+                "failures": v["calls"] - v["success"],
+                "success_rate": round(v["success"] / v["calls"], 3) if v["calls"] else 0,
+                "total_duration_ms": round(sum(v["durations"])) if v["durations"] else None,
+                "avg_duration_ms": round(statistics.mean(v["durations"])) if v["durations"] else None,
+            }
+            for (pid, tid), v in task_agg.items()
+        ],
+        key=lambda x: -(x["total_duration_ms"] or 0),
+    )
+
     by_error = sorted(
         [{"error": err, "model": mdl, "count": cnt} for (err, mdl), cnt in error_counts.items()],
         key=lambda x: -x["count"],
@@ -386,6 +428,7 @@ async def get_summary(
         "by_backend": by_backend,
         "by_type": by_type,
         "avg_tasks_per_project_by_type": avg_tasks_per_project_by_type,
+        "by_task": by_task,
         "over_time": over_time,
         "avg_tools_per_project": avg_tools_per_project,
         "avg_tools_per_model": avg_tools_per_model,
