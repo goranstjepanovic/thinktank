@@ -1917,10 +1917,11 @@ export function Phase3Implementation() {
 
         case 'phase3.sub_agent_started': {
           const taskId = event.payload.task_id as string;
+          const startedAgentId = event.payload.agent_id as string | undefined;
           upsertSubAgentBlock(
             taskId,
-            e => ({ ...e, status: 'running' }),
-            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: event.payload.agent_id as string | undefined, title: (event.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [] }),
+            e => ({ ...e, status: 'running', agentId: startedAgentId || e.agentId }),
+            () => ({ kind: 'sub_agent_block', id: nextId(), taskId, agentId: startedAgentId, title: (event.payload.title as string) || `Task ${taskId}`, status: 'running', summary: '', filesWritten: [], blocker: null, updates: [] }),
           );
           break;
         }
@@ -2526,21 +2527,6 @@ export function Phase3Implementation() {
                           updates={t.updates}
                         />
                       ))}
-                      {runningTasks.map(t => (
-                        <TaskBlock
-                          key={t.id}
-                          taskId={t.taskId}
-                          agentId={t.agentId}
-                          title={t.title}
-                          status={t.status}
-                          summary={t.summary}
-                          filesWritten={t.filesWritten}
-                          blocker={t.blocker}
-                          updates={t.updates}
-                          streamingText={t.streamingText}
-                          onStop={() => doStopTask(t.taskId)}
-                        />
-                      ))}
                       {queuedTasks.length > 0 && (
                         <>
                           <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '10px 0 4px' }}>
@@ -2561,6 +2547,21 @@ export function Phase3Implementation() {
                           ))}
                         </>
                       )}
+                      {runningTasks.map(t => (
+                        <TaskBlock
+                          key={t.id}
+                          taskId={t.taskId}
+                          agentId={t.agentId}
+                          title={t.title}
+                          status={t.status}
+                          summary={t.summary}
+                          filesWritten={t.filesWritten}
+                          blocker={t.blocker}
+                          updates={t.updates}
+                          streamingText={t.streamingText}
+                          onStop={() => doStopTask(t.taskId)}
+                        />
+                      ))}
                     </>
                   )}
                 </div>
