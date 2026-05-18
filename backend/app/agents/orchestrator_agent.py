@@ -3360,12 +3360,21 @@ class OrchestratorAgent:
 
             def _sub_on_token(token: str) -> None:
                 nonlocal _sub_stream_in_think
-                # Strip <think> tags; skip JSON/XML structural tokens
-                _sub_stream_in_think, visible = _extract_think_content(token, _sub_stream_in_think)
-                if not visible:
-                    return
+                was_in_think = _sub_stream_in_think
+                _sub_stream_in_think, think_content = _extract_think_content(token, _sub_stream_in_think)
+                # For thinking models (<think> tags): use extracted think content.
+                # For non-thinking models: stream the raw token when outside any
+                # think block — they produce reasoning text directly before tool calls.
+                if think_content:
+                    visible = think_content
+                elif not was_in_think and not _sub_stream_in_think:
+                    # Outside any think block — raw text from a non-thinking model
+                    visible = token
+                else:
+                    return  # inside a think block but not its text content — skip
                 stripped = visible.strip()
-                if not stripped or stripped[0] in ('{', '}', '[', ']', '<', '"'):
+                # Filter structural JSON/XML tokens (tool-call JSON, final response JSON)
+                if not stripped or stripped[0] in ('{', '}', '[', ']', '<', '"', ':'):
                     return
                 asyncio.create_task(
                     on_orchestrator_event("sub_agent_token", {
