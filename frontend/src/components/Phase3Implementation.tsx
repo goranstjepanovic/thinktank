@@ -1270,28 +1270,15 @@ function Phase3Sidebar({
   idea,
   session,
   log,
-  progressMd,
   telemetry,
   ranking,
 }: {
   idea: IdeaDetail;
   session: Phase3Session;
   log: ActivityEntry[];
-  progressMd: string | null;
   telemetry: import('../types').TelemetrySummary | null;
   ranking: SubAgentRanking | null;
 }) {
-  const tasks = useMemo(() => {
-    if (!progressMd) return null;
-    const done: string[] = [];
-    const pending: string[] = [];
-    for (const line of progressMd.split('\n')) {
-      const m = line.match(/^\s*-\s*\[(x| )\]\s*(.+)/i);
-      if (m) (m[1].toLowerCase() === 'x' ? done : pending).push(m[2].trim());
-    }
-    return { done, pending, total: done.length + pending.length };
-  }, [progressMd]);
-
   const fileCount = new Set(log.filter(e => e.kind === 'file').map(e => (e as Extract<ActivityEntry, { kind: 'file' }>).path)).size;
   const shellCount = log.filter(e => e.kind === 'shell').length;
   const subAgentBlocks = log.filter(e => e.kind === 'sub_agent_block') as Extract<ActivityEntry, { kind: 'sub_agent_block' }>[];
@@ -1365,42 +1352,6 @@ function Phase3Sidebar({
           )}
         </div>
 
-        {tasks && tasks.total > 0 && (
-          <>
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
-                <div style={{
-                  height: '100%',
-                  width: `${Math.round(tasks.done.length / tasks.total * 100)}%`,
-                  background: 'var(--green)',
-                  borderRadius: 2,
-                  transition: 'width 0.4s',
-                }} />
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 3 }}>
-                {tasks.done.length}/{tasks.total} done
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {[
-                ...tasks.done.map(t => ({ t, done: true })),
-                ...tasks.pending.map(t => ({ t, done: false })),
-              ].slice(0, 14).map(({ t, done }, i) => (
-                <div key={i} style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
-                  <span style={{ color: done ? 'var(--green)' : 'var(--border)', flexShrink: 0, fontSize: 11, marginTop: 1 }}>
-                    {done ? '✓' : '○'}
-                  </span>
-                  <span style={{ fontSize: 11, lineHeight: 1.4, color: done ? 'var(--text2)' : 'var(--text)', textDecoration: done ? 'line-through' : 'none', opacity: done ? 0.65 : 1 }}>
-                    {t}
-                  </span>
-                </div>
-              ))}
-              {tasks.total > 14 && (
-                <div style={{ fontSize: 10, color: 'var(--text2)' }}>+{tasks.total - 14} more</div>
-              )}
-            </div>
-          </>
-        )}
       </div>
 
       {ranking && ranking.models.length > 0 && (
@@ -1561,14 +1512,6 @@ export function Phase3Implementation() {
     queryFn: () => api.getPhase2(id!),
     enabled: !!id,
     staleTime: 60_000,
-  });
-
-  const progressQ = useQuery({
-    queryKey: ['phase3-progress', id],
-    queryFn: () => api.getPhase3File(id!, 'docs/PROGRESS.md'),
-    enabled: !!id && !!session?.project_root && session?.mode === 'multi_agent',
-    refetchInterval: (query) => query.state.error || !isActivelyRunning ? false : 60_000,
-    retry: false,
   });
 
   const rankingQ = useQuery({
@@ -2311,7 +2254,6 @@ export function Phase3Implementation() {
           idea={idea}
           session={session}
           log={log}
-          progressMd={progressQ.data?.content ?? null}
           telemetry={telemetryQ.data ?? null}
           ranking={rankingQ.data ?? null}
         />

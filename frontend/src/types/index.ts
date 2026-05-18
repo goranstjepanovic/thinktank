@@ -295,6 +295,21 @@ export interface TaskStat {
   avg_duration_ms: number | null;
 }
 
+export interface ModelStageStat {
+  stage: string;
+  model: string;
+  backend: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  tokens_prompt: number;
+  tokens_completion: number;
+  tokens_total: number;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   total_tokens_prompt: number;
@@ -302,6 +317,7 @@ export interface TelemetrySummary {
   total_tokens: number;
   period_hours: number;
   by_model: ModelStat[];
+  by_model_stage: ModelStageStat[];
   by_stage: StageStat[];
   by_project: ProjectStat[];
   by_backend: BackendStat[];

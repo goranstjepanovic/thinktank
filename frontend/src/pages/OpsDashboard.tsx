@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ModelStageStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -379,6 +379,61 @@ function ToolsPerModelChart({ data }: { data: ToolModelStat[] }) {
         </Bar>
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+function ModelStageTable({ data }: { data: ModelStageStat[] }) {
+  if (data.length === 0) return (
+    <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>No data yet.</div>
+  );
+
+  // Group by stage, then sort models within each stage by calls desc
+  const stageOrder = [...new Set(data.map(r => r.stage))].sort();
+  const byStage = new Map<string, ModelStageStat[]>();
+  for (const stage of stageOrder) {
+    byStage.set(stage, data.filter(r => r.stage === stage).sort((a, b) => b.calls - a.calls));
+  }
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {['Stage', 'Model', 'Calls', 'Success', 'Rate', 'Avg Duration', 'Fallbacks'].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {stageOrder.flatMap(stage => {
+            const rows = byStage.get(stage)!;
+            return rows.map((r, i) => {
+              const pct = Math.round(r.success_rate * 100);
+              const rateColor = pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--yellow)' : 'var(--red)';
+              return (
+                <tr key={`${stage}-${r.model}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '6px 10px', color: 'var(--text2)', whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11 }}>
+                    {i === 0 ? stage : ''}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontSize: 11, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.model}>
+                    {r.model}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontVariantNumeric: 'tabular-nums' }}>{r.calls}</td>
+                  <td style={{ padding: '6px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{r.success}</td>
+                  <td style={{ padding: '6px 10px', color: rateColor, fontWeight: 600 }}>
+                    {r.calls > 0 ? `${pct}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(r.avg_duration_ms)}</td>
+                  <td style={{ padding: '6px 10px', color: r.fallbacks > 0 ? 'var(--yellow)' : 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                    {r.fallbacks || '—'}
+                  </td>
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -786,6 +841,19 @@ export function OpsDashboard() {
         <div style={{ marginBottom: 20 }}>
           <ChartCard title="Sub-Agent Model Ranking  ·  current dispatch order" minHeight={0}>
             <SubAgentRankingTable data={rankingQ.data} />
+          </ChartCard>
+        </div>
+      )}
+
+      {/* Model performance by stage */}
+      {data && data.by_model_stage && data.by_model_stage.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <ChartCard title="Model Performance by Stage" minHeight={0}>
+            <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 10 }}>
+              Per-stage breakdown — which models are being used where and how well they perform.
+              Use the Stage filter above to focus on a single stage.
+            </div>
+            <ModelStageTable data={data.by_model_stage} />
           </ChartCard>
         </div>
       )}

@@ -99,14 +99,17 @@ _RUN_BUILD_TOOL = ToolDefinition(
 _PLAN_LIST_TOOL = ToolDefinition(
     name="plan_list",
     description=(
-        "List tasks in the current implementation plan. Returns tasks in order with their status. "
-        "Supports pagination — use offset/limit to avoid loading all tasks at once on large plans."
+        "List tasks in the hierarchical implementation plan (Area → Story → Task). "
+        "Each entry shows status, depth, and child_count so you know whether to drill deeper. "
+        "Use parent_id to zoom into a specific area or story and see only its sub-tasks. "
+        "Supports pagination — use offset/limit on large plans."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "offset": {"type": "integer", "description": "Number of tasks to skip (default 0)"},
-            "limit":  {"type": "integer", "description": "Max tasks to return (default 20, max 50)"},
+            "offset":    {"type": "integer", "description": "Number of items to skip (default 0)"},
+            "limit":     {"type": "integer", "description": "Max items to return (default 20, max 50)"},
+            "parent_id": {"type": "string",  "description": "If set, list only the direct children of this area/story id"},
         },
         "required": [],
     },
@@ -115,7 +118,8 @@ _PLAN_LIST_TOOL = ToolDefinition(
 _PLAN_ADD_TOOL = ToolDefinition(
     name="plan_add",
     description=(
-        "Add a new pending task to the plan. Each task must be scoped to exactly 1 file and one logical unit."
+        "Add a new pending leaf task to the plan. Each task must be scoped to exactly 1 file. "
+        "Use parent_id to place it under an existing area or story in the hierarchy."
     ),
     parameters={
         "type": "object",
@@ -123,6 +127,7 @@ _PLAN_ADD_TOOL = ToolDefinition(
             "id":          {"type": "string", "description": "Unique snake_case identifier"},
             "title":       {"type": "string", "description": "Short title ≤60 chars"},
             "instruction": {"type": "string", "description": "Complete self-contained task instruction"},
+            "parent_id":   {"type": "string", "description": "Id of the parent area/story (optional)"},
             "notes":       {"type": "string", "description": "Optional notes"},
         },
         "required": ["id", "title", "instruction"],
@@ -383,74 +388,6 @@ async def _run_build(output_dir: str, command: str | None = None) -> dict:
         "checks": [{"dir": str(d.relative_to(root)), "command": c} for d, c in checks],
         "output": full_output,
     }
-def _write_progress_md(
-    output_dir: str,
-    prd_sections: list[dict],
-    completed_tasks: list[dict],
-    idea_name: str,
-    round_idx: int,
-) -> None:
-    """Write docs/PROGRESS.md — a compact live-state file agents can read instead of re-scanning everything."""
-    try:
-        from datetime import UTC, datetime as _dt
-        now = _dt.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        impl_tasks = [t for t in completed_tasks if not t.get("id", "").startswith("_")]
-        all_written: list[str] = []
-        for t in impl_tasks:
-            all_written.extend(t.get("files_written", []))
-        unique_files = sorted(set(all_written))
-
-        lines: list[str] = [
-            f"# PROGRESS: {idea_name}",
-            "",
-            f"Updated: {now} | Round {round_idx + 1} | "
-            f"{len(impl_tasks)} task(s) complete | {len(unique_files)} file(s) written",
-            "",
-        ]
-
-        if prd_sections:
-            lines += ["## PRD Sections (for reference)", ""]
-            for s in prd_sections:
-                heading = s["heading"] if isinstance(s, dict) else str(s)
-                lines.append(f"- {heading}")
-            lines.append("")
-
-        lines += ["## Completed Tasks", ""]
-        if impl_tasks:
-            for t in impl_tasks:
-                icon = "✓" if t.get("success") else "✗"
-                fw = t.get("files_written", [])
-                if fw:
-                    sample = ", ".join(fw[:3])
-                    extra = f"…+{len(fw) - 3}" if len(fw) > 3 else ""
-                    files_note = f" ({len(fw)} files: {sample}{extra})"
-                else:
-                    files_note = ""
-                lines.append(f"- {icon} **{t['title']}**{files_note}")
-                if t.get("blocker"):
-                    lines.append(f"  - Blocker: {t['blocker']}")
-        else:
-            lines.append("_No tasks completed yet._")
-
-        if unique_files:
-            lines += ["", "## All Files Written", ""]
-            for f in unique_files[:80]:
-                lines.append(f"- {f}")
-            if len(unique_files) > 80:
-                lines.append(f"… ({len(unique_files) - 80} more)")
-
-        out_path = Path(output_dir) / "docs" / "PROGRESS.md"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info(
-            "progress_md: wrote PROGRESS.md (round %d, %d tasks, %d files)",
-            round_idx + 1, len(impl_tasks), len(unique_files),
-        )
-    except Exception as exc:
-        logger.warning("progress_md: failed to write: %s", exc)
-
-
 def _read_services_json(output_dir: str) -> dict | None:
     """Read SERVICES.json from the output directory, returning None if absent or malformed."""
     try:
@@ -525,34 +462,33 @@ def _orchestrator_system_prompt(prd_content: str, framework_research: str | None
         "If you need a shell command run (e.g. `poetry install`, `npm install`, `dotnet restore`), "
         "dispatch a task with that command in the instruction — sub-agents have `run_shell`. "
         "NEVER set `user_message` because a tool is unavailable; dispatch a task instead.\n\n"
-        "## Plan management — your persistent task list\n\n"
-        "Use the plan tools to track every task you intend to implement. "
-        "The plan is stored on disk and survives restarts.\n\n"
+        "## Plan management — your persistent hierarchical task list\n\n"
+        "The plan is pre-built and stored on disk in a nested Area → Story → Task hierarchy "
+        "(like Agile Epics/Features/Tasks). It survives restarts. Your job is to EXECUTE the plan, "
+        "not rebuild it from scratch.\n\n"
         "**Workflow:**\n"
-        "1. **Round 1**: call `plan_list` — if empty, build the full plan now by calling `plan_add` "
-        "for every task derived from the PRD. Scope each to exactly 1 file before adding.\n"
-        "2. **Each round**: call `plan_next` to get the next task. "
-        "Call `plan_update(id, status='in_progress')` before dispatching it. "
-        "Use its `instruction` field as the task instruction in `next_tasks`. "
+        "1. **Round 1**: call `plan_list()` — the plan is already populated. "
+        "If plan_list returns no tasks, THEN build the plan by calling `plan_add` for every "
+        "PRD feature (scoped to exactly 1 file each).\n"
+        "2. **Each round**: call `plan_next()` to get the next pending leaf task. "
+        "It returns the task with its `context` breadcrumb (e.g. 'Backend API > WebSocket Service'). "
+        "Call `plan_update(id, status='in_progress')` before dispatching. "
+        "Use its `instruction` field verbatim as the task instruction in `next_tasks`. "
         "**CRITICAL**: copy the EXACT `id` from the plan task into the `next_tasks` entry — "
-        "the runtime matches dispatched tasks to plan tasks by id. "
-        "If the ids don't match, the plan never advances and the orchestrator loops forever.\n"
-        "   - If `plan_next` returns `retry=true`, the task previously failed. "
-        "Read its `notes` field and use a different approach in the instruction.\n"
-        "   - If `plan_next` returns a `notice` about later-done tasks, the task may be obsolete — "
-        "call `plan_update(id, status='done')` or `plan_remove(id)` before dispatching.\n"
-        "3. **After success**: call `plan_update(id, status='done')`.\n"
-        "4. **After permanent failure** (⛔ REFRAME REQUIRED in history): call `plan_remove(id)`, "
-        "then `plan_add` 2–3 smaller replacement tasks each touching exactly 1 file.\n"
-        "   - Use `plan_update(id, status='skipped')` when a task is no longer needed due to a "
-        "plan change or because another task already covered it. Skipped tasks are ignored by "
-        "plan_next — this lets you change direction without getting stuck.\n"
+        "the runtime matches dispatched tasks to plan tasks by id. Wrong id = plan never advances.\n"
+        "   - If `plan_next` returns `retry=true`: read `notes`, use a different approach.\n"
+        "   - If a returned task is clearly obsolete (file already exists, superseded by another task): "
+        "call `plan_update(id, status='skipped')` and call `plan_next()` again.\n"
+        "3. **After task success**: call `plan_update(id, status='done')`. "
+        "Completion propagates upward — parent stories/areas auto-complete when all children are done.\n"
+        "4. **After permanent failure**: call `plan_remove(id)`, then `plan_add` 1-2 smaller "
+        "replacement tasks each touching exactly 1 file. Use `parent_id` to add under the same story.\n"
         "5. **When plan_next returns null**: all tasks complete — set done=true.\n\n"
-        "- `plan_list(offset, limit)` — paginated view of the plan (default limit=20)\n"
-        "- `plan_add(id, title, instruction)` — add a pending task\n"
-        "- `plan_update(id, status?, title?, instruction?, notes?)` — update a task\n"
-        "- `plan_remove(id)` — remove a task (use before adding replacement tasks)\n"
-        "- `plan_next()` — get the next in_progress or pending task\n\n"
+        "- `plan_list(offset?, limit?, parent_id?)` — nested view of plan; each entry shows `child_count` so you know whether to drill deeper. Pass `parent_id` to zoom into a specific area or story.\n"
+        "- `plan_add(id, title, instruction, parent_id?)` — add a leaf task (optionally under a parent)\n"
+        "- `plan_update(id, status?, title?, instruction?, notes?)` — update; propagates completion up\n"
+        "- `plan_remove(id)` — remove task and its children\n"
+        "- `plan_next()` — get the next pending leaf task with context breadcrumb\n\n"
         "## Deduplication — search memory before assigning\n\n"
         "Before dispatching a task that creates a new utility or module, call `memory_search('X')` "
         "where X is the feature or concept (e.g. 'authentication', 'API client', 'database connection'). "
@@ -1174,9 +1110,18 @@ def _orchestrator_user_prompt(
                 _plan_data = json.loads(_plan_path.read_text(encoding="utf-8"))
                 _plan_tasks = _plan_data.get("tasks", [])
                 _plan_is_empty = len(_plan_tasks) == 0
-                _plan_pending_count = sum(
-                    1 for t in _plan_tasks if t.get("status") in ("pending", "in_progress", "failed")
-                )
+
+                def _count_pending_recursive(nodes: list) -> int:
+                    c = 0
+                    for _n in nodes:
+                        _ch = _n.get("children") or []
+                        if _ch:
+                            c += _count_pending_recursive(_ch)
+                        elif _n.get("status") in ("pending", "in_progress", "failed"):
+                            c += 1
+                    return c
+
+                _plan_pending_count = _count_pending_recursive(_plan_tasks)
             except Exception:
                 pass
 
@@ -1220,18 +1165,33 @@ def _orchestrator_user_prompt(
             "Set `done=true` only when the request is fully implemented."
         )
     elif not completed_tasks:
-        start_hint = (
-            "## Project is empty — Milestone 0: build the runnable shell first\n\n"
-            "Your ONLY goal right now is a minimal project that builds and can be started. "
-            "Do NOT implement any PRD features yet — not data models, not routes, not UI components.\n\n"
-            "DO NOT call `list_files` or `inspect_files` — there is nothing to explore yet.\n\n"
-            "Dispatch ONE scaffold task that writes:\n"
-            "- The entry point (main.py, src/index.ts, App.svelte, etc.) — bare minimum, just enough to start\n"
-            "- The build/dependency config (package.json / pyproject.toml / Cargo.toml) with all top-level deps\n"
-            "- Required config files (vite.config.ts, tsconfig.json, .gitignore, .env.example, etc.)\n"
-            "- Runs the install command (npm install / pip install) in the same task\n"
-            "After this task: call `run_build`. Fix any errors before moving to features."
-        )
+        if not _plan_is_empty:
+            start_hint = (
+                "## Milestone 0: Orient — review the PRD and pre-built plan before any work\n\n"
+                "The PRD is in your system prompt above. The implementation plan has already been built for you.\n\n"
+                "DO NOT call `list_files` or `inspect_files` — there is nothing on disk yet.\n"
+                "DO NOT dispatch any tasks yet.\n\n"
+                "Your ONLY actions this round:\n"
+                "1. Re-read the PRD in your system prompt — note the tech stack, entry points, and key features.\n"
+                "2. Call `plan_list()` to see the top-level areas.\n"
+                "3. Call `plan_list(parent_id=<area_id>)` for each area to review its stories and tasks.\n"
+                "4. Call `plan_next()` — it returns the first pending leaf task with its full instruction.\n"
+                "5. Call `plan_update(id, status='in_progress')` and dispatch that task.\n\n"
+                "The plan already includes setup/scaffold tasks — trust it and follow it in order."
+            )
+        else:
+            start_hint = (
+                "## Project is empty — Milestone 0: build the runnable shell first\n\n"
+                "Your ONLY goal right now is a minimal project that builds and can be started. "
+                "Do NOT implement any PRD features yet — not data models, not routes, not UI components.\n\n"
+                "DO NOT call `list_files` or `inspect_files` — there is nothing to explore yet.\n\n"
+                "Dispatch ONE scaffold task that writes:\n"
+                "- The entry point (main.py, src/index.ts, App.svelte, etc.) — bare minimum, just enough to start\n"
+                "- The build/dependency config (package.json / pyproject.toml / Cargo.toml) with all top-level deps\n"
+                "- Required config files (vite.config.ts, tsconfig.json, .gitignore, .env.example, etc.)\n"
+                "- Runs the install command (npm install / pip install) in the same task\n"
+                "After this task: call `run_build`. Fix any errors before moving to features."
+            )
     elif not build_state["has_scaffold"]:
         start_hint = (
             "## Milestone 0 incomplete — scaffold must come first\n\n"
@@ -1460,7 +1420,14 @@ def _memory_handlers(project_id: str) -> dict:
 
 
 def _plan_handlers(output_dir: str) -> dict:
-    """Return custom tool handlers for the five plan tools, backed by .think-plan.json."""
+    """Return custom tool handlers for the five plan tools, backed by .think-plan.json.
+
+    The plan file uses a nested hierarchy (Area → Story → Task) mirroring Agile
+    Epics/Features/Tasks.  Each node has:
+      id, title, status, children (list, may be empty for leaves), instruction (leaves only), notes.
+    Completion propagates upward: when all children are done/skipped, the parent auto-completes.
+    Old flat plans (no children key) remain fully compatible — flat tasks are treated as leaves.
+    """
     import json as _json
     from pathlib import Path as _Path
 
@@ -1477,108 +1444,257 @@ def _plan_handlers(output_dir: str) -> dict:
     def _save(data: dict) -> None:
         _plan_file.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # ── Tree traversal helpers ─────────────────────────────────────────────
+
+    def _is_leaf(t: dict) -> bool:
+        return not (t.get("children") or [])
+
+    def _find_by_id(nodes: list, target_id: str) -> dict | None:
+        for n in nodes:
+            if n.get("id") == target_id:
+                return n
+            found = _find_by_id(n.get("children") or [], target_id)
+            if found:
+                return found
+        return None
+
+    def _find_path_to(nodes: list, target_id: str, path: list) -> list | None:
+        for n in nodes:
+            current = path + [n]
+            if n.get("id") == target_id:
+                return current
+            result = _find_path_to(n.get("children") or [], target_id, current)
+            if result:
+                return result
+        return None
+
+    def _count_pending_leaves(nodes: list) -> int:
+        count = 0
+        for n in nodes:
+            children = n.get("children") or []
+            if children:
+                count += _count_pending_leaves(children)
+            elif n.get("status") in ("pending", "failed", "in_progress"):
+                count += 1
+        return count
+
+    def _next_leaf(nodes: list) -> dict | None:
+        """DFS: in_progress first, then pending/failed — returns first actionable leaf."""
+        # Pass 1: in_progress (crash recovery)
+        for n in nodes:
+            if n.get("status") == "in_progress" and _is_leaf(n):
+                return n
+            found = _next_leaf_pass1(n.get("children") or [])
+            if found:
+                return found
+        # Pass 2: first pending or failed leaf
+        return _next_leaf_pass2(nodes)
+
+    def _next_leaf_pass1(nodes: list) -> dict | None:
+        for n in nodes:
+            if n.get("status") == "in_progress" and _is_leaf(n):
+                return n
+            found = _next_leaf_pass1(n.get("children") or [])
+            if found:
+                return found
+        return None
+
+    def _next_leaf_pass2(nodes: list) -> dict | None:
+        for n in nodes:
+            if n.get("status") in ("done", "skipped"):
+                continue
+            children = n.get("children") or []
+            if children:
+                found = _next_leaf_pass2(children)
+                if found:
+                    return found
+            elif n.get("status") in ("pending", "failed"):
+                return n
+        return None
+
+    def _auto_complete_ancestors(root_tasks: list, completed_id: str) -> bool:
+        """Walk ancestors of completed_id and mark them done if all children are terminal."""
+        path = _find_path_to(root_tasks, completed_id, [])
+        if not path or len(path) < 2:
+            return False
+        dirty = False
+        # Walk from immediate parent toward root
+        for ancestor in reversed(path[:-1]):
+            children = ancestor.get("children") or []
+            if children and all(c.get("status") in ("done", "skipped") for c in children):
+                if ancestor.get("status") not in ("done", "skipped"):
+                    ancestor["status"] = "done"
+                    dirty = True
+            else:
+                break
+        return dirty
+
+    def _remove_by_id(nodes: list, target_id: str) -> tuple[list, bool]:
+        result, found = [], False
+        for n in nodes:
+            if n.get("id") == target_id:
+                found = True
+                continue
+            children = n.get("children") or []
+            if children:
+                new_children, child_found = _remove_by_id(children, target_id)
+                n = dict(n)
+                n["children"] = new_children
+                found = found or child_found
+            result.append(n)
+        return result, found
+
+    def _flatten_for_display(nodes: list, depth: int = 0) -> list[dict]:
+        """Return a flat list with depth and child_count so the orchestrator can navigate the tree."""
+        result = []
+        for n in nodes:
+            children = n.get("children") or []
+            entry: dict = {
+                "id": n["id"],
+                "title": n.get("title", ""),
+                "status": n.get("status", "pending"),
+                "depth": depth,
+                "child_count": len(children),
+            }
+            if children:
+                done_c = sum(1 for c in children if c.get("status") in ("done", "skipped"))
+                pending_c = _count_pending_leaves(children)
+                entry["progress"] = f"{done_c}/{len(children)} direct children done, {pending_c} leaf tasks pending"
+            else:
+                if n.get("instruction"):
+                    entry["instruction_preview"] = n["instruction"][:120] + ("…" if len(n.get("instruction", "")) > 120 else "")
+                if n.get("notes"):
+                    entry["notes"] = n["notes"]
+            result.append(entry)
+            result.extend(_flatten_for_display(children, depth + 1))
+        return result
+
+    def _all_leaves(nodes: list) -> list[dict]:
+        result = []
+        for n in nodes:
+            children = n.get("children") or []
+            if children:
+                result.extend(_all_leaves(children))
+            else:
+                result.append(n)
+        return result
+
+    # ── Tool handlers ────────────────────────────────────────────────────────
+
     async def _plan_list(args: dict) -> dict:
-        offset = max(0, int(args.get("offset") or 0))
-        limit  = min(50, max(1, int(args.get("limit") or 20)))
-        data   = _load()
-        tasks  = data.get("tasks", [])
-        page   = tasks[offset: offset + limit]
-        counts = {s: sum(1 for t in tasks if t.get("status") == s)
-                  for s in ("pending", "in_progress", "done", "failed")}
-        return {
+        offset    = max(0, int(args.get("offset") or 0))
+        limit     = min(50, max(1, int(args.get("limit") or 20)))
+        parent_id = (args.get("parent_id") or "").strip() or None
+        data      = _load()
+
+        if parent_id:
+            parent = _find_by_id(data.get("tasks", []), parent_id)
+            if parent is None:
+                return {"error": f"parent_id '{parent_id}' not found"}
+            source = parent.get("children") or []
+            context = parent.get("title", parent_id)
+        else:
+            source  = data.get("tasks", [])
+            context = None
+
+        flat   = _flatten_for_display(source)
+        page   = flat[offset: offset + limit]
+        total_leaves   = len(_all_leaves(source))
+        pending_leaves = _count_pending_leaves(source)
+        result = {
             "tasks": page,
-            "total": len(tasks),
+            "total_items": len(flat),
+            "total_leaf_tasks": total_leaves,
+            "pending_leaf_tasks": pending_leaves,
             "offset": offset,
-            "limit": limit,
-            "has_more": offset + limit < len(tasks),
-            **counts,
+            "has_more": offset + limit < len(flat),
         }
+        if context:
+            result["context"] = context
+        return result
 
     async def _plan_add(args: dict) -> dict:
         task_id     = (args.get("id") or "").strip()
         title       = (args.get("title") or "").strip()
         instruction = (args.get("instruction") or "").strip()
+        parent_id   = (args.get("parent_id") or "").strip() or None
         notes       = (args.get("notes") or "").strip() or None
         if not task_id or not title or not instruction:
             return {"error": "id, title, and instruction are required"}
-        data  = _load()
-        tasks = data.get("tasks", [])
-        if any(t.get("id") == task_id for t in tasks):
+        data = _load()
+        if _find_by_id(data.get("tasks", []), task_id):
             return {"error": f"task id '{task_id}' already exists"}
-        tasks.append({"id": task_id, "title": title, "status": "pending",
-                      "instruction": instruction, "notes": notes})
-        data["tasks"] = tasks
+        new_task = {"id": task_id, "title": title, "status": "pending",
+                    "instruction": instruction, "notes": notes, "children": []}
+        if parent_id:
+            parent = _find_by_id(data.get("tasks", []), parent_id)
+            if parent is None:
+                return {"error": f"parent_id '{parent_id}' not found"}
+            parent.setdefault("children", []).append(new_task)
+        else:
+            data.setdefault("tasks", []).append(new_task)
         _save(data)
-        return {"added": True, "id": task_id, "total": len(tasks)}
+        return {"added": True, "id": task_id, "pending": _count_pending_leaves(data["tasks"])}
 
     async def _plan_update(args: dict) -> dict:
         task_id = (args.get("id") or "").strip()
         if not task_id:
             return {"error": "id is required"}
-        data  = _load()
-        tasks = data.get("tasks", [])
-        for t in tasks:
-            if t.get("id") == task_id:
-                if args.get("status"):
-                    valid = {"pending", "in_progress", "done", "failed", "skipped"}
-                    if args["status"] not in valid:
-                        return {"error": f"status must be one of {sorted(valid)}"}
-                    t["status"] = args["status"]
-                if args.get("title"):
-                    t["title"] = args["title"]
-                if args.get("instruction"):
-                    t["instruction"] = args["instruction"]
-                if "notes" in args:
-                    t["notes"] = args["notes"] or None
-                data["tasks"] = tasks
-                _save(data)
-                return {"updated": True, "task": t}
-        return {"error": f"task id '{task_id}' not found"}
+        data = _load()
+        task = _find_by_id(data.get("tasks", []), task_id)
+        if task is None:
+            return {"error": f"task id '{task_id}' not found"}
+        _VALID_STATUSES = {"pending", "in_progress", "done", "failed", "skipped"}
+        if "status" in args:
+            if args["status"] not in _VALID_STATUSES:
+                return {"error": f"status must be one of {sorted(_VALID_STATUSES)}"}
+            task["status"] = args["status"]
+        if args.get("title"):
+            task["title"] = args["title"]
+        if args.get("instruction"):
+            task["instruction"] = args["instruction"]
+        if "notes" in args:
+            task["notes"] = args["notes"] or None
+        # Propagate completion upward
+        if args.get("status") in ("done", "skipped"):
+            _auto_complete_ancestors(data.get("tasks", []), task_id)
+        _save(data)
+        return {"updated": True, "id": task_id,
+                "pending": _count_pending_leaves(data.get("tasks", []))}
 
     async def _plan_remove(args: dict) -> dict:
         task_id = (args.get("id") or "").strip()
         if not task_id:
             return {"error": "id is required"}
-        data  = _load()
-        tasks = data.get("tasks", [])
-        before = len(tasks)
-        tasks  = [t for t in tasks if t.get("id") != task_id]
-        if len(tasks) == before:
+        data = _load()
+        new_tasks, removed = _remove_by_id(data.get("tasks", []), task_id)
+        if not removed:
             return {"error": f"task id '{task_id}' not found"}
-        data["tasks"] = tasks
+        data["tasks"] = new_tasks
         _save(data)
-        return {"removed": True, "id": task_id, "total": len(tasks)}
+        return {"removed": True, "id": task_id,
+                "pending": _count_pending_leaves(data["tasks"])}
 
     async def _plan_next(_args: dict) -> dict:
-        data  = _load()
+        data = _load()
         tasks = data.get("tasks", [])
-        _TERMINAL = ("done", "skipped", "in_progress")
-        remaining = sum(1 for t in tasks if t.get("status") in ("pending", "failed"))
-        # Resume an in_progress task first (crash recovery)
-        for t in tasks:
-            if t.get("status") == "in_progress":
-                return {"task": t, "remaining": remaining}
-        # First actionable task in array order (pending or failed); skip terminal statuses
-        for idx, t in enumerate(tasks):
-            if t.get("status") not in _TERMINAL:
-                result: dict = {"task": t, "remaining": remaining - 1}
-                if t.get("status") == "failed":
-                    result["retry"] = True
-                    result["warning"] = (
-                        "This task PREVIOUSLY FAILED. Read its 'notes' field for the failure reason. "
-                        "Use a different approach — do not repeat the same steps."
-                    )
-                # Warn if later tasks are already done/skipped (orphan signal)
-                later_done = [u["id"] for u in tasks[idx + 1:] if u.get("status") in ("done", "skipped")]
-                if later_done:
-                    result["notice"] = (
-                        f"Tasks {later_done} (later in the plan) are already done/skipped. "
-                        "If this task is now obsolete, call plan_update(id, status='skipped') "
-                        "instead of dispatching it."
-                    )
-                return result
-        return {"task": None, "remaining": 0,
-                "message": "All tasks are done, skipped, or failed — set done=true"}
+        remaining = _count_pending_leaves(tasks)
+        leaf = _next_leaf(tasks)
+        if leaf is None:
+            return {"task": None, "remaining": 0,
+                    "message": "All tasks are done, skipped, or failed — set done=true"}
+        result: dict = {"task": leaf, "remaining": max(0, remaining - 1)}
+        if leaf.get("status") == "failed":
+            result["retry"] = True
+            result["warning"] = (
+                "This task PREVIOUSLY FAILED. Read its 'notes' field for the failure reason. "
+                "Use a different approach — do not repeat the same steps."
+            )
+        # Surface breadcrumb so orchestrator knows which area this task belongs to
+        path = _find_path_to(tasks, leaf["id"], [])
+        if path and len(path) > 1:
+            result["context"] = " > ".join(n.get("title", "") for n in path[:-1])
+        return result
 
     return {
         "plan_list":   _plan_list,
@@ -1730,7 +1846,11 @@ def _sub_agent_system_prompt(task_type: str = "implement") -> str:
         "that crashes at runtime (a module must not import itself)\n"
         "- **Before writing any cross-file import**, call `grep_files` to confirm the imported name is "
         "actually defined/exported in the target module. Do not assume a name exists — verify it. "
-        "If it does not exist, create the symbol in the target file first, then import it.\n\n"
+        "If it does not exist, create the symbol in the target file first, then import it.\n"
+        "- **If a file with the same base name but different case already exists on disk** "
+        "(e.g. task says `gameStateManager.js` but `GameStateManager.js` is on disk): "
+        "call `grep_files` with the base name to find the exact existing path, then update THAT file. "
+        "Never create a second file with different capitalization — case mismatches cause import errors.\n\n"
         "## Service registration — SERVICES.json\n\n"
         "If your task creates any runnable process a user needs to start — an HTTP server, API, "
         "frontend dev server, CLI entry point, WebSocket server, etc. — you MUST write or update "
@@ -1908,6 +2028,67 @@ OnToolResult = Callable[[str, dict], Awaitable[None]]
 OnOrchestratorEvent = Callable[[str, dict], Awaitable[None]]
 
 
+def _title_slug(title: str) -> str:
+    """Convert a task title to a lowercase_snake_case slug for use as a plan node ID."""
+    s = title.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    return s.strip("_") or "task"
+
+
+def _planning_root_messages(prd_content: str) -> list[dict]:
+    """Messages for the root planning call: PRD → top-level feature epics."""
+    system = (
+        "You are a software project planner. Read the PRD below and output the top-level implementation epics.\n\n"
+        "CRITICAL: epics must be VERTICAL FEATURE SLICES, not architectural layers.\n"
+        "  WRONG — architectural layers (never do this): 'Backend API', 'Frontend', 'Database Layer', 'State Management'\n"
+        "  RIGHT — vertical feature epics: 'Project Scaffold', 'User Authentication', 'Game Lobby', 'Core Game Loop', 'Leaderboard & Scoring'\n\n"
+        "Rules:\n"
+        "- List 4–7 epics. Each epic is an independent deliverable: files from one epic should not need to be re-written by another.\n"
+        "- 'Project Scaffold' (project setup, package.json, tsconfig, folder structure, env config) is ALWAYS first.\n"
+        "- Set atomic=false for all epics — each will be expanded into file-level tasks in the next step.\n"
+        "- Exception: atomic=true ONLY if the entire epic is a single file (e.g. a README). Add 'instruction' when atomic=true.\n\n"
+        'Output JSON only: {"tasks": [{"title": "Project Scaffold", "atomic": false}, ...]}'
+    )
+    user = (
+        f"## Product Requirements Document\n\n{prd_content}\n\n"
+        "List the top-level implementation epics (vertical feature slices, not architectural layers)."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _planning_expand_messages(prd_content: str, parent_title: str, parent_path: str, force_leaf: bool) -> list[dict]:
+    """Messages for expanding one epic into its immediate component-level tasks."""
+    leaf_rule = (
+        "Every task you output MUST have atomic=true and a complete 'instruction' field."
+        if force_leaf else
+        "Mark atomic=true for tasks that implement a single well-defined component.\n"
+        "Mark atomic=false only if the task still covers multiple distinct components — it will be expanded further."
+    )
+    system = (
+        f"You are a software implementation planner. Break the epic '{parent_title}' into concrete component tasks.\n\n"
+        "CRITICAL RULES:\n"
+        "- List 3–8 tasks. Each task implements ONE component (a module, service, class, or UI screen).\n"
+        f"- {leaf_rule}\n"
+        "- Do NOT specify file paths — the implementer decides file structure. Plan WHAT to build, not WHERE to put it.\n"
+        "- Each component in this epic must be unique to this epic. If a component (e.g. database connection, "
+        "WebSocket manager) was planned in an earlier epic, list it only as a dependency here — do NOT re-plan it.\n"
+        "- When atomic=true, 'instruction' MUST describe:\n"
+        "    1. Responsibility: what this component does (1–2 sentences)\n"
+        "    2. Public interface: the functions, methods, or props it exposes to other components\n"
+        "    3. Dependencies: names of other components it consumes (from this plan)\n"
+        "    4. Tech notes: specific library, pattern, or constraint from the PRD (if any)\n"
+        "- Order tasks by dependency (foundational components first).\n"
+        "- Do NOT include: package installation, build steps, test suites, documentation, PROGRESS.md.\n\n"
+        'Output JSON only: {"tasks": [{"title": "...", "atomic": true, "instruction": "..."}, ...]}'
+    )
+    user = (
+        f"## Epic to expand\n\nPath: {parent_path}\nEpic: {parent_title}\n\n"
+        f"## Product Requirements Document\n\n{prd_content}\n\n"
+        f"List the component tasks that implement the '{parent_title}' epic."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 class OrchestratorAgent:
     """
     Reads the PRD, iteratively delegates tasks to SubAgents, and tracks completion.
@@ -1920,6 +2101,169 @@ class OrchestratorAgent:
 
     def __init__(self, inference_client: InferenceClient) -> None:
         self._client = inference_client
+
+    async def run_planning_stage(
+        self,
+        db: "AsyncSession",
+        prd_content: str,
+        idea: "Idea",
+        branch: "SolutionBranch",
+        output_dir: str,
+        on_orchestrator_event: OnOrchestratorEvent,
+    ) -> bool:
+        """
+        Recursive planning stage: PRD → root areas → expand each non-atomic node into
+        sub-tasks → repeat until all nodes are atomic (one file, one concern).
+        Writes .think-plan.json with the full Area > Story > Task hierarchy.
+        Returns True on success; False triggers incremental fallback in the caller.
+        """
+        _MAX_DEPTH = 1        # root(0) → epics(1, forced atomic tasks)
+        _MAX_CALLS = 40       # hard budget: prevents exponential blowup on wide trees
+        _call_index = 0       # increments per model call for audit-log ordering
+        _used_ids: set[str] = set()
+
+        def _make_id(title: str) -> str:
+            base = _title_slug(title)
+            if base not in _used_ids:
+                _used_ids.add(base)
+                return base
+            i = 2
+            while f"{base}_{i}" in _used_ids:
+                i += 1
+            uid = f"{base}_{i}"
+            _used_ids.add(uid)
+            return uid
+
+        plan_file = Path(output_dir) / ".think-plan.json"
+        await on_orchestrator_event("orchestrator_message", {"content": "📋 Building implementation plan…"})
+
+        async def _expand(
+            parent_title: str | None,
+            parent_path: list[str],
+            depth: int,
+        ) -> list[dict]:
+            nonlocal _call_index
+
+            if _call_index >= _MAX_CALLS:
+                logger.warning("planning: call budget (%d) exhausted — skipping expansion of '%s'", _MAX_CALLS, parent_title or "root")
+                return []
+
+            path_str = " > ".join(parent_path) if parent_path else "root"
+            context_label = f"'{parent_title}'" if parent_title else "root level"
+            level_label = f"level {depth}" if depth > 0 else "root level"
+            force_leaf = depth >= _MAX_DEPTH
+
+            if depth == 0:
+                messages = _planning_root_messages(prd_content)
+            else:
+                messages = _planning_expand_messages(prd_content, parent_title, path_str, force_leaf)
+
+            logger.info("planning: %s — planning %s tasks", level_label, context_label)
+
+            result = await self._client.call(
+                stage_key="phase3_planning",
+                messages=[Message(role=m["role"], content=m["content"]) for m in messages],
+                session=db,
+                idea_id=idea.id,
+                branch_id=branch.id,
+                call_type="PLANNING",
+                call_index=_call_index,
+            )
+            _call_index += 1
+
+            if not isinstance(result, dict):
+                raise ValueError(f"planning model returned {type(result).__name__} instead of dict")
+
+            raw_tasks = result.get("tasks", [])
+            if not raw_tasks:
+                logger.warning("planning: %s — model returned no tasks", context_label)
+                return []
+
+            titles = [str(t.get("title") or t.get("id") or "?") for t in raw_tasks]
+            logger.info(
+                "planning: %s — planned %d task(s): %s",
+                context_label, len(raw_tasks), ", ".join(titles),
+            )
+            await on_orchestrator_event("orchestrator_message", {
+                "content": (
+                    f"📋 {path_str.capitalize()}: {len(raw_tasks)} task(s) — "
+                    + ", ".join(titles[:6])
+                    + (" …" if len(titles) > 6 else "")
+                )
+            })
+
+            nodes: list[dict] = []
+            for t in raw_tasks:
+                task_title = str(t.get("title") or "").strip()
+                if not task_title:
+                    continue
+
+                task_id = _make_id(task_title)
+                is_atomic = bool(t.get("atomic", False)) or force_leaf
+                instruction = str(t.get("instruction") or "").strip() or None
+
+                if is_atomic:
+                    nodes.append({
+                        "id": task_id,
+                        "title": task_title,
+                        "status": "pending",
+                        "children": [],
+                        "instruction": instruction,
+                    })
+                else:
+                    try:
+                        children = await _expand(
+                            parent_title=task_title,
+                            parent_path=parent_path + [task_title],
+                            depth=depth + 1,
+                        )
+                    except Exception as _ce:
+                        logger.warning(
+                            "planning: failed to expand '%s' at %s: %s — keeping as leaf",
+                            task_title, path_str, _ce,
+                        )
+                        children = []
+                    nodes.append({
+                        "id": task_id,
+                        "title": task_title,
+                        "status": "pending",
+                        "children": children,
+                        "instruction": instruction if not children else None,
+                    })
+
+            return nodes
+
+        try:
+            root_nodes = await _expand(parent_title=None, parent_path=[], depth=0)
+        except Exception as _e:
+            logger.error("planning: root expansion failed: %s", _e)
+            await on_orchestrator_event("orchestrator_message", {
+                "content": f"⚠ Planning failed: {_e} — orchestrator will plan incrementally."
+            })
+            return False
+
+        if not root_nodes:
+            logger.warning("planning: no root tasks produced — falling back to incremental")
+            return False
+
+        plan_data = {"tasks": root_nodes}
+        plan_file.write_text(json.dumps(plan_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        def _count_leaves(nodes: list) -> int:
+            return sum(
+                1 if not (n.get("children") or []) else _count_leaves(n["children"])
+                for n in nodes
+            )
+
+        leaf_count = _count_leaves(root_nodes)
+        logger.info(
+            "planning: complete — %d root area(s), %d leaf task(s) total",
+            len(root_nodes), leaf_count,
+        )
+        await on_orchestrator_event("orchestrator_message", {
+            "content": f"📋 Plan complete: {leaf_count} implementation tasks across {len(root_nodes)} areas."
+        })
+        return True
 
     async def run(
         self,
@@ -1961,19 +2305,42 @@ class OrchestratorAgent:
 
         _plan_file = Path(output_dir) / ".think-plan.json" if output_dir else None
         if _is_resume and _plan_file and _plan_file.exists():
-            # Resume: load completed/failed tasks from the plan so the orchestrator knows
-            # what was already done and doesn't restart from scaffolding.
+            # Resume: load leaf task statuses from the nested plan tree so the orchestrator
+            # knows what was already done and doesn't restart from scaffolding.
             try:
                 _plan_data = json.loads(_plan_file.read_text(encoding="utf-8"))
+
+                # Flatten ALL leaf tasks from the tree (handles both flat and nested formats)
+                def _iter_leaves(nodes: list) -> "list[dict]":
+                    result = []
+                    for _n in nodes:
+                        _ch = _n.get("children") or []
+                        if _ch:
+                            result.extend(_iter_leaves(_ch))
+                        else:
+                            result.append(_n)
+                    return result
+
+                # Build a flat map of id → node for all tasks at any depth
+                def _all_nodes_map(nodes: list) -> "dict[str, dict]":
+                    mp: dict = {}
+                    for _n in nodes:
+                        mp[_n["id"]] = _n
+                        mp.update(_all_nodes_map(_n.get("children") or []))
+                    return mp
+
+                _all_leaves = _iter_leaves(_plan_data.get("tasks", []))
+                _node_map = _all_nodes_map(_plan_data.get("tasks", []))
                 _pending_plan_tasks: list[dict] = []
-                for _pt in _plan_data.get("tasks", []):
+
+                for _pt in _all_leaves:
                     _status = _pt.get("status", "")
                     if _status == "done":
                         completed_tasks.append({
                             "id": _pt["id"],
                             "title": _pt.get("title", _pt["id"]),
                             "success": True,
-                            "summary": _pt.get("summary") or _pt.get("notes") or "Completed in a previous run.",
+                            "summary": _pt.get("notes") or "Completed in a previous run.",
                         })
                     elif _status == "failed":
                         completed_tasks.append({
@@ -1983,16 +2350,57 @@ class OrchestratorAgent:
                             "permanently_failed": True,
                             "summary": _pt.get("notes") or "Failed in a previous run.",
                         })
-                        # Pre-veto so the orchestrator cannot re-dispatch the same task unchanged
                         _task_perm_fail_counts[_pt["id"]] = _MAX_TASK_PERM_FAILS
                     elif _status in ("pending", "in_progress"):
                         _pending_plan_tasks.append(_pt)
 
-                # If the plan had no done/failed tasks (e.g. run stopped before any task
-                # completed, or plan was written but statuses were never updated), inject
-                # a synthetic scaffold entry so the orchestrator knows the project exists
-                # and doesn't restart from Milestone 0. Include the pending plan tasks in
-                # the summary so the orchestrator picks up its own prior plan.
+                # Auto-skip stale pending tasks based on disk state:
+                # 1. Install/package tasks when node_modules already exists
+                # 2. File-create tasks when the target file already exists (case-insensitive)
+                import re as _re_resume
+                _nm_exists = (Path(output_dir) / "node_modules").exists()
+                _path_re_resume = _re_resume.compile(
+                    r'[\w/.]+\.(?:js|ts|jsx|tsx|svelte|vue|py|css|html|json|yaml|toml|env)\b'
+                )
+                _auto_skipped_ids: set[str] = set()
+                for _rpt in list(_pending_plan_tasks):
+                    _instr_lc = (_rpt.get("instruction") or "").lower()
+                    _is_install = any(kw in _instr_lc for kw in (
+                        "npm install", "yarn install", "pnpm install",
+                        "install vite", "install globally", "install -g",
+                        "install dep", "install pack",
+                    ))
+                    if _is_install and _nm_exists:
+                        _nd = _node_map.get(_rpt["id"])
+                        if _nd and _nd.get("status") in ("pending", "in_progress"):
+                            _nd["status"] = "skipped"
+                            _auto_skipped_ids.add(_rpt["id"])
+                            logger.info("orchestrator: auto-skipped install task '%s' (node_modules exists)", _rpt["id"])
+                        continue
+                    _instr_orig = _rpt.get("instruction") or ""
+                    for _fp in _path_re_resume.findall(_instr_orig):
+                        _abs_fp = Path(output_dir) / _fp
+                        _file_found = _abs_fp.exists()
+                        if not _file_found:
+                            _par = _abs_fp.parent
+                            if _par.exists():
+                                try:
+                                    _lc_names = {p.name.lower() for p in _par.iterdir() if p.is_file()}
+                                    _file_found = _abs_fp.name.lower() in _lc_names
+                                except Exception:
+                                    pass
+                        if _file_found:
+                            _nd = _node_map.get(_rpt["id"])
+                            if _nd and _nd.get("status") in ("pending", "in_progress"):
+                                _nd["status"] = "skipped"
+                                _auto_skipped_ids.add(_rpt["id"])
+                                logger.info("orchestrator: auto-skipped task '%s' (file '%s' exists)", _rpt["id"], _fp)
+                            break
+                if _auto_skipped_ids:
+                    _plan_file.write_text(json.dumps(_plan_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    _pending_plan_tasks = [t for t in _pending_plan_tasks if t["id"] not in _auto_skipped_ids]
+
+                _pending_titles = [_pt.get("title", _pt["id"]) for _pt in _pending_plan_tasks]
                 if not completed_tasks:
                     _disk_files = sorted(
                         p.relative_to(Path(output_dir)).as_posix()
@@ -2002,15 +2410,15 @@ class OrchestratorAgent:
                         and not p.name.endswith((".log", ".pyc"))
                         and "__pycache__" not in p.parts
                     )
-                    _pending_titles = [_pt.get("title", _pt["id"]) for _pt in _pending_plan_tasks]
                     _resume_summary = (
                         "Resumed from a previous run. The project is partially implemented — do NOT re-initialize or re-scaffold. "
                         f"Files already on disk: {', '.join(_disk_files[:20])}"
                         + (f" (+{len(_disk_files) - 20} more)" if len(_disk_files) > 20 else "")
                         + ". "
                         + (f"Pending plan tasks from last run: {'; '.join(_pending_titles)}. " if _pending_titles else "")
-                        + "Call plan_list() to see the current plan, then dispatch the next pending task immediately. "
-                        "Do not inspect files or call run_build before dispatching — pick up where the previous run stopped."
+                        + "FIRST: call plan_list() and call plan_update(id, status='skipped') for any pending task "
+                        "whose file already exists on disk or whose setup is clearly already done. "
+                        "Then call plan_next() and dispatch the first truly pending task."
                     )
                     completed_tasks.append({
                         "id": "_resume_context",
@@ -2019,21 +2427,29 @@ class OrchestratorAgent:
                         "summary": _resume_summary,
                         "files_written": _disk_files[:10],
                     })
+                elif _pending_plan_tasks:
+                    completed_tasks.append({
+                        "id": "_plan_audit_hint",
+                        "title": "Resume: plan has pending tasks",
+                        "success": True,
+                        "summary": (
+                            "Resuming with pending plan tasks: "
+                            + ("; ".join(_pending_titles) if _pending_titles else "(see plan_list)")
+                            + ". Before dispatching: call plan_list(), review each pending task, "
+                            "call plan_update(id, status='skipped') for any already done, "
+                            "then call plan_next() for the first truly pending task."
+                        ),
+                        "files_written": [],
+                        "commands_run": [],
+                    })
 
                 logger.info(
-                    "orchestrator: resume detected — %d completed task(s) from plan, %d pending",
-                    len([t for t in completed_tasks if t["id"] != "_resume_context"]),
+                    "orchestrator: resume — %d completed leaf task(s), %d pending",
+                    len([t for t in completed_tasks if not t["id"].startswith("_")]),
                     len(_pending_plan_tasks),
                 )
             except Exception as _e:
                 logger.warning("orchestrator: could not load plan for resume: %s", _e)
-        elif _plan_file and _plan_file.exists():
-            # Fresh start but a stale plan file exists — delete it.
-            try:
-                _plan_file.unlink()
-                logger.info("orchestrator: deleted stale plan file (fresh start)")
-            except Exception as _e:
-                logger.warning("orchestrator: could not delete stale plan file: %s", _e)
 
         _verification_pending = False  # True after first done=true; forces explicit PRD check rounds
         _verification_attempts = 0    # counts how many verification rounds have run
@@ -2343,10 +2759,10 @@ class OrchestratorAgent:
                         "id": f"_plan_required_{round_idx}",
                         "title": "(plan required — tasks rejected)",
                         "summary": (
-                            "REJECTED: You dispatched tasks without calling plan_list() or plan_add() first. "
-                            "You MUST build the plan before dispatching anything. "
-                            "Call plan_list() now. If it returns no tasks, call plan_add() for every PRD "
-                            "feature before including anything in next_tasks."
+                            "REJECTED: You dispatched tasks without checking the plan first. "
+                            "Call plan_list() now. If it has tasks, call plan_next() to get the first one. "
+                            "If plan_list returns no tasks, THEN call plan_add() for every PRD feature "
+                            "(1 file per task) before including anything in next_tasks."
                         ),
                         "success": False,
                         "files_written": [],
@@ -2727,7 +3143,7 @@ class OrchestratorAgent:
             if _ownership_stores:
                 await asyncio.gather(*_ownership_stores, return_exceptions=True)
 
-            # Update living interface manifest and PROGRESS.md after every batch
+            # Rebuild living interface manifest after every batch
             _manifest_path = write_interface_manifest(output_dir)
             if _manifest_path:
                 try:
@@ -2735,7 +3151,6 @@ class OrchestratorAgent:
                     _interface_summary = format_manifest_summary(_fresh_manifest)
                 except Exception as _exc:
                     logger.warning("orchestrator: interface summary rebuild failed: %s", _exc)
-            _write_progress_md(output_dir, _prd_sections, completed_tasks, idea.name, round_idx)
 
         # Build completion summary
         task_summaries = [t for t in completed_tasks if not t["id"].startswith("user_input_")]

@@ -684,6 +684,20 @@ class InferenceClient:
                 raise InferenceClientError(
                     f"Stage '{stage_key}' returned a JSON array instead of an object: {response.content[:200]}"
                 )
+        if isinstance(parsed, str):
+            # Model double-encoded the JSON — the outer value is a JSON string containing JSON.
+            try:
+                inner = json.loads(parsed)
+            except json.JSONDecodeError:
+                raise InferenceClientError(
+                    f"Stage '{stage_key}' returned a JSON string instead of an object: {response.content[:200]}"
+                ) from None
+            if not isinstance(inner, dict):
+                raise InferenceClientError(
+                    f"Stage '{stage_key}' returned a double-encoded non-object: {response.content[:200]}"
+                )
+            logger.warning("call  stage=%-20s model returned double-encoded JSON string — unwrapping", stage_key)
+            parsed = inner
         return parsed
 
     async def stream_text(

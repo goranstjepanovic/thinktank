@@ -348,19 +348,59 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
         except Exception:
             prd_content = "(PRD not available)"
 
-        # ── Step 3: Run orchestrator loop ─────────────────────────────────────
+        orch_agent = OrchestratorAgent(client)
+
+        # Register the user-message queue early so messages sent during planning
+        # (e.g. to acknowledge a planning failure) are received correctly.
         user_queue: asyncio.Queue[str] = asyncio.Queue()
         _session_user_queues[session_id] = user_queue
-
         _sub_agent_tasks[session_id] = {}
 
+        # ── Step 2.5: Build implementation plan (fresh starts only) ──────────
+        # Skipped when: a follow-up message restarts the orchestrator, or a plan
+        # file already exists on disk (resume after cancel/crash).
+        _plan_file = _Path(output_dir) / ".think-plan.json"
+        if follow_up_message is None and not _plan_file.exists():
+            _planning_ok = False
+            try:
+                _planning_ok = await orch_agent.run_planning_stage(
+                    db, prd_content, idea, branch, output_dir, on_orchestrator_event
+                )
+            except Exception as _pe:
+                logger.warning("multi_agent: planning stage raised: %s", _pe)
+
+            if not _planning_ok:
+                # Planning failed — pause and require explicit user acknowledgment
+                # before the orchestrator starts with incremental planning.
+                await on_orchestrator_event("orchestrator_message", {
+                    "content": (
+                        "⚠ Planning stage failed — the implementation plan could not be built. "
+                        "The orchestrator can still proceed with incremental planning, but results may be less structured. "
+                        "Type anything to continue, or cancel this session to retry from scratch."
+                    )
+                })
+                await on_orchestrator_event("waiting", {})
+                try:
+                    await user_queue.get()
+                except asyncio.CancelledError:
+                    raise
+                await on_orchestrator_event("orchestrator_running", {})
+
+            # Remove stale PROGRESS.md from older runs
+            _old_progress = _Path(output_dir) / "docs" / "PROGRESS.md"
+            if _old_progress.exists():
+                try:
+                    _old_progress.unlink()
+                except Exception:
+                    pass
+
+        # ── Step 3: Run orchestrator loop ─────────────────────────────────────
         def _register_sub_agent_task(task_id: str, asyncio_task: "asyncio.Task") -> None:
             _sub_agent_tasks.setdefault(session_id, {})[task_id] = asyncio_task
 
         def _is_user_cancelled_task(task_id: str) -> bool:
             return task_id in (_user_cancelled_task_ids.get(session_id) or set())
 
-        orch_agent = OrchestratorAgent(client)
         try:
             summary = await orch_agent.run(
                 db, session, idea, branch,

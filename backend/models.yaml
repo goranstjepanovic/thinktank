@@ -121,7 +121,7 @@ stages:
     num_ctx: 32768      # large window to hold full conversation + docs context
 
   phase3_plan:  # Phase 3 pass 0 — JSON file manifest (paths + descriptions only)
-    model: "ssfdre38/gemma4-turbo:e4b"
+    model: "Omoeba/gpt-oss-coder:20b"
     backend: "ollama"
     temperature: 0.2
     max_tokens: 2048
@@ -129,14 +129,27 @@ stages:
     num_ctx: 32768
     supports_tools: true
 
+  phase3_planning:  # Phase 3 — hierarchical task planning (PRD → epics → leaf tasks)
+    model: "qwen3.5:9B"
+    fallback_models:
+      - "Omoeba/gpt-oss-coder:20b"
+      - "ssfdre38/gemma4-turbo:e4b"
+    backend: "ollama"
+    temperature: 0.15
+    max_tokens: 2048   # each call lists 4-8 epics or tasks
+    format: "json"
+    num_ctx: 32768
+    supports_tools: false
+    timeout_seconds: 300
+
   phase3_prd:  # Phase 3 — docs/PRD.md generation (all context → comprehensive Markdown PRD)
     model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.3
     max_tokens: 4096
     format: ""           # free-form Markdown
-    num_ctx: 32768
-    supports_tools: false
+    num_ctx: 114688
+    supports_tools: true
 
   phase3_file:  # Phase 3 pass 1-N — single file content generation (plain text)
     model: "qwen2.5-coder:7b"
@@ -181,12 +194,12 @@ stages:
     think: false        
 
   phase3_verification:  # PRD compliance verification pass — needs deeper reasoning
-    model: "qwen3.5:9b"
+    model: "Omoeba/gpt-oss-coder:20b"
     backend: "ollama"
     temperature: 0.1    # verification must be precise — high temp hallucinates issues
     max_tokens: 4096
     format: "json"
-    num_ctx: 32768
+    num_ctx: 114688
     supports_tools: true
     timeout_seconds: 900
     think: false
@@ -197,18 +210,20 @@ stages:
     models:
       - model: "rnj-1:8b"
         timeout_seconds: 900
+        num_ctx: 32768
       - model: "carstenuhlig/omnicoder-2-9b:q4_k_m"
         timeout_seconds: 900
+        num_ctx: 256000
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 1200
         num_ctx: 114688
       - model: "nemotron-cascade-2:30b"
         timeout_seconds: 1200
-        num_ctx: 114688
+        num_ctx: 256000
         think: true
       - model: "qwen3.6:27b"
         timeout_seconds: 1200
-        num_ctx: 114688
+        num_ctx: 256000
         think: true
     backend: "ollama"
     temperature: 0.2    # code correctness > creativity

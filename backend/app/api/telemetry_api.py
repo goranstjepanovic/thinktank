@@ -135,6 +135,10 @@ async def get_summary(
     # per-model: list of total tool calls per invocation (to average)
     model_tool_totals: dict[str, list[int]] = defaultdict(list)
 
+    # per (stage, model) aggregation — cross-cut for "which model works well where"
+    model_stage_agg: dict[tuple[str, str], dict] = defaultdict(_new_agg)
+    model_stage_backend: dict[tuple[str, str], str] = {}
+
     # per-task aggregation (phase3_sub_agent only; keyed by (project_id, task_id))
     task_agg: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"calls": 0, "success": 0, "durations": []}
@@ -185,6 +189,16 @@ async def get_summary(
                 agg[key]["durations"].append(float(dur))
 
         model_backend[m] = b
+
+        ms_key = (s, m)
+        model_stage_agg[ms_key]["calls"] += 1
+        model_stage_agg[ms_key]["success"] += int(ok)
+        model_stage_agg[ms_key]["fallbacks"] += int(is_fb)
+        model_stage_agg[ms_key]["tokens_prompt"] += tp
+        model_stage_agg[ms_key]["tokens_completion"] += tcomp
+        if dur is not None:
+            model_stage_agg[ms_key]["durations"].append(float(dur))
+        model_stage_backend[ms_key] = b
 
         if not ok:
             err_text = (rec.get("error") or "unknown error").strip()
@@ -327,6 +341,15 @@ async def get_summary(
 
     _TYPE_ORDER = ["fast", "standard", "large"]
 
+    by_model_stage = sorted(
+        [
+            {"stage": stage_k, "model": model_k, "backend": model_stage_backend.get((stage_k, model_k), ""),
+             **_fmt(model_k, v)}
+            for (stage_k, model_k), v in model_stage_agg.items()
+        ],
+        key=lambda x: (x["stage"], -x["calls"]),
+    )
+
     by_model = sorted(
         [{"model": k, "backend": model_backend.get(k, ""), **_fmt(k, v)}
          for k, v in model_agg.items()],
@@ -423,6 +446,7 @@ async def get_summary(
         "total_tokens": total_tokens_prompt + total_tokens_completion,
         "period_hours": round(period_hours, 1),
         "by_model": by_model,
+        "by_model_stage": by_model_stage,
         "by_stage": by_stage,
         "by_project": by_project,
         "by_backend": by_backend,
