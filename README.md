@@ -49,6 +49,8 @@ Submit an idea with a description, requirements, and constraints. Think Tank spa
 
 Branches that fail are analysed for root cause and new alternative branches are spawned. The pipeline converges when at least one branch reaches VIABLE status. You then review all viable solutions and select one to proceed with.
 
+You can also branch manually at any point: the **+ New Branch** button creates a fresh top-level alternative, and clicking on any existing branch lets you fork from it — useful for exploring a variant of a specific approach without rerunning the whole pipeline from scratch.
+
 ![Phase 1 solution branching](docs/solution_branching.png)
 
 ### Phase 2 — Q&A & Resolution
@@ -81,6 +83,7 @@ Supported project types include Node.js, Python, and .NET — the orchestrator d
 - [Ollama](https://ollama.com) installed and running
 - A GPU with enough VRAM for the models you want to run (tested on RTX 4070 SUPER 12 GB)
 - **Optional:** Intel Core Ultra CPU for OpenVINO NPU/GPU stages (tested on Core Ultra 7 265k)
+- **Optional:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) for image and audio generation
 
 ---
 
