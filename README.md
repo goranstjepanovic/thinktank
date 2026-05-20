@@ -16,6 +16,8 @@ A local AI system that takes a raw idea through structured analysis, interactive
 
 **Config-only model routing.** All stage → model → backend assignments live in `models.yaml`. Swap any model without touching application code.
 
+**Structured implementation planning.** Before writing a single line of code the orchestrator builds a component-based plan — areas, tasks, and sub-tasks — persisted to `.think-plan.json` in the output directory. Each dispatched task must reference a plan node by exact ID; the orchestrator can add, remove, or restructure plan tasks at any time using `plan_add` / `plan_remove`. Progress is visible in the Phase 3 sidebar and auto-synced with activity events every 30 seconds so the plan stays consistent even after a restart.
+
 **Build-first development.** Phase 3 follows a milestone discipline: scaffold first (entry point + build config + install), verify the build passes, then add features one at a time with a build check after each. Agents can't skip ahead to feature work while the build is broken.
 
 **Resumable runs.** Stopped or failed multi-agent runs can be resumed with a single button click. On resume the orchestrator reads the plan file and scans actual files on disk to reconstruct what was already done — it picks up where it left off rather than restarting from scaffold.
@@ -55,13 +57,16 @@ An interactive chat session that surfaces every open question and assumption fro
 
 ### Phase 3 — Multi-Agent Implementation
 
-The orchestrator reads the full Phase 1 document package and Phase 2 resolution summary, then drives a loop:
+The orchestrator reads the full Phase 1 document package and Phase 2 resolution summary, generates a PRD, builds a plan, then drives a loop:
 
-1. **Plan** — the orchestrator LLM calls `plan_add` to build an implementation plan, then produces a batch of tasks
-2. **Dispatch** — sub-agent workers execute tasks: write files with `file_edit`, run install/build commands, report back
-3. **Verify** — each completed task goes through a verification pass that checks for stubs, broken imports, and hollow implementations; failures trigger a fix cycle (up to 3 rounds)
-4. **Review** — the orchestrator inspects results, updates the plan, and decides the next batch or runs a PRD compliance check
-5. **Iterate** — chat with the agent after completion to request changes or add features; or hit **▶ Resume** to restart a stopped run without adding a message
+1. **PRD** — the orchestrator generates a Product Requirements Document from the Phase 1 + Phase 2 material; this becomes the source of truth for implementation
+2. **Plan** — the orchestrator builds a component-based plan (`plan_add`) before writing any code: areas break into tasks, tasks break into sub-tasks, all persisted to `.think-plan.json`; each dispatched task must reference a valid plan node by ID — the orchestrator can restructure the plan at any time using `plan_add` / `plan_remove`
+3. **Dispatch** — sub-agent workers execute the current task batch: write files with `file_edit`, run install/build/test commands, report back
+4. **Verify** — each completed task goes through a verification pass that checks for stubs, broken imports, and hollow implementations; failures trigger a fix cycle (up to 3 rounds)
+5. **Review** — the orchestrator inspects results, updates plan task statuses, and decides the next batch or runs a PRD compliance check before signalling done
+6. **Iterate** — chat with the agent after completion to request changes or add features; or hit **▶ Resume** to restart a stopped run without adding a message
+
+Plan progress is visible in the Phase 3 sidebar and auto-synced with activity events every 30 seconds.
 
 Sub-agents are tried in telemetry-ranked order — best performing model first, degrading through the list if a model times out, OOMs, or produces bad output. The order is locked at task start so in-task failures don't reshuffle remaining candidates mid-attempt.
 
