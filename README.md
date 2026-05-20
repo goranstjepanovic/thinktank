@@ -2,7 +2,7 @@
 
 A local AI system that takes a raw idea through structured analysis, interactive Q&A, and autonomous multi-agent code generation — running entirely on your own hardware with no API costs or context limits.
 
-![Phase 3 multi-agent implementation](docs/multi_agent_implementation.png)
+![Phase 3 multi-agent implementation](docs/multi_agent_implementation_v2.png)
 
 ---
 
@@ -26,7 +26,7 @@ A local AI system that takes a raw idea through structured analysis, interactive
 
 **Live model telemetry.** An Ops dashboard tracks inference call counts, success rates, average duration, p95 latency, and fallback rates per model and per project. A dedicated sub-agent ranking panel shows the current dispatch order and which models have accumulated enough data to be telemetry-ranked vs. still using YAML default order.
 
-![Ops dashboard](docs/ops_dashboard.png)
+![Ops dashboard](docs/ops_dashboard_v2.png)
 
 ---
 
@@ -51,7 +51,7 @@ Branches that fail are analysed for root cause and new alternative branches are 
 
 You can also branch manually at any point: the **+ New Branch** button creates a fresh top-level alternative, and clicking on any existing branch lets you fork from it — useful for exploring a variant of a specific approach without rerunning the whole pipeline from scratch.
 
-![Phase 1 solution branching](docs/solution_branching.png)
+![Phase 1 solution branching](docs/solution_branching_v2.png)
 
 ### Phase 2 — Q&A & Resolution
 
