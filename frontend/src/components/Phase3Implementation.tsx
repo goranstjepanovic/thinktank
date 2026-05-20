@@ -812,6 +812,7 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
   const [loadingFile, setLoadingFile] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
   const [dirFileCounts, setDirFileCounts] = useState<Map<string, number>>(new Map());
   const [dirSizes, setDirSizes] = useState<Map<string, number>>(new Map());
   const fileCount = Array.from(dirFileCounts.values()).reduce((a, b) => a + b, 0);
@@ -941,6 +942,15 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
     });
   };
 
+  const handleCopyPath = () => {
+    if (!outputDir || !selectedPath) return;
+    const full = `${outputDir.replace(/\\/g, '/')}/${selectedPath}`;
+    navigator.clipboard.writeText(full).then(() => {
+      setCopiedPath(true);
+      setTimeout(() => setCopiedPath(false), 1500);
+    });
+  };
+
   const vsCodeHref = outputDir && selectedPath
     ? `vscode://file/${outputDir.replace(/\\/g, '/')}/${selectedPath}`
     : null;
@@ -1050,6 +1060,21 @@ function FileBrowser({ ideaId, refreshKey }: { ideaId: string; refreshKey: numbe
               >
                 VS Code
               </a>
+            )}
+            {selectedPath && (
+              <button
+                onClick={handleCopyPath}
+                disabled={!outputDir}
+                title="Copy full file path"
+                style={{
+                  fontSize: 11, color: copiedPath ? 'var(--green)' : 'var(--text2)',
+                  padding: '2px 7px', borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'none',
+                  cursor: outputDir ? 'pointer' : 'default', lineHeight: '18px',
+                }}
+              >
+                {copiedPath ? 'Copied!' : 'Copy Path'}
+              </button>
             )}
             {!(selectedPath && isImagePath(selectedPath)) && (
               <button
@@ -1266,18 +1291,45 @@ const sidebarPill: React.CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
 };
 
+interface PlanTask {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
+  children?: PlanTask[];
+}
+
+function countPlanLeaves(tasks: PlanTask[]): { total: number; done: number; failed: number; active: number } {
+  let total = 0, done = 0, failed = 0, active = 0;
+  for (const t of tasks) {
+    if (t.children && t.children.length > 0) {
+      const sub = countPlanLeaves(t.children);
+      total += sub.total; done += sub.done; failed += sub.failed; active += sub.active;
+    } else {
+      total++;
+      if (t.status === 'done' || t.status === 'skipped') done++;
+      else if (t.status === 'failed') failed++;
+      else if (t.status === 'in_progress') active++;
+    }
+  }
+  return { total, done, failed, active };
+}
+
 function Phase3Sidebar({
   idea,
   session,
   log,
   telemetry,
   ranking,
+  onSyncPlan,
+  syncing,
 }: {
   idea: IdeaDetail;
   session: Phase3Session;
   log: ActivityEntry[];
   telemetry: import('../types').TelemetrySummary | null;
   ranking: SubAgentRanking | null;
+  onSyncPlan: () => void;
+  syncing: boolean;
 }) {
   const fileCount = new Set(log.filter(e => e.kind === 'file').map(e => (e as Extract<ActivityEntry, { kind: 'file' }>).path)).size;
   const shellCount = log.filter(e => e.kind === 'shell').length;
@@ -1351,8 +1403,129 @@ function Phase3Sidebar({
             </span>
           )}
         </div>
-
+        {!session.plan_json && (
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 10, padding: '2px 8px', opacity: syncing ? 0.5 : 1 }}
+            onClick={onSyncPlan}
+            disabled={syncing}
+            title="Load plan from disk"
+          >
+            {syncing ? '…' : '↻ Sync Plan'}
+          </button>
+        )}
       </div>
+
+      {/* Plan tree */}
+      {(() => {
+        if (!session.plan_json) return null;
+        let planTasks: PlanTask[] = [];
+        try { planTasks = JSON.parse(session.plan_json).tasks ?? []; } catch { return null; }
+        if (!planTasks.length) return null;
+        const overall = countPlanLeaves(planTasks);
+        const pct = overall.total > 0 ? Math.round(overall.done / overall.total * 100) : 0;
+        return (
+          <>
+            <div style={{ height: 1, background: 'var(--border)' }} />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <SidebarLabel>Plan</SidebarLabel>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 10, padding: '1px 6px', opacity: syncing ? 0.5 : 1 }}
+                  onClick={onSyncPlan}
+                  disabled={syncing}
+                  title="Reconcile plan with completed tasks"
+                >
+                  {syncing ? '…' : '↻ Sync'}
+                </button>
+              </div>
+              {/* Overall bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? 'var(--green)' : overall.active > 0 ? 'var(--blue)' : overall.done > 0 ? 'var(--yellow)' : 'var(--text2)', transition: 'width 0.3s' }} />
+                </div>
+                <span style={{ fontSize: 10, color: 'var(--text2)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                  {overall.done}/{overall.total}
+                </span>
+              </div>
+              {/* Per-area rows */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {planTasks.map(area => {
+                  const c = countPlanLeaves([area]);
+                  const apct = c.total > 0 ? Math.round(c.done / c.total * 100) : 0;
+                  // Derive effective status from leaf counts — don't trust area.status directly
+                  // since it's only updated when all children are terminal.
+                  type EffectiveStatus = 'done' | 'in_progress' | 'partial' | 'failed' | 'pending';
+                  const effectiveStatus: EffectiveStatus =
+                    c.total === 0 ? (area.status as EffectiveStatus) :
+                    c.active > 0 || (c.done < c.total && c.failed < c.total && c.done + c.failed < c.total) ? 'in_progress' :
+                    c.done === c.total ? 'done' :
+                    c.failed === c.total ? 'failed' :
+                    c.done > 0 && c.failed > 0 ? 'partial' :
+                    c.done > 0 ? 'in_progress' :
+                    'pending';
+                  const statusColor =
+                    effectiveStatus === 'done'        ? 'var(--green)'  :
+                    effectiveStatus === 'in_progress' ? 'var(--accent)' :
+                    effectiveStatus === 'partial'     ? 'var(--yellow)' :
+                    effectiveStatus === 'failed'      ? 'var(--red)'    :
+                    'var(--text2)';
+                  const statusIcon =
+                    effectiveStatus === 'done'        ? '✓' :
+                    effectiveStatus === 'in_progress' ? '▶' :
+                    effectiveStatus === 'partial'     ? '◑' :
+                    effectiveStatus === 'failed'      ? '✗' :
+                    '·';
+                  const isActive = c.active > 0;
+                  const barColor =
+                    effectiveStatus === 'done'        ? 'var(--green)'  :
+                    effectiveStatus === 'partial'     ? 'var(--yellow)' :
+                    effectiveStatus === 'failed'      ? 'var(--red)'    :
+                    isActive                          ? 'var(--blue)'   :
+                    c.done > 0                        ? 'var(--yellow)' :
+                    'var(--text2)';
+                  const areaName = area.title.length > 28 ? area.title.slice(0, 26) + '…' : area.title;
+                  return (
+                    <div key={area.id} style={{
+                      borderLeft: `2px solid ${isActive ? 'var(--blue)' : 'transparent'}`,
+                      background: isActive ? 'rgba(96,165,250,0.06)' : 'transparent',
+                      borderRadius: '0 3px 3px 0',
+                      paddingLeft: 4, paddingRight: 2, paddingTop: 1, paddingBottom: 1,
+                      transition: 'background 0.2s, border-color 0.2s',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                        <span style={{ fontSize: 9, color: isActive ? 'var(--blue)' : statusColor, flexShrink: 0 }}>
+                          {statusIcon}
+                        </span>
+                        <span style={{ fontSize: 10, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }} title={area.title}>
+                          {areaName}
+                        </span>
+                        {c.total > 0 && (
+                          <span style={{ fontSize: 9, color: 'var(--text2)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                            {apct}%
+                          </span>
+                        )}
+                      </div>
+                      {c.total > 1 && (
+                        <div style={{ marginLeft: 12, height: 2, borderRadius: 1, background: 'var(--border)', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${apct}%`, background: barColor, transition: 'width 0.3s' }} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {overall.failed > 0 && (
+                <div style={{ marginTop: 6, fontSize: 10, color: 'var(--red)' }}>{overall.failed} task{overall.failed > 1 ? 's' : ''} failed</div>
+              )}
+              {overall.active > 0 && (
+                <div style={{ marginTop: 4, fontSize: 10, color: 'var(--accent)' }}>{overall.active} in progress</div>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {ranking && ranking.models.length > 0 && (
         <>
@@ -1487,6 +1660,7 @@ export function Phase3Implementation() {
   const [sending, setSending] = useState(false);
   const [regenPrd, setRegenPrd] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [syncingPlan, setSyncingPlan] = useState(false);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const [selectedMode, setSelectedMode] = useState<'classic' | 'multi_agent' | 'prd_only'>('classic');
   const fileRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1496,6 +1670,19 @@ export function Phase3Implementation() {
 
   const isActivelyRunning = session?.status === 'PLANNING' || session?.status === 'RUNNING' || session?.status === 'WAITING';
   useWakeLock(isActivelyRunning);
+
+  // Poll session (plan_json, status) at the same interval as the backend auto-sync so the
+  // UI reflects plan progress without requiring a manual sync click.
+  useEffect(() => {
+    if (!id || !isActivelyRunning) return;
+    const t = setInterval(async () => {
+      try {
+        const s = await api.getPhase3(id);
+        setSession(s);
+      } catch { /* best-effort */ }
+    }, 30_000);
+    return () => clearInterval(t);
+  }, [id, isActivelyRunning]);
 
   // When a run starts, snap back to the bottom and reset manual-scroll flag.
   const prevRunning = useRef(false);
@@ -2046,6 +2233,20 @@ export function Phase3Implementation() {
     }
   };
 
+  const doSyncPlan = async () => {
+    if (!id || syncingPlan) return;
+    setSyncingPlan(true);
+    try {
+      await api.syncPlan(id);
+      const s = await api.getPhase3(id);
+      setSession(s);
+    } catch (e: unknown) {
+      setError(`Plan sync failed: ${(e as Error).message}`);
+    } finally {
+      setSyncingPlan(false);
+    }
+  };
+
   const doRegenPrd = async () => {
     if (!id || regenPrd) return;
     setRegenPrd(true);
@@ -2256,6 +2457,8 @@ export function Phase3Implementation() {
           log={log}
           telemetry={telemetryQ.data ?? null}
           ranking={rankingQ.data ?? null}
+          onSyncPlan={doSyncPlan}
+          syncing={syncingPlan}
         />
 
         {/* Main content */}
@@ -2342,6 +2545,7 @@ export function Phase3Implementation() {
             {/* Left: orchestrator chat */}
             <div style={{ flex: '0 0 55%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid var(--border)' }}>
               <div
+                className={isActivelyRunning ? 'log-active' : undefined}
                 style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}
                 onScroll={e => {
                   const el = e.currentTarget;
@@ -2542,6 +2746,7 @@ export function Phase3Implementation() {
           // ── Classic: single-column log ──────────────────────────────────────
           <>
             <div
+              className={isActivelyRunning ? 'log-active' : undefined}
               style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}
               onScroll={e => {
                 const el = e.currentTarget;

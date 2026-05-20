@@ -59,6 +59,7 @@ class Phase3SessionOut(BaseModel):
     project_root: str | None
     output_dir: str | None
     summary: str | None
+    plan_json: str | None
     created_at: str
     updated_at: str
 
@@ -75,6 +76,7 @@ class Phase3SessionOut(BaseModel):
             project_root=s.project_root,
             output_dir=s.output_dir,
             summary=s.summary,
+            plan_json=s.plan_json,
             created_at=s.created_at.isoformat(),
             updated_at=s.updated_at.isoformat(),
         )
@@ -401,6 +403,9 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
         def _is_user_cancelled_task(task_id: str) -> bool:
             return task_id in (_user_cancelled_task_ids.get(session_id) or set())
 
+        _sync_stop = asyncio.Event()
+        _sync_task = asyncio.ensure_future(_run_plan_sync_loop(session_id, _sync_stop))
+
         try:
             summary = await orch_agent.run(
                 db, session, idea, branch,
@@ -429,6 +434,8 @@ async def _run_multi_agent_implementation(idea_id: str, session_id: str, follow_
             await event_bus.publish(ev.phase3_error(idea_id, session_id, str(e)))
             return
         finally:
+            _sync_stop.set()
+            await asyncio.gather(_sync_task, return_exceptions=True)
             _session_user_queues.pop(session_id, None)
             _session_tasks.pop(session_id, None)
             _sub_agent_tasks.pop(session_id, None)
@@ -1033,6 +1040,107 @@ async def cancel_phase3_task(idea_id: str, task_id: str, db: AsyncSession = Depe
         asyncio_task.cancel()
         return {"cancelled": True}
     return {"cancelled": False}
+
+
+async def _sync_plan_now(session_id: str) -> dict:
+    """Core plan sync logic. Opens its own DB session — safe to call from background tasks."""
+    from app.agents.orchestrator_agent import _auto_complete_plan_parents, _iter_all_plan_tasks
+
+    async with AsyncSessionLocal() as db:
+        session = await db.get(Phase3Session, session_id)
+        if not session or not session.output_dir:
+            return {"synced": False, "dirty": False, "matched": 0}
+
+        plan_file = Path(session.output_dir) / ".think-plan.json"
+        if not plan_file.exists():
+            return {"synced": False, "dirty": False, "matched": 0}
+
+        events_r = await db.execute(
+            select(Phase3ActivityEvent)
+            .where(
+                Phase3ActivityEvent.session_id == session.id,
+                Phase3ActivityEvent.event_type.in_(["sub_agent_complete", "sub_agent_fix_complete"]),
+            )
+        )
+        events = events_r.scalars().all()
+        successful_task_ids: set[str] = set()
+        for ev_row in events:
+            payload = json.loads(ev_row.payload_json)
+            if payload.get("success"):
+                tid = payload.get("task_id", "")
+                if tid:
+                    successful_task_ids.add(tid)
+
+        plan_data = json.loads(plan_file.read_text(encoding="utf-8"))
+        dirty = False
+        matched = 0
+
+        for task in _iter_all_plan_tasks(plan_data.get("tasks", [])):
+            if task.get("status") in ("done", "skipped"):
+                continue
+            if task["id"] in successful_task_ids:
+                task["status"] = "done"
+                dirty = True
+                matched += 1
+
+        if session.status in ("COMPLETE", "FAILED"):
+            target = "done" if session.status == "COMPLETE" else "failed"
+            for task in _iter_all_plan_tasks(plan_data.get("tasks", [])):
+                if task.get("status") == "in_progress":
+                    task["status"] = target
+                    dirty = True
+
+        if _auto_complete_plan_parents(plan_data.get("tasks", [])):
+            dirty = True
+
+        plan_json_str = json.dumps(plan_data, indent=2, ensure_ascii=False)
+        if dirty:
+            plan_file.write_text(plan_json_str, encoding="utf-8")
+
+        session.plan_json = plan_json_str
+        await db.commit()
+
+        logger.info("sync_plan: %d task(s) matched from %d activity events", matched, len(events))
+        return {"synced": True, "dirty": dirty, "matched": matched}
+
+
+_PLAN_SYNC_INTERVAL = 30  # seconds between automatic plan syncs during a run
+
+
+async def _run_plan_sync_loop(session_id: str, stop: "asyncio.Event") -> None:
+    """Periodically sync the plan while the session is active. Stops when `stop` is set."""
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_PLAN_SYNC_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+        if stop.is_set():
+            break
+        try:
+            async with AsyncSessionLocal() as _check_db:
+                _s = await _check_db.get(Phase3Session, session_id)
+                if not _s or _s.status in ("COMPLETE", "FAILED"):
+                    break
+            await _sync_plan_now(session_id)
+        except Exception as _e:
+            logger.warning("plan_sync_loop: error for session %s: %s", session_id[:8], _e)
+
+
+@router.post("/{idea_id}/phase3/sync-plan", status_code=200)
+async def sync_plan(idea_id: str, db: AsyncSession = Depends(get_session)):
+    """
+    Reconcile .think-plan.json on disk with completed activity events in the DB.
+    Matching: exact task_id only — no title/keyword fuzzy matching.
+    Also resolves orphaned in_progress tasks when the session is terminal.
+    Propagates ancestor completion upward and persists to disk + session.plan_json.
+    """
+    session = await _get_phase3_or_404(idea_id, db)
+    if not session.output_dir:
+        raise HTTPException(status_code=422, detail="Session has no output directory")
+    plan_file = Path(session.output_dir) / ".think-plan.json"
+    if not plan_file.exists():
+        raise HTTPException(status_code=404, detail="No plan file found on disk")
+    return await _sync_plan_now(session.id)
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,8 @@ export const api = {
     request<{ resumed: boolean }>(`/ideas/${id}/phase3/resume`, { method: 'POST', body: '{}' }),
   cancelPhase3Task: (id: string, taskId: string) =>
     request<{ cancelled: boolean }>(`/ideas/${id}/phase3/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', body: '{}' }),
+  syncPlan: (id: string) =>
+    request<{ synced: boolean; dirty: boolean; matched: number }>(`/ideas/${id}/phase3/sync-plan`, { method: 'POST', body: '{}' }),
   getPhase3Activity: (id: string) =>
     request<import('../types').Phase3ActivityEvent[]>(`/ideas/${id}/phase3/activity`),
   listPhase3Dir: (id: string, dir?: string) =>

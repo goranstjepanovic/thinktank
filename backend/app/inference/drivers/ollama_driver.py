@@ -36,11 +36,8 @@ class OllamaDriver(InferenceBackend):
             payload["options"]["num_predict"] = request.max_tokens
         if request.extra:
             payload.update(request.extra)
-        # Explicit think flag overrides anything set via extra (per-model takes precedence)
-        if request.think:
-            payload["think"] = True
-        elif "think" in payload and not payload["think"]:
-            del payload["think"]  # don't send think=False — omitting is cleaner
+        # Always send think explicitly so thinking models (e.g. qwen3.x) don't default to on
+        payload["think"] = request.think
         return payload
 
     @staticmethod

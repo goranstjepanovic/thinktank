@@ -140,6 +140,7 @@ stages:
     format: "json"
     num_ctx: 32768
     supports_tools: false
+    think: false       # disable thinking — tokens burned on reasoning leave nothing for JSON output
     timeout_seconds: 300
 
   phase3_prd:  # Phase 3 — docs/PRD.md generation (all context → comprehensive Markdown PRD)
@@ -217,13 +218,13 @@ stages:
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 1200
         num_ctx: 114688
-      - model: "nemotron-cascade-2:30b"
+      - model: "gemma4:26b"
         timeout_seconds: 1200
         num_ctx: 256000
         think: true
-      - model: "qwen3.6:27b"
+      - model: "laguna-xs.2:q4_K_M"
         timeout_seconds: 1200
-        num_ctx: 256000
+        num_ctx: 114688
         think: true
     backend: "ollama"
     temperature: 0.2    # code correctness > creativity
@@ -243,7 +244,7 @@ stages:
     supports_tools: false
 
   phase3_task_verify:  # Per-task verification pass — reads files written by sub-agent, checks for stubs/broken imports
-    model: "ducquoc/gemma4-fast-sonnet:latest"
+    model: "ssfdre38/gemma4-turbo:e4b"
     backend: "ollama"
     temperature: 0.1
     max_tokens: 1024

@@ -85,8 +85,9 @@ _RUN_BUILD_TOOL = ToolDefinition(
             "command": {
                 "type": "string",
                 "description": (
-                    "Override the auto-detected build command "
+                    "Override the auto-detected build command with a single command "
                     "(e.g. 'npm run build', 'npm run typecheck', 'cargo check'). "
+                    "Do NOT use && chaining — pass one command only. "
                     "Omit to auto-detect from the project root."
                 ),
             }
@@ -118,19 +119,21 @@ _PLAN_LIST_TOOL = ToolDefinition(
 _PLAN_ADD_TOOL = ToolDefinition(
     name="plan_add",
     description=(
-        "Add a new pending leaf task to the plan. Each task must be scoped to exactly 1 file. "
-        "Use parent_id to place it under an existing area or story in the hierarchy."
+        "Add a new pending task to the plan. "
+        "Use parent_id to nest it under any existing area, story, or task — supports arbitrary depth. "
+        "Each leaf task must be scoped to exactly 1 file. "
+        "To add a new area/grouping node (no instruction), omit instruction and it will be treated as a container."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "id":          {"type": "string", "description": "Unique snake_case identifier"},
+            "id":          {"type": "string", "description": "Unique snake_case identifier — must not already exist in the plan"},
             "title":       {"type": "string", "description": "Short title ≤60 chars"},
-            "instruction": {"type": "string", "description": "Complete self-contained task instruction"},
-            "parent_id":   {"type": "string", "description": "Id of the parent area/story (optional)"},
+            "instruction": {"type": "string", "description": "Complete self-contained task instruction (required for leaf tasks)"},
+            "parent_id":   {"type": "string", "description": "Id of the parent node to nest under — use plan_list() to find available ids"},
             "notes":       {"type": "string", "description": "Optional notes"},
         },
-        "required": ["id", "title", "instruction"],
+        "required": ["id", "title"],
     },
 )
 
@@ -337,18 +340,28 @@ async def _run_build(output_dir: str, command: str | None = None) -> dict:
     root = Path(output_dir)
 
     if command:
-        # Explicit override — run exactly what was requested
-        result = await run_shell_command(command, output_dir, timeout_seconds=180)
-        combined = (result.stdout + "\n" + result.stderr).strip()
-        if len(combined) > 5000:
-            combined = "…(truncated)\n" + combined[-5000:]
-        return {
-            "success": result.exit_code == 0,
-            "exit_code": result.exit_code,
-            "command": command,
-            "output": combined,
-            "timed_out": result.timed_out,
-        }
+        # Split &&-chained commands and run sequentially (PowerShell 5.1 doesn't support &&).
+        parts = [p.strip() for p in command.split("&&") if p.strip()]
+        all_out: list[str] = []
+        for part in parts:
+            result = await run_shell_command(part, output_dir, timeout_seconds=180)
+            combined = (result.stdout + "\n" + result.stderr).strip()
+            all_out.append(f"$ {part}\n{combined}".rstrip())
+            if result.exit_code != 0:
+                full = "\n\n".join(all_out)
+                if len(full) > 5000:
+                    full = "…(truncated)\n" + full[-5000:]
+                return {
+                    "success": False,
+                    "exit_code": result.exit_code,
+                    "command": command,
+                    "output": full,
+                    "timed_out": result.timed_out,
+                }
+        full = "\n\n".join(all_out)
+        if len(full) > 5000:
+            full = "…(truncated)\n" + full[-5000:]
+        return {"success": True, "exit_code": 0, "command": command, "output": full, "timed_out": False}
 
     checks = _detect_build_commands(root)
     if not checks:
@@ -700,6 +713,28 @@ def _read_declared_source_root(output_dir: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _iter_all_plan_tasks(nodes: list):
+    """Depth-first generator over every node in a nested plan tree."""
+    for n in nodes:
+        yield n
+        yield from _iter_all_plan_tasks(n.get("children") or [])
+
+
+def _auto_complete_plan_parents(nodes: list) -> bool:
+    """Bottom-up: mark a parent done when all its children are terminal. Returns True if anything changed."""
+    dirty = False
+    for n in nodes:
+        ch = n.get("children") or []
+        if ch:
+            if _auto_complete_plan_parents(ch):
+                dirty = True
+            if all(c.get("status") in ("done", "skipped") for c in ch):
+                if n.get("status") not in ("done", "skipped"):
+                    n["status"] = "done"
+                    dirty = True
+    return dirty
 
 
 def _detect_project_structure(completed_tasks: list[dict], output_dir: str | None = None) -> dict:
@@ -1067,7 +1102,21 @@ def _orchestrator_user_prompt(
     file_tree: str | None = None,
     services_json: dict | None = None,
     output_dir: str | None = None,
+    dispatch_errors: list[str] | None = None,
 ) -> str:
+    # Runtime dispatch errors — shown BEFORE task history so model sees them immediately.
+    # These are NOT tasks and must NOT be treated as plan entries.
+    dispatch_error_block = ""
+    if dispatch_errors:
+        shown = dispatch_errors[-8:]  # last 8 to keep context tight
+        lines = "\n".join(f"- {e}" for e in shown)
+        dispatch_error_block = (
+            "\n\n## ⚠ Runtime Dispatch Errors\n\n"
+            "The following are **runtime error messages**, NOT completed tasks.\n"
+            "Do NOT call plan_remove on these. Do NOT treat them as task IDs in the plan.\n\n"
+            f"{lines}"
+        )
+
     history_block = ""
     if completed_tasks:
         lines = []
@@ -1361,6 +1410,7 @@ def _orchestrator_user_prompt(
         f"PROJECT: {idea.name}\n"
         f"DESCRIPTION: {idea.description}\n\n"
         f"SELECTED APPROACH: {branch.approach_summary or 'N/A'}\n"
+        f"{dispatch_error_block}"
         f"{history_block}"
         f"{build_banner}"
         f"{structure_block}"
@@ -1616,16 +1666,18 @@ def _plan_handlers(output_dir: str) -> dict:
     async def _plan_add(args: dict) -> dict:
         task_id     = (args.get("id") or "").strip()
         title       = (args.get("title") or "").strip()
-        instruction = (args.get("instruction") or "").strip()
+        instruction = (args.get("instruction") or "").strip() or None
         parent_id   = (args.get("parent_id") or "").strip() or None
         notes       = (args.get("notes") or "").strip() or None
-        if not task_id or not title or not instruction:
-            return {"error": "id, title, and instruction are required"}
+        if not task_id or not title:
+            return {"error": "id and title are required"}
         data = _load()
         if _find_by_id(data.get("tasks", []), task_id):
             return {"error": f"task id '{task_id}' already exists"}
         new_task = {"id": task_id, "title": title, "status": "pending",
                     "instruction": instruction, "notes": notes, "children": []}
+        # Drop None values to keep the JSON tidy
+        new_task = {k: v for k, v in new_task.items() if v is not None or k in ("id", "title", "status", "children")}
         if parent_id:
             parent = _find_by_id(data.get("tasks", []), parent_id)
             if parent is None:
@@ -1686,9 +1738,14 @@ def _plan_handlers(output_dir: str) -> dict:
         result: dict = {"task": leaf, "remaining": max(0, remaining - 1)}
         if leaf.get("status") == "failed":
             result["retry"] = True
+            result["action_required"] = "replace"
             result["warning"] = (
-                "This task PREVIOUSLY FAILED. Read its 'notes' field for the failure reason. "
-                "Use a different approach — do not repeat the same steps."
+                f"⛔ FAILED TASK — you MUST replace it before dispatching anything else. "
+                f"1) Call plan_remove(id='{leaf['id']}') to delete this task. "
+                f"2) Call plan_add 2–3 smaller replacement tasks (each touching exactly 1 file) "
+                f"under the same parent area — use plan_list() to find the parent_id. "
+                f"The runtime will BLOCK all dispatch until this is done. "
+                f"Do NOT call plan_next again until you have replaced this task."
             )
         # Surface breadcrumb so orchestrator knows which area this task belongs to
         path = _find_path_to(tasks, leaf["id"], [])
@@ -2160,15 +2217,29 @@ class OrchestratorAgent:
 
             logger.info("planning: %s — planning %s tasks", level_label, context_label)
 
-            result = await self._client.call(
-                stage_key="phase3_planning",
-                messages=[Message(role=m["role"], content=m["content"]) for m in messages],
-                session=db,
-                idea_id=idea.id,
-                branch_id=branch.id,
-                call_type="PLANNING",
-                call_index=_call_index,
-            )
+            _msgs = [Message(role=m["role"], content=m["content"]) for m in messages]
+            result = None
+            for _attempt in range(3):
+                try:
+                    result = await self._client.call(
+                        stage_key="phase3_planning",
+                        messages=_msgs,
+                        session=db,
+                        idea_id=idea.id,
+                        branch_id=branch.id,
+                        call_type="PLANNING",
+                        call_index=_call_index,
+                    )
+                    break
+                except Exception as _retry_err:
+                    if _attempt < 2:
+                        logger.warning(
+                            "planning: %s attempt %d/3 failed: %s — retrying",
+                            context_label, _attempt + 1, _retry_err,
+                        )
+                        await asyncio.sleep(3)
+                    else:
+                        raise
             _call_index += 1
 
             if not isinstance(result, dict):
@@ -2285,12 +2356,16 @@ class OrchestratorAgent:
 
         output_dir = session.output_dir or ""
         completed_tasks: list[dict] = []
+        _dispatch_errors: list[str] = []  # runtime feedback — NOT task results
         _interface_summary: str | None = None  # updated after every batch
         # Only inject follow-up context on the first round
         _initial_follow_up = follow_up_message
         _task_perm_fail_counts: dict[str, int] = {}  # per-task-id count of permanent failures
         _MAX_TASK_PERM_FAILS = 2      # block re-dispatch after this many permanent failures per task
         _MAX_ALL_FAILED_ROUNDS = 8    # abort run after this many consecutive all-failed rounds
+        # Plan tasks that permanently failed and have NOT yet been replaced (removed+re-added).
+        # Dispatch is blocked until each entry is gone from the plan (plan_remove was called).
+        _unresolved_plan_failures: dict[str, str] = {}  # plan_task_id → title
 
         # Detect resume vs. fresh start by checking whether real project files already exist.
         # Internal files (.think-plan.json, PROGRESS.md, etc.) don't count.
@@ -2499,6 +2574,7 @@ class OrchestratorAgent:
                     file_tree=_file_tree,
                     services_json=_services_json,
                     output_dir=output_dir or None,
+                    dispatch_errors=_dispatch_errors or None,
                 )),
             ]
             _initial_follow_up = None  # only include on first round
@@ -2915,6 +2991,38 @@ class OrchestratorAgent:
             # Validate tasks — reject empty instructions and exploration-only tasks
             _EXPLORE_PREFIXES = ('list', 'read', 'inspect', 'explore', 'check', 'view', 'show', 'get', 'find')
             _IMPL_KEYWORDS = ('write', 'creat', 'implement', 'install', 'build', 'edit', 'modif', 'generat', 'add', 'setup', 'configure', 'scaffold')
+
+            # Load plan task map once per round for ID validation and failure tracking
+            _round_plan_map: dict = {}
+            _round_plan_has_pending = False
+            if output_dir:
+                _pf = Path(output_dir) / ".think-plan.json"
+                if _pf.exists():
+                    try:
+                        import json as _jv
+                        _pdata = _jv.loads(_pf.read_text(encoding="utf-8"))
+                        _round_plan_map = {t["id"]: t for t in _iter_all_plan_tasks(_pdata.get("tasks", []))}
+                        _round_plan_has_pending = any(
+                            t.get("status") in ("pending", "in_progress", "failed")
+                            for t in _round_plan_map.values()
+                            if not (t.get("children") or [])  # only leaves
+                        )
+                    except Exception:
+                        pass
+
+            # Clear unresolved failures whose plan tasks have been removed or replaced.
+            # plan_remove deletes the node entirely, so the id disappears from _round_plan_map.
+            # plan_add under the old parent creates new children, which is also a valid resolution.
+            if _unresolved_plan_failures:
+                resolved_now = {
+                    fid for fid in _unresolved_plan_failures
+                    if fid not in _round_plan_map  # removed via plan_remove
+                    or _round_plan_map[fid].get("status") != "failed"  # manually un-failed
+                }
+                for fid in resolved_now:
+                    logger.info("orchestrator: plan failure resolved — '%s' no longer failed in plan", fid)
+                    del _unresolved_plan_failures[fid]
+
             valid_tasks = []
             _blocked_this_round: list[str] = []
             for t in next_tasks[:3]:  # cap at 3 concurrent sub-agents
@@ -2942,26 +3050,91 @@ class OrchestratorAgent:
                 if is_explore_only:
                     logger.warning("orchestrator: task %r looks like exploration-only — skipping (use list_files/inspect_files directly)", t.get("title"))
                     continue
+
+                # Plan ID validation: plan_task_id must match a real plan task exactly.
+                # Only enforced when the plan has been initialised with pending work.
+                if _round_plan_has_pending:
+                    _ptid = str(t.get("plan_task_id") or "").strip()
+                    _lookup = _ptid or task_id_raw
+                    if _lookup and _lookup not in _round_plan_map:
+                        # Hard block — no title guessing. Model must use plan_list() to find valid IDs.
+                        _blocked_this_round.append(task_id_raw)
+                        _dispatch_errors.append(
+                            f"INVALID ID '{_lookup}': this plan_task_id does not exist. "
+                            f"Call plan_list() to see all valid IDs, then re-dispatch with the exact id."
+                        )
+                        logger.warning(
+                            "orchestrator: blocked task '%s' — plan_task_id '%s' not in plan",
+                            task_id_raw, _lookup,
+                        )
+                        continue
+
+                # Unresolved failed plan tasks must be replaced before new work is dispatched.
+                # If the orchestrator called plan_remove this round, _unresolved_plan_failures
+                # will already be empty (cleared above from the reloaded plan map).
+                if _unresolved_plan_failures:
+                    failed_list = "; ".join(
+                        f"'{fid}' (\"{title}\")"
+                        for fid, title in _unresolved_plan_failures.items()
+                    )
+                    _blocked_this_round.append(task_id_raw)
+                    _dispatch_errors.append(
+                        f"DISPATCH BLOCKED — unresolved failed plan task(s): {failed_list}. "
+                        f"For each: call plan_remove(id='<id>'), then plan_add 2–3 smaller replacements "
+                        f"(parent_id=<area_id> from plan_list()). All dispatches are blocked until done."
+                    )
+                    logger.warning(
+                        "orchestrator: blocked task '%s' — %d unresolved plan failure(s): %s",
+                        task_id_raw, len(_unresolved_plan_failures),
+                        list(_unresolved_plan_failures.keys()),
+                    )
+                    continue
+
                 valid_tasks.append(t)
-            # Inject veto notices so the orchestrator knows why tasks were blocked
-            if _blocked_this_round:
-                completed_tasks.append({
-                    "id": f"_veto_notice_{round_idx}",
-                    "title": "⛔ Runtime veto — tasks blocked",
-                    "summary": (
-                        f"The runtime has PERMANENTLY BLOCKED these task IDs after repeated failures: "
-                        f"{_blocked_this_round}. "
-                        f"You MUST call plan_remove(id) for each blocked id, then plan_add 1-2 "
-                        f"smaller replacement tasks each touching exactly ONE file. "
-                        f"Do NOT re-dispatch any blocked id."
-                    ),
-                    "success": False,
-                    "files_written": [],
-                    "commands_run": [],
-                })
+            # Perm-fail vetoed IDs need plan_remove; wrong-ID blocks do not
+            _perm_vetoed = [
+                tid for tid in _blocked_this_round
+                if _task_perm_fail_counts.get(tid, 0) >= _MAX_TASK_PERM_FAILS
+            ]
+            if _perm_vetoed:
+                _dispatch_errors.append(
+                    f"PERMANENTLY VETOED (too many failures): {_perm_vetoed}. "
+                    f"Call plan_remove(id) for each, then plan_add 1–2 smaller replacements "
+                    f"each touching exactly ONE file. Do NOT re-dispatch these IDs."
+                )
             if not valid_tasks:
-                logger.warning("orchestrator: no valid tasks in round %d — continuing to next round", round_idx + 1)
-                continue  # let the orchestrator try again rather than stopping dead
+                _empty_task_rounds += 1
+                logger.warning(
+                    "orchestrator: no valid tasks in round %d (empty #%d) — all tasks blocked or vetoed",
+                    round_idx + 1, _empty_task_rounds,
+                )
+                _blocked_ids_str = ", ".join(repr(b) for b in _blocked_this_round[:5])
+                if _empty_task_rounds <= 3 or _round_plan_has_pending:
+                    # Inject a targeted nudge: the model must plan_add the missing items first
+                    completed_tasks.append({
+                        "id": f"_nudge_blocked_{round_idx}",
+                        "title": "(all tasks blocked — plan_task_id mismatch)",
+                        "summary": (
+                            f"DISPATCH ERROR (attempt {_empty_task_rounds}): All tasks you submitted were blocked "
+                            f"because their plan_task_id values do not exist in the plan. "
+                            f"Blocked task IDs: [{_blocked_ids_str}]. "
+                            "Steps to fix:\n"
+                            "1. Call plan_list() to see existing plan tasks and their IDs.\n"
+                            "2. For any work that is NOT already in the plan, call plan_add() to register it — "
+                            "this creates the authoritative ID you must use.\n"
+                            "3. Re-dispatch your tasks using only IDs returned by plan_list() or plan_add(). "
+                            "Do NOT invent or guess IDs. The plan must be updated before dispatching."
+                        ),
+                        "success": False,
+                        "files_written": [],
+                        "commands_run": [],
+                    })
+                    continue
+                logger.warning(
+                    "orchestrator: %d consecutive all-blocked rounds with no pending plan tasks — stopping",
+                    _empty_task_rounds,
+                )
+                break
 
             _empty_task_rounds = 0  # reset — real tasks are being dispatched
 
@@ -3026,7 +3199,7 @@ class OrchestratorAgent:
             if _plan_file.exists():
                 try:
                     _plan_data = _json.loads(_plan_file.read_text(encoding="utf-8"))
-                    _plan_map = {t["id"]: t for t in _plan_data.get("tasks", [])}
+                    _plan_map = {t["id"]: t for t in _iter_all_plan_tasks(_plan_data.get("tasks", []))}
                     _plan_dirty = False
                     _matched_plan_ids: set[str] = set()
                     for t, sub_result in zip(valid_tasks, batch_results):
@@ -3048,7 +3221,14 @@ class OrchestratorAgent:
                         elif sub_result.get("permanently_failed") and current not in ("done", "failed"):
                             pt["status"] = "failed"
                             _plan_dirty = True
+                            _unresolved_plan_failures[pt["id"]] = pt.get("title", pt["id"])
                             logger.debug("orchestrator: plan auto-failed '%s'", pt["id"])
+
+                    # Propagate completion upward so parent areas auto-complete when all
+                    # children are done — mirrors what plan_update does via _auto_complete_ancestors.
+                    if _plan_dirty:
+                        if _auto_complete_plan_parents(_plan_data.get("tasks", [])):
+                            pass  # _plan_dirty already True
 
                     # Fallback: if a plan task was set to in_progress but the dispatched task
                     # used a completely different id (no match above), the plan task is orphaned.
@@ -3056,7 +3236,7 @@ class OrchestratorAgent:
                     # would only mark a task in_progress immediately before dispatching it.
                     _round_had_success = any(r.get("success") for r in batch_results)
                     if _round_had_success:
-                        for pt in _plan_data.get("tasks", []):
+                        for pt in _iter_all_plan_tasks(_plan_data.get("tasks", [])):
                             if pt.get("status") == "in_progress" and pt["id"] not in _matched_plan_ids:
                                 pt["status"] = "done"
                                 _plan_dirty = True
@@ -3087,11 +3267,50 @@ class OrchestratorAgent:
                         )
 
                     if _plan_dirty:
-                        _plan_file.write_text(
-                            _json.dumps(_plan_data, indent=2, ensure_ascii=False), encoding="utf-8"
-                        )
+                        _plan_json_str = _json.dumps(_plan_data, indent=2, ensure_ascii=False)
+                        _plan_file.write_text(_plan_json_str, encoding="utf-8")
+                        session.plan_json = _plan_json_str
+                        await db.commit()
                 except Exception as _pe:
                     logger.warning("orchestrator: plan auto-update error: %s", _pe)
+
+            # Every 5 rounds: full reconciliation pass — scan all completed_tasks history against
+            # the plan tree to catch any updates the per-batch auto-update may have missed.
+            if round_idx % 5 == 4 and output_dir and (Path(output_dir) / ".think-plan.json").exists():
+                try:
+                    import json as _json_rec
+                    _rec_file = Path(output_dir) / ".think-plan.json"
+                    _rec_data = _json_rec.loads(_rec_file.read_text(encoding="utf-8"))
+                    _successful_ids: set[str] = set()
+                    _failed_ids: set[str] = set()
+                    for ct in completed_tasks:
+                        _cid = ct.get("id", "")
+                        _ptid = ct.get("plan_task_id", "")
+                        if ct.get("success"):
+                            _successful_ids.update(filter(None, [_cid, _ptid]))
+                        elif ct.get("permanently_failed"):
+                            _failed_ids.update(filter(None, [_cid, _ptid]))
+                    _rec_map = {t["id"]: t for t in _iter_all_plan_tasks(_rec_data.get("tasks", []))}
+                    _rec_dirty = False
+                    for _tid, _pt in _rec_map.items():
+                        _cur = _pt.get("status", "pending")
+                        if _tid in _successful_ids and _cur not in ("done", "skipped"):
+                            _pt["status"] = "done"
+                            _rec_dirty = True
+                            logger.info("orchestrator: plan reconcile-done '%s'", _tid)
+                        elif _tid in _failed_ids and _cur not in ("done", "skipped", "failed"):
+                            _pt["status"] = "failed"
+                            _rec_dirty = True
+                            logger.info("orchestrator: plan reconcile-failed '%s'", _tid)
+                    if _rec_dirty:
+                        _auto_complete_plan_parents(_rec_data.get("tasks", []))
+                        _rec_json_str = _json_rec.dumps(_rec_data, indent=2, ensure_ascii=False)
+                        _rec_file.write_text(_rec_json_str, encoding="utf-8")
+                        session.plan_json = _rec_json_str
+                        await db.commit()
+                        logger.info("orchestrator: plan reconciliation complete (round %d)", round_idx + 1)
+                except Exception as _re:
+                    logger.warning("orchestrator: plan reconciliation error: %s", _re)
 
             # Detect when every task in the batch permanently failed (all models exhausted)
             _batch_all_permanent = batch_results and all(r.get("permanently_failed") for r in batch_results)
@@ -3403,7 +3622,17 @@ class OrchestratorAgent:
 
         system_prompt = (
             "You are a code verification agent. Review the file chunk below and report problems.\n\n"
-            "## What to check\n\n"
+            "## Step 1 — read the task\n\n"
+            "The user message starts with 'Task:' followed by the instruction. Read it before judging.\n\n"
+            "## Step 2 — decide strictness based on task type\n\n"
+            "**Scaffold / skeleton / structure / initial setup tasks** (keywords: scaffold, skeleton, "
+            "structure, boilerplate, setup, init, create project, config files, directory layout, "
+            "package.json, Cargo.toml, pyproject.toml, empty component, placeholder): "
+            "Stubs and minimal bodies are EXPECTED. Do NOT flag `pass`, empty blocks, or "
+            "`return None` in these files — the point of a scaffold task is to create the shape, "
+            "not the implementation. Only flag if the file is completely empty or missing.\n\n"
+            "**Implementation tasks** (anything else): apply the full checks below.\n\n"
+            "## What to check for implementation tasks\n\n"
             "1. Text-marker stubs: TODO, FIXME, placeholder comments, `raise NotImplementedError`, "
             "or any function body that is ONLY a comment with no code\n"
             "2. Semantic stubs — hollow function bodies. Flag any function/method whose ENTIRE body is:\n"
@@ -3449,7 +3678,8 @@ class OrchestratorAgent:
                         else f"lines {chunk_start + 1}–{chunk_end} of {total_lines} — more chunks follow"
                     )
                     user_prompt = (
-                        f"Task: {task_instruction}\n\n"
+                        f"Task title: {task_title}\n"
+                        f"Task instruction: {task_instruction}\n\n"
                         f"## {rel_path} ({chunk_note})\n\n"
                         f"```\n{chunk_content}\n```\n\n"
                         "Report stub markers and incomplete logic in this chunk. "

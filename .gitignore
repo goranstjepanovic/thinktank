@@ -33,3 +33,4 @@ frontend/.env.local
 # OS
 .DS_Store
 Thumbs.db
+backend/thinktank.db

@@ -147,6 +147,7 @@ export interface Phase3Session {
   project_root: string | null;
   output_dir: string | null;
   summary: string | null;
+  plan_json: string | null;
   created_at: string;
   updated_at: string;
 }

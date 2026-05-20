@@ -24,6 +24,7 @@ class StageConfig:
     format: str
     num_ctx: int = 8192
     supports_tools: bool = False
+    think: bool = False  # explicitly disable/enable thinking for this stage (sent to Ollama)
     fallback_models: list["SelectableModel"] = field(default_factory=list)
     selectable_models: list[SelectableModel] = field(default_factory=list)
     timeout_seconds: int | None = None  # overrides backend default when set
@@ -100,7 +101,7 @@ class ModelRegistry:
         ) if qcfg else None
 
         _KNOWN = {"model", "backend", "temperature", "max_tokens", "format",
-                  "num_ctx", "supports_tools", "fallback_models", "selectable_models", "models", "timeout_seconds"}
+                  "num_ctx", "supports_tools", "think", "fallback_models", "selectable_models", "models", "timeout_seconds"}
         stages: dict[str, StageConfig] = {}
         for stage_key, cfg in data.get("stages", {}).items():
             backend = cfg["backend"]
@@ -148,6 +149,7 @@ class ModelRegistry:
                 format=cfg.get("format", self._defaults.get("format", "json")),
                 num_ctx=cfg.get("num_ctx", self._defaults.get("num_ctx", 8192)),
                 supports_tools=cfg.get("supports_tools", self._defaults.get("supports_tools", False)),
+                think=bool(cfg.get("think", self._defaults.get("think", False))),
                 fallback_models=fallbacks,
                 selectable_models=selectable,
                 timeout_seconds=cfg.get("timeout_seconds"),

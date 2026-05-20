@@ -640,6 +640,7 @@ class InferenceClient:
             num_ctx=stage_cfg.num_ctx,
             timeout_seconds=stage_cfg.timeout_seconds,
             extra=stage_cfg.extra,
+            think=stage_cfg.think,
         )
 
         response: InferenceResponse | None = None

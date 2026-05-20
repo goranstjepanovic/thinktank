@@ -209,3 +209,13 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px
 ::-webkit-scrollbar-thumb:hover { background: var(--text2); }
 ::-webkit-scrollbar-corner { background: transparent; }
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+/* Active log scrollbar — pulses while agent is running */
+@keyframes scrollbar-throb {
+  0%, 100% { background: var(--text2); }
+  50%       { background: var(--blue); }
+}
+.log-active::-webkit-scrollbar { width: 8px; }
+.log-active::-webkit-scrollbar-thumb { background: var(--blue); animation: scrollbar-throb 1.8s ease-in-out infinite; border-radius: 99px; }
+.log-active::-webkit-scrollbar-track { background: var(--bg2); }
+.log-active { scrollbar-color: var(--blue) var(--bg2); }
