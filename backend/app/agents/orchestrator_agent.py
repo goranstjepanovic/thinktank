@@ -3330,20 +3330,34 @@ class OrchestratorAgent:
                 )
                 _blocked_ids_str = ", ".join(repr(b) for b in _blocked_this_round[:5])
                 if _empty_task_rounds <= 3 or _round_plan_has_pending:
-                    # Inject a targeted nudge: the model must plan_add the missing items first
+                    # Build a compact pending-task snapshot from the already-loaded plan map
+                    # so the model can re-dispatch immediately without calling plan_list().
+                    _pending_leaves = [
+                        t for t in _round_plan_map.values()
+                        if not (t.get("children") or [])
+                        and t.get("status") in ("pending", "in_progress", "failed")
+                    ]
+                    if _pending_leaves:
+                        _plan_snapshot = "\n".join(
+                            f"  id={t['id']!r}  title={t.get('title','')!r}  status={t.get('status','')}"
+                            for t in _pending_leaves[:20]
+                        )
+                        _plan_hint = (
+                            f"\n\nCurrent pending plan tasks (use these exact IDs):\n{_plan_snapshot}"
+                            + ("\n  … and more — call plan_list() for the full list" if len(_pending_leaves) > 20 else "")
+                        )
+                    else:
+                        _plan_hint = "\n\nThe plan has no pending leaf tasks — call plan_add() to register the work first."
                     completed_tasks.append({
                         "id": f"_nudge_blocked_{round_idx}",
                         "title": "(all tasks blocked — plan_task_id mismatch)",
                         "summary": (
                             f"DISPATCH ERROR (attempt {_empty_task_rounds}): All tasks you submitted were blocked "
                             f"because their plan_task_id values do not exist in the plan. "
-                            f"Blocked task IDs: [{_blocked_ids_str}]. "
-                            "Steps to fix:\n"
-                            "1. Call plan_list() to see existing plan tasks and their IDs.\n"
-                            "2. For any work that is NOT already in the plan, call plan_add() to register it — "
-                            "this creates the authoritative ID you must use.\n"
-                            "3. Re-dispatch your tasks using only IDs returned by plan_list() or plan_add(). "
-                            "Do NOT invent or guess IDs. The plan must be updated before dispatching."
+                            f"Blocked IDs you used: [{_blocked_ids_str}]. "
+                            "You MUST use IDs that exist in the plan — do NOT invent or guess IDs."
+                            f"{_plan_hint}\n\n"
+                            "Re-dispatch now using only the exact IDs shown above."
                         ),
                         "success": False,
                         "files_written": [],
