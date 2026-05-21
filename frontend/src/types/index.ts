@@ -311,6 +311,18 @@ export interface ModelStageStat {
   tokens_total: number;
 }
 
+export interface CategoryModelStat {
+  category: string;
+  model: string;
+  backend: string;
+  calls: number;
+  success: number;
+  fallbacks: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  p95_duration_ms: number | null;
+}
+
 export interface TelemetrySummary {
   total_calls: number;
   total_tokens_prompt: number;
@@ -325,6 +337,7 @@ export interface TelemetrySummary {
   by_type: TaskTypeStat[];
   avg_tasks_per_project_by_type: TypeProjectStat[];
   by_task: TaskStat[];
+  by_category_model: CategoryModelStat[];
   over_time: TimeBucket[];
   avg_tools_per_project: ToolProjectStat[];
   avg_tools_per_model: ToolModelStat[];

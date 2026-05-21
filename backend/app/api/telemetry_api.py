@@ -150,6 +150,10 @@ async def get_summary(
     # per-project: how many initial dispatches of each type (non-fallback only)
     project_type_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
+    # per (task_category, model) aggregation — phase3_sub_agent only
+    category_model_agg: dict[tuple[str, str], dict] = defaultdict(_new_agg)
+    category_model_backend: dict[tuple[str, str], str] = {}
+
     all_models: set[str] = set()
     all_backends: set[str] = set()
     all_stages: set[str] = set()
@@ -234,6 +238,17 @@ async def get_summary(
                 ta["success"] += int(ok)
                 if dur is not None:
                     ta["durations"].append(float(dur))
+
+        # task category × model stats (phase3_sub_agent only)
+        cat = rec.get("task_category") or ""
+        if cat and s == "phase3_sub_agent":
+            cm_key = (cat, m)
+            category_model_agg[cm_key]["calls"] += 1
+            category_model_agg[cm_key]["success"] += int(ok)
+            category_model_agg[cm_key]["fallbacks"] += int(is_fb)
+            if dur is not None:
+                category_model_agg[cm_key]["durations"].append(float(dur))
+            category_model_backend[cm_key] = b
 
         # tool-call stats
         if tc:
@@ -436,6 +451,24 @@ async def get_summary(
         key=lambda x: -x["count"],
     )
 
+    by_category_model = sorted(
+        [
+            {
+                "category": cat_k,
+                "model": model_k,
+                "backend": category_model_backend.get((cat_k, model_k), ""),
+                "calls": v["calls"],
+                "success": v["success"],
+                "fallbacks": v["fallbacks"],
+                "success_rate": round(v["success"] / v["calls"], 3) if v["calls"] else 0,
+                "avg_duration_ms": round(statistics.mean(v["durations"])) if v["durations"] else None,
+                "p95_duration_ms": round(_percentile(v["durations"], 95)) if v["durations"] else None,
+            }
+            for (cat_k, model_k), v in category_model_agg.items()
+        ],
+        key=lambda x: (x["category"], -x["calls"]),
+    )
+
     total_tokens_prompt = sum(r.get("tokens_prompt") or 0 for r in records)
     total_tokens_completion = sum(r.get("tokens_completion") or 0 for r in records)
 
@@ -453,6 +486,7 @@ async def get_summary(
         "by_type": by_type,
         "avg_tasks_per_project_by_type": avg_tasks_per_project_by_type,
         "by_task": by_task,
+        "by_category_model": by_category_model,
         "over_time": over_time,
         "avg_tools_per_project": avg_tools_per_project,
         "avg_tools_per_model": avg_tools_per_model,

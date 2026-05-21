@@ -32,6 +32,7 @@ def set_call_context(
     fallback_from: str | None = None,
     model_type: str | None = None,
     task_id: str | None = None,
+    task_category: str | None = None,
 ) -> None:
     """Tag the next model call with fallback/task metadata. Call before each attempt."""
     _call_ctx.set({
@@ -39,6 +40,7 @@ def set_call_context(
         "fallback_from": fallback_from,
         "model_type": model_type,
         "task_id": task_id,
+        "task_category": task_category,
     })
 
 
@@ -140,6 +142,7 @@ def log_call(
         "fallback_from": extra.get("fallback_from"),
         "model_type": extra.get("model_type"),
         "task_id": extra.get("task_id"),
+        "task_category": extra.get("task_category"),
         "tokens_prompt": tokens_prompt,
         "tokens_completion": tokens_completion,
         "error": error[:200] if error else None,

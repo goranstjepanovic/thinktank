@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { useIdeaStore } from '../store/ideaStore';
-import type { BackendStat, ErrorCount, IdeaSummary, ModelStat, ModelStageStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
+import type { BackendStat, CategoryModelStat, ErrorCount, IdeaSummary, ModelStat, ModelStageStat, ProjectStat, SubAgentRankEntry, SubAgentRanking, TaskStat, TaskTypeStat, TelemetryCall, TimeBucket, ToolModelStat, ToolProjectStat, TypeProjectStat } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types & helpers
@@ -424,6 +424,61 @@ function ModelStageTable({ data }: { data: ModelStageStat[] }) {
                     {r.calls > 0 ? `${pct}%` : '—'}
                   </td>
                   <td style={{ padding: '6px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(r.avg_duration_ms)}</td>
+                  <td style={{ padding: '6px 10px', color: r.fallbacks > 0 ? 'var(--yellow)' : 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                    {r.fallbacks || '—'}
+                  </td>
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CategoryModelTable({ data }: { data: CategoryModelStat[] }) {
+  if (data.length === 0) return (
+    <div style={{ color: 'var(--text2)', fontSize: 12, padding: '12px 0' }}>No data yet.</div>
+  );
+
+  const categoryOrder = [...new Set(data.map(r => r.category))].sort();
+  const byCategory = new Map<string, CategoryModelStat[]>();
+  for (const cat of categoryOrder) {
+    byCategory.set(cat, data.filter(r => r.category === cat).sort((a, b) => b.calls - a.calls));
+  }
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {['Category', 'Model', 'Calls', 'Success', 'Rate', 'Avg Duration', 'p95', 'Fallbacks'].map(h => (
+              <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text2)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {categoryOrder.flatMap(cat => {
+            const rows = byCategory.get(cat)!;
+            return rows.map((r, i) => {
+              const pct = Math.round(r.success_rate * 100);
+              const rateColor = pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--yellow)' : 'var(--red)';
+              return (
+                <tr key={`${cat}-${r.model}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '6px 10px', color: 'var(--text2)', whiteSpace: 'nowrap', fontSize: 11 }}>
+                    {i === 0 ? cat : ''}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontSize: 11, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.model}>
+                    {r.model}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontVariantNumeric: 'tabular-nums' }}>{r.calls}</td>
+                  <td style={{ padding: '6px 10px', color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>{r.success}</td>
+                  <td style={{ padding: '6px 10px', color: rateColor, fontWeight: 600 }}>
+                    {r.calls > 0 ? `${pct}%` : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(r.avg_duration_ms)}</td>
+                  <td style={{ padding: '6px 10px', color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(r.p95_duration_ms)}</td>
                   <td style={{ padding: '6px 10px', color: r.fallbacks > 0 ? 'var(--yellow)' : 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
                     {r.fallbacks || '—'}
                   </td>
@@ -930,6 +985,15 @@ export function OpsDashboard() {
         <div style={{ marginBottom: 20 }}>
           <ChartCard title="Task Execution  ·  sub-agent wall time by task" minHeight={0}>
             <TaskBreakdownTable tasks={data.by_task} filterProject={filterProject} />
+          </ChartCard>
+        </div>
+      )}
+
+      {/* Task category × model breakdown */}
+      {data && data.by_category_model && data.by_category_model.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <ChartCard title="Task Category  ·  model performance by task category" minHeight={0}>
+            <CategoryModelTable data={data.by_category_model} />
           </ChartCard>
         </div>
       )}

@@ -722,6 +722,22 @@ def _iter_all_plan_tasks(nodes: list):
         yield from _iter_all_plan_tasks(n.get("children") or [])
 
 
+def _find_plan_category(output_dir: str, task_id: str) -> str | None:
+    """Return the top-level plan group title that contains task_id, or None."""
+    import json as _j
+    try:
+        pf = Path(output_dir) / ".think-plan.json"
+        if not pf.exists():
+            return None
+        for top in _j.loads(pf.read_text(encoding="utf-8")).get("tasks", []):
+            for t in _iter_all_plan_tasks([top]):
+                if t.get("id") == task_id:
+                    return top.get("title")
+    except Exception:
+        pass
+    return None
+
+
 def _auto_complete_plan_parents(nodes: list) -> bool:
     """Bottom-up: mark a parent done when all its children are terminal. Returns True if anything changed."""
     dirty = False
@@ -4177,6 +4193,7 @@ class OrchestratorAgent:
                 fallback_from=models_to_try[attempt - 1].model if attempt > 0 else None,
                 model_type=model_sm.model,
                 task_id=task_id,
+                task_category=_find_plan_category(output_dir, task_id),
             )
             if attempt > 0:
                 logger.info("sub_agent: task '%s' — fallback attempt %d with model %s", task_title, attempt, model_sm.model)
