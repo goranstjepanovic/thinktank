@@ -3283,9 +3283,12 @@ class OrchestratorAgent:
                             import json as _jv
                             _pf2 = Path(output_dir) / ".think-plan.json"
                             _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8")) if _pf2.exists() else {}
+                            # Fresh handler set gives us _plan_add / _plan_list in the right scope
+                            _ph = _plan_handlers(output_dir)
+                            _ph_add = _ph["plan_add"]
 
                             # Pick parent: score top-level areas by title-keyword overlap with
-                            # the task title; fall back to a "Build Fixes" area (created if absent).
+                            # the task title; fall back to a "Build Fixes" holding area.
                             _task_words = set(str(t.get("title") or _lookup).lower().split())
                             _top_areas = [n for n in _pd2.get("tasks", []) if n.get("children") is not None]
                             _best_parent: str | None = None
@@ -3303,7 +3306,9 @@ class OrchestratorAgent:
                                     None,
                                 )
                                 if _fix_area is None:
-                                    await _plan_add({"id": "_auto_build_fixes", "title": "Build Fixes"})
+                                    await _ph_add({"id": "_auto_build_fixes", "title": "Build Fixes"})
+                                    # Reload after creating the area
+                                    _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8"))
                                 _best_parent = "_auto_build_fixes"
 
                             # Ensure the ID is unique — suffix with _2, _3 … if needed
@@ -3314,7 +3319,7 @@ class OrchestratorAgent:
                                 _reg_id = f"{_lookup}_{_suffix}"
                                 _suffix += 1
 
-                            _add_result = await _plan_add({
+                            _add_result = await _ph_add({
                                 "id": _reg_id,
                                 "title": str(t.get("title") or _reg_id),
                                 "instruction": str(t.get("instruction") or ""),
