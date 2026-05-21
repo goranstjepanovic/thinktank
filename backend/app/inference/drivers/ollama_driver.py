@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import httpx
@@ -106,73 +107,87 @@ class OllamaDriver(InferenceBackend):
         _REPLOOP_ABORT_AT = 20_000  # hard abort regardless of diversity
         _reploop_checked = False
 
+        # 120s per-chunk read timeout catches a silently stalled connection.
+        # asyncio.wait_for below enforces the hard wall-clock cap on total generation time
+        # (httpx's scalar timeout is per-chunk only, so it resets on every token).
+        _chunk_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=10.0)
+
+        async def _run() -> None:
+            nonlocal final_data, _think_open, _reploop_checked
+            try:
+                async with httpx.AsyncClient(timeout=_chunk_timeout) as client:
+                    async with client.stream("POST", f"{self._base_url}/api/chat", json=payload) as resp:
+                        if not resp.is_success:
+                            body = await resp.aread()
+                            raise InferenceBackendError(
+                                f"Ollama request failed: {resp.status_code} — {body[:500].decode()}"
+                            )
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                data = _json.loads(line)
+                            except _json.JSONDecodeError:
+                                continue
+                            msg = data.get("message", {})
+                            thinking_chunk = msg.get("thinking") or ""
+                            content_chunk = msg.get("content") or ""
+
+                            if thinking_chunk:
+                                # Wrap thinking tokens in <think> tags so the existing
+                                # _extract_think_content mechanism in callers handles them.
+                                if not _think_open and request.on_token:
+                                    request.on_token("<think>")
+                                    _think_open = True
+                                if request.on_token:
+                                    request.on_token(thinking_chunk)
+
+                            if content_chunk:
+                                if _think_open and request.on_token:
+                                    request.on_token("</think>")
+                                    _think_open = False
+                                content_parts.append(content_chunk)
+                                if request.on_token:
+                                    request.on_token(content_chunk)
+
+                                # Repetition-loop detection: check diversity once content crosses
+                                # the soft threshold, then hard-abort at the hard threshold.
+                                _content_len = sum(len(p) for p in content_parts)
+                                if _content_len >= _REPLOOP_ABORT_AT:
+                                    raise InferenceBackendError(
+                                        f"Ollama model '{request.model}' repetition loop: "
+                                        f"content reached {_content_len} chars without finishing "
+                                        f"(model={request.model})"
+                                    )
+                                if not _reploop_checked and _content_len >= _REPLOOP_CHECK_AT:
+                                    _reploop_checked = True
+                                    _recent = "".join(content_parts)[-2000:]
+                                    _words = _recent.split()
+                                    if len(_words) >= 50:
+                                        _unique_ratio = len(set(_words)) / len(_words)
+                                        if _unique_ratio < 0.08:
+                                            raise InferenceBackendError(
+                                                f"Ollama model '{request.model}' repetition loop: "
+                                                f"{_content_len} chars, {_unique_ratio:.0%} unique words in last 2k chars "
+                                                f"(model={request.model})"
+                                            )
+
+                            if data.get("done"):
+                                if _think_open and request.on_token:
+                                    request.on_token("</think>")
+                                final_data = data
+                                break
+            except httpx.TimeoutException as e:
+                raise InferenceBackendError(f"Ollama request timed out (model={request.model})") from e
+            except httpx.HTTPError as e:
+                raise InferenceBackendError(f"Ollama request failed: {str(e) or type(e).__name__} (model={request.model})") from e
+
         try:
-            async with httpx.AsyncClient(timeout=effective_timeout) as client:
-                async with client.stream("POST", f"{self._base_url}/api/chat", json=payload) as resp:
-                    if not resp.is_success:
-                        body = await resp.aread()
-                        raise InferenceBackendError(
-                            f"Ollama request failed: {resp.status_code} — {body[:500].decode()}"
-                        )
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            data = _json.loads(line)
-                        except _json.JSONDecodeError:
-                            continue
-                        msg = data.get("message", {})
-                        thinking_chunk = msg.get("thinking") or ""
-                        content_chunk = msg.get("content") or ""
-
-                        if thinking_chunk:
-                            # Wrap thinking tokens in <think> tags so the existing
-                            # _extract_think_content mechanism in callers handles them.
-                            if not _think_open and request.on_token:
-                                request.on_token("<think>")
-                                _think_open = True
-                            if request.on_token:
-                                request.on_token(thinking_chunk)
-
-                        if content_chunk:
-                            if _think_open and request.on_token:
-                                request.on_token("</think>")
-                                _think_open = False
-                            content_parts.append(content_chunk)
-                            if request.on_token:
-                                request.on_token(content_chunk)
-
-                            # Repetition-loop detection: check diversity once content crosses
-                            # the soft threshold, then hard-abort at the hard threshold.
-                            _content_len = sum(len(p) for p in content_parts)
-                            if _content_len >= _REPLOOP_ABORT_AT:
-                                raise InferenceBackendError(
-                                    f"Ollama model '{request.model}' repetition loop: "
-                                    f"content reached {_content_len} chars without finishing "
-                                    f"(model={request.model})"
-                                )
-                            if not _reploop_checked and _content_len >= _REPLOOP_CHECK_AT:
-                                _reploop_checked = True
-                                _recent = "".join(content_parts)[-2000:]
-                                _words = _recent.split()
-                                if len(_words) >= 50:
-                                    _unique_ratio = len(set(_words)) / len(_words)
-                                    if _unique_ratio < 0.08:
-                                        raise InferenceBackendError(
-                                            f"Ollama model '{request.model}' repetition loop: "
-                                            f"{_content_len} chars, {_unique_ratio:.0%} unique words in last 2k chars "
-                                            f"(model={request.model})"
-                                        )
-
-                        if data.get("done"):
-                            if _think_open and request.on_token:
-                                request.on_token("</think>")
-                            final_data = data
-                            break
-        except httpx.TimeoutException as e:
-            raise InferenceBackendError(f"Ollama request timed out after {effective_timeout}s (model={request.model})") from e
-        except httpx.HTTPError as e:
-            raise InferenceBackendError(f"Ollama request failed: {str(e) or type(e).__name__} (model={request.model})") from e
+            await asyncio.wait_for(_run(), timeout=float(effective_timeout))
+        except asyncio.TimeoutError:
+            raise InferenceBackendError(
+                f"Ollama streaming timed out after {effective_timeout}s (model={request.model})"
+            )
 
         duration_ms = int((time.monotonic() - start) * 1000)
         # Tool calls are delivered in the final done:true message
@@ -237,8 +252,11 @@ class OllamaDriver(InferenceBackend):
             payload["options"]["num_predict"] = request.max_tokens
 
         effective_timeout = request.timeout_seconds if request.timeout_seconds is not None else self._timeout
+        deadline = time.monotonic() + effective_timeout
+        # Per-chunk read timeout catches a stalled connection; deadline below caps total wall-clock time.
+        _chunk_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=10.0)
         try:
-            async with httpx.AsyncClient(timeout=effective_timeout) as client:
+            async with httpx.AsyncClient(timeout=_chunk_timeout) as client:
                 async with client.stream("POST", f"{self._base_url}/api/chat", json=payload) as resp:
                     if not resp.is_success:
                         body = await resp.aread()
@@ -246,6 +264,10 @@ class OllamaDriver(InferenceBackend):
                             f"Ollama streaming failed: {resp.status_code} — {body[:500].decode()}"
                         )
                     async for line in resp.aiter_lines():
+                        if time.monotonic() > deadline:
+                            raise InferenceBackendError(
+                                f"Ollama streaming timed out after {effective_timeout}s (model={request.model})"
+                            )
                         if not line:
                             continue
                         try:

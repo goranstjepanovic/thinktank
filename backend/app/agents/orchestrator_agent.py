@@ -2093,55 +2093,178 @@ def _title_slug(title: str) -> str:
 
 
 def _planning_root_messages(prd_content: str) -> list[dict]:
-    """Messages for the root planning call: PRD → top-level feature epics."""
+    """Messages for the root planning call: PRD → top-level implementation tasks."""
     system = (
-        "You are a software project planner. Read the PRD below and output the top-level implementation epics.\n\n"
-        "CRITICAL: epics must be VERTICAL FEATURE SLICES, not architectural layers.\n"
-        "  WRONG — architectural layers (never do this): 'Backend API', 'Frontend', 'Database Layer', 'State Management'\n"
-        "  RIGHT — vertical feature epics: 'Project Scaffold', 'User Authentication', 'Game Lobby', 'Core Game Loop', 'Leaderboard & Scoring'\n\n"
-        "Rules:\n"
-        "- List 4–7 epics. Each epic is an independent deliverable: files from one epic should not need to be re-written by another.\n"
-        "- 'Project Scaffold' (project setup, package.json, tsconfig, folder structure, env config) is ALWAYS first.\n"
-        "- Set atomic=false for all epics — each will be expanded into file-level tasks in the next step.\n"
-        "- Exception: atomic=true ONLY if the entire epic is a single file (e.g. a README). Add 'instruction' when atomic=true.\n\n"
-        'Output JSON only: {"tasks": [{"title": "Project Scaffold", "atomic": false}, ...]}'
+        "You are a software project planner. Read the PRD below and produce a top-level implementation plan.\n\n"
+        "Use the following checklist to make sure your plan covers every applicable concern.\n"
+        "You do NOT have to use these as task titles — name your tasks whatever fits the project.\n"
+        "But every checked concern must be covered by at least one task in your plan.\n\n"
+        "CONCERN CHECKLIST:\n"
+        "  [always]  Scaffold — project files, folder structure, env config, DB schema.\n"
+        "  [always]  Core Logic — domain models, state machines, business rules, algorithms. Pure, no I/O.\n"
+        "  [if PRD]  Auth & Security — authentication, authorisation, session/token management, RBAC.\n"
+        "  [if PRD]  Integrations — third-party APIs, OAuth providers, payment gateways, email/SMS services.\n"
+        "  [if PRD]  Bespoke Frameworks — custom engine, DSL, rule interpreter, or proprietary system.\n"
+        "  [if PRD]  AI/ML — model inference, embeddings, vector search, fine-tuning pipelines, prompt chains.\n"
+        "  [if PRD]  Backend — server routes, API/WebSocket handlers, server-side service orchestration.\n"
+        "  [if PRD]  Frontend — every UI screen, component, client-side state, routing, and rendering.\n"
+        "  [if PRD]  CLI/Admin Tools — developer CLIs, management commands, admin scripts, operator tooling.\n"
+        "  [if PRD]  Assets — authored content: story data, game levels, seed data, media catalogue files.\n\n"
+        "RULES:\n"
+        "- 5–9 tasks total. Each task covers one distinct concern from the checklist above.\n"
+        "- Scaffold is always first.\n"
+        "- Each concern has EXCLUSIVE OWNERSHIP of its area. A component planned in one task must NEVER\n"
+        "  be re-implemented in another — later tasks reference earlier ones only as dependencies.\n"
+        "- Set atomic=false for all tasks — each will be expanded into file-level sub-tasks.\n"
+        "- Exception: atomic=true only if the entire task is a single file.\n\n"
+        'Output JSON only: {"tasks": [{"title": "...", "atomic": false}, ...]}'
     )
     user = (
         f"## Product Requirements Document\n\n{prd_content}\n\n"
-        "List the top-level implementation epics (vertical feature slices, not architectural layers)."
+        "Produce the top-level implementation plan, ensuring every applicable concern from the checklist is covered."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+# Expansion guidance injected into the expand prompt when the parent task title matches a keyword.
+# These are concern-based hints, not rigid phase names — keyword matching is intentionally broad.
+_PHASE_EXPAND_HINTS: list[tuple[str, str]] = [
+    ("scaffold", (
+        "Tasks here cover: root config files (package.json / requirements.txt / Makefile), folder structure, "
+        "environment config (.env.example), DB schema/migration files, shared bootstrap utilities. "
+        "Do NOT include domain logic, HTTP handlers, or UI components."
+    )),
+    ("core logic", (
+        "Tasks here cover: domain models, state machines, rule engines, and algorithms. "
+        "These must be pure and I/O-free (no HTTP, no UI, no disk writes beyond reading config). "
+        "All other tasks depend on this one — define clean, well-named public interfaces."
+    )),
+    ("auth", (
+        "Tasks here cover: user authentication flows, session/token management, password hashing, "
+        "authorisation middleware, and RBAC/permission checks. "
+        "CONSUME the database/storage layer from Scaffold — do NOT re-define schema here."
+    )),
+    ("security", (
+        "Tasks here cover: user authentication flows, session/token management, password hashing, "
+        "authorisation middleware, and RBAC/permission checks. "
+        "CONSUME the database/storage layer from Scaffold — do NOT re-define schema here."
+    )),
+    ("integration", (
+        "Tasks here cover: clients for external services named in the PRD (payment gateway, email provider, "
+        "OAuth, third-party APIs). Each task wraps ONE external service with a clean internal interface. "
+        "Do NOT re-implement business logic that belongs in Core Logic."
+    )),
+    ("bespoke framework", (
+        "Tasks here cover the custom engine, DSL parser, or proprietary system named in the PRD. "
+        "Define its public API so that Backend and Frontend tasks can consume it without knowing internals."
+    )),
+    ("ai", (
+        "Tasks here cover: model inference clients, embedding pipelines, vector store integration, "
+        "prompt chain orchestration, and any fine-tuning or evaluation tooling. "
+        "Wrap each external AI service or model in a clean internal interface. "
+        "CONSUME Core Logic for domain rules — do NOT re-implement business logic inside AI pipelines."
+    )),
+    ("ml", (
+        "Tasks here cover: model inference clients, embedding pipelines, vector store integration, "
+        "prompt chain orchestration, and any fine-tuning or evaluation tooling. "
+        "Wrap each external AI service or model in a clean internal interface."
+    )),
+    ("backend", (
+        "Tasks here cover: HTTP/WebSocket route handlers, middleware, and server-side service orchestration. "
+        "CONSUME Core Logic components by name — do NOT re-implement their logic here. "
+        "Each task should correspond to one route group, one service, or one handler module."
+    )),
+    ("server", (
+        "Tasks here cover: HTTP/WebSocket route handlers, middleware, and server-side service orchestration. "
+        "CONSUME Core Logic components by name — do NOT re-implement their logic here."
+    )),
+    ("api", (
+        "Tasks here cover: HTTP/WebSocket route handlers, middleware, and server-side service orchestration. "
+        "CONSUME Core Logic components by name — do NOT re-implement their logic here."
+    )),
+    ("frontend", (
+        "Tasks here cover ALL user-facing screens and UI components. "
+        "Plan one task per distinct screen or major UI panel (e.g. Lobby Screen, Game Map View, "
+        "Inventory Panel, Chat Component, Solution Modal). "
+        "Include client-side state management and routing if needed. "
+        "Consume Backend APIs via network calls — do NOT re-implement server-side logic."
+    )),
+    ("ui", (
+        "Tasks here cover ALL user-facing screens and UI components. "
+        "Plan one task per distinct screen or major UI panel. "
+        "Include client-side state management and routing if needed. "
+        "Consume Backend APIs via network calls — do NOT re-implement server-side logic."
+    )),
+    ("client", (
+        "Tasks here cover ALL user-facing screens and UI components. "
+        "Plan one task per distinct screen or major UI panel. "
+        "Consume Backend APIs via network calls — do NOT re-implement server-side logic."
+    )),
+    ("asset", (
+        "Tasks here cover authored content files, not code. "
+        "Each task produces one self-contained content unit: "
+        "a story manifest + its asset folder, a level definition file, a seed data file, etc. "
+        "If the PRD specifies a full example story/level, that entire story is ONE task."
+    )),
+    ("content", (
+        "Tasks here cover authored content files, not code — story data, level definitions, "
+        "seed/fixture data, media catalogue files, localisation strings. "
+        "Each task produces one self-contained content unit."
+    )),
+    ("cli", (
+        "Tasks here cover command-line interfaces, management commands, admin scripts, and operator tooling. "
+        "Each task implements one CLI command group or one admin script. "
+        "CONSUME Core Logic and Backend service interfaces — do NOT duplicate their logic."
+    )),
+    ("admin", (
+        "Tasks here cover management commands, admin scripts, and operator tooling. "
+        "Each task implements one CLI command group or one admin script. "
+        "CONSUME Core Logic and Backend service interfaces — do NOT duplicate their logic."
+    )),
+]
+
+
+def _phase_expand_hint(parent_title: str) -> str:
+    """Return concern-specific expansion guidance based on keywords in the task title."""
+    key = parent_title.lower()
+    for keyword, hint in _PHASE_EXPAND_HINTS:
+        if keyword in key:
+            return hint
+    return ""
+
+
 def _planning_expand_messages(prd_content: str, parent_title: str, parent_path: str, force_leaf: bool) -> list[dict]:
-    """Messages for expanding one epic into its immediate component-level tasks."""
+    """Messages for expanding one phase into its immediate component-level tasks."""
     leaf_rule = (
         "Every task you output MUST have atomic=true and a complete 'instruction' field."
         if force_leaf else
         "Mark atomic=true for tasks that implement a single well-defined component.\n"
         "Mark atomic=false only if the task still covers multiple distinct components — it will be expanded further."
     )
+    phase_hint = _phase_expand_hint(parent_title)
+    phase_hint_block = f"\nPHASE GUIDANCE for '{parent_title}':\n{phase_hint}\n" if phase_hint else ""
     system = (
-        f"You are a software implementation planner. Break the epic '{parent_title}' into concrete component tasks.\n\n"
-        "CRITICAL RULES:\n"
-        "- List 3–8 tasks. Each task implements ONE component (a module, service, class, or UI screen).\n"
+        f"You are a software implementation planner. Break the '{parent_title}' phase into concrete tasks.\n"
+        f"{phase_hint_block}\n"
+        "RULES:\n"
+        "- List 3–8 tasks. Each task implements ONE component (a module, service, class, screen, or content file).\n"
         f"- {leaf_rule}\n"
-        "- Do NOT specify file paths — the implementer decides file structure. Plan WHAT to build, not WHERE to put it.\n"
-        "- Each component in this epic must be unique to this epic. If a component (e.g. database connection, "
-        "WebSocket manager) was planned in an earlier epic, list it only as a dependency here — do NOT re-plan it.\n"
+        "- Do NOT specify file paths — the implementer decides file structure.\n"
+        "- Each component in this phase must be UNIQUE to this phase. If a component was planned in an\n"
+        "  earlier phase, reference it only as a dependency — do NOT re-plan or re-describe it here.\n"
         "- When atomic=true, 'instruction' MUST describe:\n"
         "    1. Responsibility: what this component does (1–2 sentences)\n"
-        "    2. Public interface: the functions, methods, or props it exposes to other components\n"
-        "    3. Dependencies: names of other components it consumes (from this plan)\n"
+        "    2. Public interface: the functions, methods, or props it exposes\n"
+        "    3. Dependencies: names of components from earlier phases it consumes\n"
         "    4. Tech notes: specific library, pattern, or constraint from the PRD (if any)\n"
-        "- Order tasks by dependency (foundational components first).\n"
-        "- Do NOT include: package installation, build steps, test suites, documentation, PROGRESS.md.\n\n"
+        "- Order tasks by dependency (foundational first).\n"
+        "- Do NOT include: package installation, build steps, test suites, documentation.\n\n"
         'Output JSON only: {"tasks": [{"title": "...", "atomic": true, "instruction": "..."}, ...]}'
     )
     user = (
-        f"## Epic to expand\n\nPath: {parent_path}\nEpic: {parent_title}\n\n"
+        f"## Phase to expand\n\nPath: {parent_path}\nPhase: {parent_title}\n\n"
         f"## Product Requirements Document\n\n{prd_content}\n\n"
-        f"List the component tasks that implement the '{parent_title}' epic."
+        f"List the component tasks that implement the '{parent_title}' phase."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -2543,8 +2666,53 @@ class OrchestratorAgent:
             if _framework_research:
                 logger.info("orchestrator: framework research retrieved (%d chars)", len(_framework_research))
 
-        for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS):
-            logger.info("orchestrator: round %d/%d", round_idx + 1, _MAX_ORCHESTRATOR_ROUNDS)
+        _effective_max_rounds = _MAX_ORCHESTRATOR_ROUNDS
+        for round_idx in range(_MAX_ORCHESTRATOR_ROUNDS + 50):
+            # At the original ceiling, check whether the plan still has pending tasks.
+            # If yes, grant 50 extension rounds and inject a continue message so the
+            # orchestrator doesn't ask the user questions or signal done prematurely.
+            # If no, stop — the loop ended naturally (done=true broke it earlier).
+            if round_idx == _MAX_ORCHESTRATOR_ROUNDS:
+                _exh_pending = False
+                if output_dir:
+                    _exhpf = Path(output_dir) / ".think-plan.json"
+                    if _exhpf.exists():
+                        try:
+                            import json as _jex
+                            _exhdata = _jex.loads(_exhpf.read_text(encoding="utf-8"))
+                            _exh_pending = any(
+                                t.get("status") in ("pending", "in_progress", "failed")
+                                for t in _iter_all_plan_tasks(_exhdata.get("tasks", []))
+                                if not (t.get("children") or [])
+                            )
+                        except Exception:
+                            pass
+                if not _exh_pending:
+                    logger.warning(
+                        "orchestrator: %d-round ceiling reached — no pending plan tasks, stopping",
+                        _MAX_ORCHESTRATOR_ROUNDS,
+                    )
+                    break
+                _effective_max_rounds = _MAX_ORCHESTRATOR_ROUNDS + 50
+                logger.warning(
+                    "orchestrator: %d-round ceiling reached but plan has pending tasks — "
+                    "granting 50 extension rounds",
+                    _MAX_ORCHESTRATOR_ROUNDS,
+                )
+                completed_tasks.append({
+                    "id": f"_round_limit_extension_{round_idx}",
+                    "title": "(round limit — auto-extend)",
+                    "summary": (
+                        "You exhausted the round limit but the plan still has pending tasks. "
+                        "Do NOT ask the user any questions. "
+                        "Call plan_list() to see which tasks remain, then dispatch them. "
+                        "Continue implementing until the plan is complete, then set done=true."
+                    ),
+                    "success": True,
+                    "files_written": [],
+                    "commands_run": [],
+                })
+            logger.info("orchestrator: round %d/%d", round_idx + 1, _effective_max_rounds)
             await on_orchestrator_event("orchestrator_thinking", {})
 
             # Drain any user messages sent while the last batch was running (non-blocking)
@@ -2886,6 +3054,42 @@ class OrchestratorAgent:
                     user_reply = await asyncio.wait_for(user_message_queue.get(), timeout=3600)
                 except asyncio.TimeoutError:
                     logger.warning("orchestrator: timed out waiting for user reply")
+                    # Before giving up, check whether the plan still has pending tasks.
+                    # If so, inject a "continue" message and keep working rather than
+                    # terminating the session mid-plan.
+                    _timeout_has_pending = False
+                    if output_dir:
+                        _tpf = Path(output_dir) / ".think-plan.json"
+                        if _tpf.exists():
+                            try:
+                                import json as _jt
+                                _tpdata = _jt.loads(_tpf.read_text(encoding="utf-8"))
+                                _timeout_has_pending = any(
+                                    t.get("status") in ("pending", "in_progress", "failed")
+                                    for t in _iter_all_plan_tasks(_tpdata.get("tasks", []))
+                                    if not (t.get("children") or [])
+                                )
+                            except Exception:
+                                pass
+                    if _timeout_has_pending:
+                        logger.info(
+                            "orchestrator: pending plan tasks remain after timeout — injecting continue message"
+                        )
+                        completed_tasks.append({
+                            "id": f"_timeout_continue_{round_idx}",
+                            "title": "(user unavailable — auto-continue)",
+                            "summary": (
+                                "No user reply was received (unattended run). "
+                                "The plan still has pending tasks. "
+                                "Do NOT ask the user any questions. "
+                                "Call plan_list() to see which tasks remain, then dispatch them one by one. "
+                                "Continue implementing until the plan is complete, then set done=true."
+                            ),
+                            "success": True,
+                            "files_written": [],
+                            "commands_run": [],
+                        })
+                        continue
                     break
                 completed_tasks.append({
                     "id": f"user_input_{round_idx}",

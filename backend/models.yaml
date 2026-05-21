@@ -212,20 +212,15 @@ stages:
       - model: "rnj-1:8b"
         timeout_seconds: 900
         num_ctx: 32768
-      - model: "carstenuhlig/omnicoder-2-9b:q4_k_m"
-        timeout_seconds: 900
-        num_ctx: 256000
       - model: "Omoeba/gpt-oss-coder:20b"
         timeout_seconds: 1200
         num_ctx: 114688
-      - model: "gemma4:26b"
-        timeout_seconds: 1200
-        num_ctx: 256000
-        think: true
-      - model: "laguna-xs.2:q4_K_M"
+      - model: "qwen3-coder:30b"
         timeout_seconds: 1200
         num_ctx: 114688
-        think: true
+      - model: "qwen2.5-coder:14b"
+        timeout_seconds: 1200
+        num_ctx: 114688
     backend: "ollama"
     temperature: 0.2    # code correctness > creativity
     max_tokens: null
