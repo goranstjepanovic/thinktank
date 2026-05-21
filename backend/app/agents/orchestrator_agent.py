@@ -3278,38 +3278,69 @@ class OrchestratorAgent:
                     _lookup = _ptid or task_id_raw
                     if _lookup and _lookup not in _round_plan_map:
                         # The model dispatched a task with an ID that isn't in the plan.
-                        # Auto-register it so the run can proceed without requiring a tool call.
-                        # Find a parent: prefer a top-level area node (has children), else add at root.
+                        # Auto-register it so the run can proceed without a tool call.
                         try:
                             import json as _jv
                             _pf2 = Path(output_dir) / ".think-plan.json"
                             _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8")) if _pf2.exists() else {}
+
+                            # Pick parent: score top-level areas by title-keyword overlap with
+                            # the task title; fall back to a "Build Fixes" area (created if absent).
+                            _task_words = set(str(t.get("title") or _lookup).lower().split())
                             _top_areas = [n for n in _pd2.get("tasks", []) if n.get("children") is not None]
-                            _auto_parent = _top_areas[-1]["id"] if _top_areas else None
-                            _add_result = await _plan_add({
-                                "id": _lookup,
-                                "title": str(t.get("title") or _lookup),
-                                "instruction": str(t.get("instruction") or ""),
-                                "parent_id": _auto_parent,
-                            })
-                            if "error" not in _add_result:
-                                # Refresh plan map so the task passes validation below
-                                _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8"))
-                                _round_plan_map = {
-                                    nt["id"]: nt
-                                    for nt in _iter_all_plan_tasks(_pd2.get("tasks", []))
-                                }
-                                logger.info(
-                                    "orchestrator: auto-registered missing plan task '%s' ('%s') under parent=%s",
-                                    _lookup, t.get("title", ""), _auto_parent,
+                            _best_parent: str | None = None
+                            _best_score = 0
+                            for _area in _top_areas:
+                                _area_words = set(str(_area.get("title") or "").lower().split())
+                                _score = len(_task_words & _area_words)
+                                if _score > _best_score:
+                                    _best_score = _score
+                                    _best_parent = _area["id"]
+                            if _best_parent is None:
+                                # No area matched — find or create a "Build Fixes" holding area
+                                _fix_area = next(
+                                    (n for n in _pd2.get("tasks", []) if n.get("id") == "_auto_build_fixes"),
+                                    None,
                                 )
-                            else:
+                                if _fix_area is None:
+                                    await _plan_add({"id": "_auto_build_fixes", "title": "Build Fixes"})
+                                _best_parent = "_auto_build_fixes"
+
+                            # Ensure the ID is unique — suffix with _2, _3 … if needed
+                            _all_plan_ids = {nt["id"] for nt in _iter_all_plan_tasks(_pd2.get("tasks", []))}
+                            _reg_id = _lookup
+                            _suffix = 2
+                            while _reg_id in _all_plan_ids:
+                                _reg_id = f"{_lookup}_{_suffix}"
+                                _suffix += 1
+
+                            _add_result = await _plan_add({
+                                "id": _reg_id,
+                                "title": str(t.get("title") or _reg_id),
+                                "instruction": str(t.get("instruction") or ""),
+                                "parent_id": _best_parent,
+                            })
+                            if "error" in _add_result:
                                 raise RuntimeError(_add_result["error"])
+
+                            # Patch the task dict so dispatch uses the registered ID
+                            t["plan_task_id"] = _reg_id
+                            # Refresh plan map so validation below sees the new node
+                            _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8"))
+                            _round_plan_map = {
+                                nt["id"]: nt
+                                for nt in _iter_all_plan_tasks(_pd2.get("tasks", []))
+                            }
+                            logger.info(
+                                "orchestrator: auto-registered missing plan task '%s' (requested '%s') "
+                                "under parent='%s' title=%r",
+                                _reg_id, _lookup, _best_parent, t.get("title", ""),
+                            )
                         except Exception as _ae:
                             _blocked_this_round.append(task_id_raw)
                             _dispatch_errors.append(
-                                f"INVALID ID '{_lookup}': this plan_task_id does not exist and auto-registration failed ({_ae}). "
-                                f"Call plan_list() to see all valid IDs, then re-dispatch with the exact id."
+                                f"INVALID ID '{_lookup}': not in plan and auto-registration failed ({_ae}). "
+                                f"Call plan_list() to see valid IDs, then re-dispatch."
                             )
                             logger.warning(
                                 "orchestrator: blocked task '%s' — plan_task_id '%s' not in plan, auto-add failed: %s",
