@@ -3277,17 +3277,45 @@ class OrchestratorAgent:
                     _ptid = str(t.get("plan_task_id") or "").strip()
                     _lookup = _ptid or task_id_raw
                     if _lookup and _lookup not in _round_plan_map:
-                        # Hard block — no title guessing. Model must use plan_list() to find valid IDs.
-                        _blocked_this_round.append(task_id_raw)
-                        _dispatch_errors.append(
-                            f"INVALID ID '{_lookup}': this plan_task_id does not exist. "
-                            f"Call plan_list() to see all valid IDs, then re-dispatch with the exact id."
-                        )
-                        logger.warning(
-                            "orchestrator: blocked task '%s' — plan_task_id '%s' not in plan",
-                            task_id_raw, _lookup,
-                        )
-                        continue
+                        # The model dispatched a task with an ID that isn't in the plan.
+                        # Auto-register it so the run can proceed without requiring a tool call.
+                        # Find a parent: prefer a top-level area node (has children), else add at root.
+                        try:
+                            import json as _jv
+                            _pf2 = Path(output_dir) / ".think-plan.json"
+                            _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8")) if _pf2.exists() else {}
+                            _top_areas = [n for n in _pd2.get("tasks", []) if n.get("children") is not None]
+                            _auto_parent = _top_areas[-1]["id"] if _top_areas else None
+                            _add_result = await _plan_add({
+                                "id": _lookup,
+                                "title": str(t.get("title") or _lookup),
+                                "instruction": str(t.get("instruction") or ""),
+                                "parent_id": _auto_parent,
+                            })
+                            if "error" not in _add_result:
+                                # Refresh plan map so the task passes validation below
+                                _pd2 = _jv.loads(_pf2.read_text(encoding="utf-8"))
+                                _round_plan_map = {
+                                    nt["id"]: nt
+                                    for nt in _iter_all_plan_tasks(_pd2.get("tasks", []))
+                                }
+                                logger.info(
+                                    "orchestrator: auto-registered missing plan task '%s' ('%s') under parent=%s",
+                                    _lookup, t.get("title", ""), _auto_parent,
+                                )
+                            else:
+                                raise RuntimeError(_add_result["error"])
+                        except Exception as _ae:
+                            _blocked_this_round.append(task_id_raw)
+                            _dispatch_errors.append(
+                                f"INVALID ID '{_lookup}': this plan_task_id does not exist and auto-registration failed ({_ae}). "
+                                f"Call plan_list() to see all valid IDs, then re-dispatch with the exact id."
+                            )
+                            logger.warning(
+                                "orchestrator: blocked task '%s' — plan_task_id '%s' not in plan, auto-add failed: %s",
+                                task_id_raw, _lookup, _ae,
+                            )
+                            continue
 
                 # Unresolved failed plan tasks must be replaced before new work is dispatched.
                 # If the orchestrator called plan_remove this round, _unresolved_plan_failures
@@ -3330,34 +3358,15 @@ class OrchestratorAgent:
                 )
                 _blocked_ids_str = ", ".join(repr(b) for b in _blocked_this_round[:5])
                 if _empty_task_rounds <= 3 or _round_plan_has_pending:
-                    # Build a compact pending-task snapshot from the already-loaded plan map
-                    # so the model can re-dispatch immediately without calling plan_list().
-                    _pending_leaves = [
-                        t for t in _round_plan_map.values()
-                        if not (t.get("children") or [])
-                        and t.get("status") in ("pending", "in_progress", "failed")
-                    ]
-                    if _pending_leaves:
-                        _plan_snapshot = "\n".join(
-                            f"  id={t['id']!r}  title={t.get('title','')!r}  status={t.get('status','')}"
-                            for t in _pending_leaves[:20]
-                        )
-                        _plan_hint = (
-                            f"\n\nCurrent pending plan tasks (use these exact IDs):\n{_plan_snapshot}"
-                            + ("\n  … and more — call plan_list() for the full list" if len(_pending_leaves) > 20 else "")
-                        )
-                    else:
-                        _plan_hint = "\n\nThe plan has no pending leaf tasks — call plan_add() to register the work first."
                     completed_tasks.append({
                         "id": f"_nudge_blocked_{round_idx}",
-                        "title": "(all tasks blocked — plan_task_id mismatch)",
+                        "title": "(all tasks blocked — plan registration failed)",
                         "summary": (
-                            f"DISPATCH ERROR (attempt {_empty_task_rounds}): All tasks you submitted were blocked "
-                            f"because their plan_task_id values do not exist in the plan. "
-                            f"Blocked IDs you used: [{_blocked_ids_str}]. "
-                            "You MUST use IDs that exist in the plan — do NOT invent or guess IDs."
-                            f"{_plan_hint}\n\n"
-                            "Re-dispatch now using only the exact IDs shown above."
+                            f"DISPATCH ERROR (attempt {_empty_task_rounds}): All tasks you submitted were blocked. "
+                            f"Blocked IDs: [{_blocked_ids_str}]. "
+                            "Call plan_list() to see valid IDs. "
+                            "If these are new tasks, call plan_add(id, title, parent_id) for each, "
+                            "then re-dispatch using the IDs returned by plan_add()."
                         ),
                         "success": False,
                         "files_written": [],
