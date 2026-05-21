@@ -10,7 +10,7 @@ A local AI system that takes a raw idea through structured analysis, interactive
 
 **Multi-agent code generation with local models.** Phase 3 runs an orchestrator LLM that reads the full project spec, plans implementation tasks, and dispatches them to sub-agent workers. Each sub-agent writes files, runs shell commands, and reports back. The orchestrator then plans the next batch. All on-device.
 
-**Hybrid inference: Ollama + OpenVINO.** The orchestrator can run on an Intel NPU or iGPU via OpenVINO GenAI while sub-agents use GPU models via Ollama. You can mix backends per stage in a single config file.
+**Hybrid inference: Ollama + llama.cpp + OpenVINO.** Any stage can be routed to any backend in a single config file. Run the orchestrator on an Intel NPU via OpenVINO, sub-agents via Ollama, and any stage via a llama.cpp server — or run everything through one backend. Backends are mixed per stage, not per project.
 
 **Telemetry-driven model ordering.** Sub-agents try models in order of measured performance — success rate DESC, average duration ASC — computed from per-project telemetry. A flat `models` list in `models.yaml` sets the default order; the runtime reorders it as data accumulates. Models without enough data stay in YAML order. The current ranking is visible in the Phase 3 sidebar and the Ops dashboard.
 
@@ -80,7 +80,7 @@ Supported project types include Node.js, Python, and .NET — the orchestrator d
 
 - Python 3.11+
 - Node.js 18+
-- [Ollama](https://ollama.com) installed and running
+- [Ollama](https://ollama.com) **or** [llama.cpp](https://github.com/ggerganov/llama.cpp) (at least one inference backend)
 - A GPU with enough VRAM for the models you want to run (tested on RTX 4070 SUPER 12 GB)
 - **Optional:** Intel Core Ultra CPU for OpenVINO NPU/GPU stages (tested on Core Ultra 7 265k)
 - **Optional:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) for image and audio generation
@@ -190,7 +190,40 @@ stages:
 
 The `models` list sets the default dispatch order. Once a model accumulates ≥ 5 calls with ≥ 15% success rate in the current project, it enters the telemetry-ranked pool and is sorted above models that don't qualify yet. Models with no data stay in YAML order at the bottom.
 
-Supported backends: `ollama`, `openvino` (Intel NPU/GPU via OpenVINO GenAI), `llamacpp` (experimental).
+Supported backends: `ollama`, `llamacpp`, `openvino`.
+
+### llama.cpp setup (optional)
+
+Start the llama.cpp server in router mode, pointing at a directory of GGUF files. It loads models on demand and evicts the least-recently-used when the limit is reached — no restarts needed to switch models.
+
+```bash
+llama-server --models-dir "C:/models/llamacpp" --models-max 2 --ctx-size 32768 -ngl 99
+```
+
+The server exposes an OpenAI-compatible API at `http://localhost:8080`. Set `backend: "llamacpp"` on any stage or individual model entry in `models.yaml`.
+
+**Important:** the `model:` value must exactly match what llama.cpp reports. Check after starting the server:
+
+```bash
+curl http://localhost:8080/v1/models
+```
+
+The name is typically the filename without extension (e.g. `qwen2.5-coder-14b-instruct-q4_k_m`) or the HuggingFace repo format (`Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M`). Set whatever value the server returns as your `model:` in `models.yaml`.
+
+Per-model backend overrides let you mix llamacpp and ollama in the same fallback chain:
+
+```yaml
+phase3_sub_agent:
+  backend: "ollama"          # stage default
+  models:
+    - model: "qwen2.5-coder-14b-instruct-q4_k_m"
+      backend: "llamacpp"    # this model hits localhost:8080
+      timeout_seconds: 1200
+      num_ctx: 32768
+    - model: "qwen3-coder:30b"   # falls back to ollama
+      timeout_seconds: 1200
+      num_ctx: 114688
+```
 
 ### OpenVINO setup (optional)
 

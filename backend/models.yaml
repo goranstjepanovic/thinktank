@@ -26,6 +26,15 @@ backends:
     base_url: "http://localhost:11434"
     timeout_seconds: 120
   llamacpp:
+    # llama.cpp HTTP server — start in router mode so all models are served from one instance:
+    #   llama-server --models-dir "C:/models/llamacpp" --models-max 2 --ctx-size 32768 -ngl 99
+    #
+    # The 'model' value in each stage must exactly match what llama.cpp reports in GET /v1/models.
+    # This is usually the filename without extension (e.g. "qwen2.5-coder-14b-instruct-q4_k_m")
+    # or the HuggingFace repo:file format (e.g. "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M").
+    # Run: curl http://localhost:8080/v1/models  to see the exact names after starting the server.
+    #
+    # --models-max: how many models stay loaded simultaneously. Keep ≤ 2 on 12 GB VRAM.
     base_url: "http://localhost:8080"
     timeout_seconds: 120
   openvino:

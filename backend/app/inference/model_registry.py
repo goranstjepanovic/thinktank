@@ -13,6 +13,7 @@ class SelectableModel:
     timeout_seconds: int | None = None
     num_ctx: int | None = None
     think: bool = False  # request extended thinking from Ollama for this model
+    backend: str | None = None  # overrides stage-level backend when set
 
 
 @dataclass
@@ -114,6 +115,7 @@ class ModelRegistry:
                         description=s.get("description", ""),
                         timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
                         think=bool(s.get("think", False)),
+                        backend=s.get("backend") or None,
                     )
                     for s in raw_models_list
                 ]
@@ -124,6 +126,7 @@ class ModelRegistry:
                         name=s["name"], model=s["model"], description=s.get("description", ""),
                         timeout_seconds=s.get("timeout_seconds"), num_ctx=s.get("num_ctx"),
                         think=bool(s.get("think", False)),
+                        backend=s.get("backend") or None,
                     )
                     for s in (cfg.get("selectable_models") or [])
                 ]

@@ -4257,6 +4257,7 @@ class OrchestratorAgent:
                         on_tool_result=_wrapped_on_tool,
                         on_text_response=_on_text_response,
                         model_override=model_sm.model,
+                        backend_override=model_sm.backend,
                         num_ctx_override=model_sm.num_ctx,
                         timeout_override=model_sm.timeout_seconds,
                         think_override=model_sm.think,

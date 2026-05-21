@@ -804,6 +804,7 @@ class InferenceClient:
         extra_tools: "list[ToolDefinition] | None" = None,
         custom_tool_handlers: "dict | None" = None,  # {name: async callable(args) -> dict}
         model_override: str | None = None,
+        backend_override: str | None = None,
         agent_id: str | None = None,
         num_ctx_override: int | None = None,
         timeout_override: int | None = None,
@@ -828,7 +829,7 @@ class InferenceClient:
         from app.tools.web_search import web_search as web_search_fn
 
         stage_cfg = self._registry.get_stage(stage_key)
-        driver = self._get_driver(stage_cfg.backend)
+        driver = self._get_driver(backend_override or stage_cfg.backend)
 
         # Working copy of the conversation; we'll extend it with tool results
         working_messages = list(messages)
