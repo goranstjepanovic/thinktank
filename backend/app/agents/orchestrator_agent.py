@@ -4439,15 +4439,26 @@ class OrchestratorAgent:
                         if claimed and not _files_edited and task_type != "scaffold":
                             # Scaffold tasks legitimately create files via CLI commands (dotnet new,
                             # npm init, cargo new, etc.) without calling file_edit — check disk instead.
-                            last_result["success"] = False
-                            last_result["blocker"] = (
-                                f"Model claimed {len(claimed)} file(s) written but never called "
-                                "file_edit — result is fabricated. Must use file_edit to write files."
-                            )
-                            logger.warning(
-                                "sub_agent: task '%s' attempt %d — fabricated result: claimed %s but no file_edit",
-                                task_title, attempt, claimed,
-                            )
+                            # Also allow: a fallback model found the file already correct (written by a
+                            # previous timed-out attempt) and returned success without re-writing it.
+                            _all_on_disk = all((Path(output_dir) / f).exists() for f in claimed)
+                            if _all_on_disk:
+                                logger.info(
+                                    "sub_agent: task '%s' attempt %d — no file_edit but all %d claimed "
+                                    "file(s) exist on disk (prior attempt wrote them); accepting",
+                                    task_title, attempt, len(claimed),
+                                )
+                                _files_edited.extend(claimed)  # credit to pass the missing-file check below
+                            else:
+                                last_result["success"] = False
+                                last_result["blocker"] = (
+                                    f"Model claimed {len(claimed)} file(s) written but never called "
+                                    "file_edit — result is fabricated. Must use file_edit to write files."
+                                )
+                                logger.warning(
+                                    "sub_agent: task '%s' attempt %d — fabricated result: claimed %s but no file_edit",
+                                    task_title, attempt, claimed,
+                                )
                         elif claimed:
                             missing = [f for f in claimed if not (Path(output_dir) / f).exists()]
                             if missing:
